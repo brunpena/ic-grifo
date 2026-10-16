@@ -48,7 +48,7 @@ def setup_logging(level: str = "INFO") -> None:
         lg.handlers[:] = []
         lg.propagate = True
     # Bibliotecas HTTP registram URLs e cabeçalhos em DEBUG; mantenha-as discretas.
-    for noisy in ("httpx", "httpcore", "anthropic", "uvicorn.access"):
+    for noisy in ("httpx", "httpcore", "uvicorn.access"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
 
 

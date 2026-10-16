@@ -9,6 +9,7 @@ from app.core.config import get_settings
 from app.core.errors import register_error_handlers
 from app.core.logging import setup_logging
 from app.db.session import engine
+from app.services.ingest import recover_interrupted
 
 logger = logging.getLogger("app")
 
@@ -16,6 +17,11 @@ logger = logging.getLogger("app")
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     logger.info("startup", extra={"env": get_settings().app_env})
+    try:
+        await recover_interrupted()
+    except Exception:
+        # Sem banco na subida, a API ainda responde (o /health mostra o problema).
+        logger.warning("recover_interrupted_failed", exc_info=True)
     yield
     await engine.dispose()
 

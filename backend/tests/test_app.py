@@ -13,7 +13,7 @@ def test_cors_origins_from_comma_separated_env(monkeypatch):
 
 
 def test_secrets_are_not_exposed_in_repr():
-    settings = Settings(anthropic_api_key="sk-ant-segredo")
+    settings = Settings(gemini_api_key="sk-ant-segredo")
     assert "sk-ant-segredo" not in repr(settings)
     assert "sk-ant-segredo" not in str(settings.model_dump())
 

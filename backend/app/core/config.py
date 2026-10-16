@@ -44,10 +44,12 @@ class Settings(BaseSettings):
     max_upload_mb: int = 50
     llm_rate_limit_per_minute: int = 20
 
-    # LLM
-    anthropic_api_key: SecretStr = SecretStr("")
-    llm_model: str = "claude-sonnet-5-5"
-    llm_max_concurrency: int = 4
+    # LLM (Gemini; chave gratuita em aistudio.google.com/apikey)
+    gemini_api_key: SecretStr = SecretStr("")
+    # Alias que acompanha o Flash mais recente, disponível no plano gratuito.
+    gemini_model: str = "gemini-flash-latest"
+    # O plano gratuito aceita poucas requisições por minuto.
+    llm_max_concurrency: int = 2
     llm_chunk_chars: int = 12000
     llm_chunk_overlap: int = 1500
 

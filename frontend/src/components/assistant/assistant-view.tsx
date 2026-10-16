@@ -1,11 +1,13 @@
 "use client";
 
-import { FileText, FileUp, Library, MousePointerClick, X } from "lucide-react";
+import { useQueryClient } from "@tanstack/react-query";
+import { FileSearch, FileText, FileUp, Library, MousePointerClick, X } from "lucide-react";
 import Link from "next/link";
 import { type DragEvent, type ReactNode, useRef, useState } from "react";
 import { Group, Panel, Separator } from "react-resizable-panels";
 import { BrandLogo } from "@/components/brand-logo";
-import { AssistantMessage, UserMessage } from "@/components/chat/chat-message";
+import { AssistantMessage, type CitedRule, UserMessage } from "@/components/chat/chat-message";
+import { ProcessingSteps } from "@/components/chat/processing-steps";
 import { CreateRulePopover } from "@/components/document/create-rule-popover";
 import { HighlightLayer, type PageRect } from "@/components/document/highlight-layer";
 import { PDF_TO_CSS, PdfDocumentPages, usePdfDocument } from "@/components/document/pdf-document";
@@ -14,50 +16,82 @@ import { PdfToolbar } from "@/components/document/pdf-toolbar";
 import { RuleLegend } from "@/components/document/rule-legend";
 import { RulesHeader } from "@/components/rules/rules-header";
 import { RulesTable } from "@/components/rules/rules-table";
-import type { RuleView } from "@/components/rules/types";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { IconButton } from "@/components/ui/icon-button";
 import { useToast } from "@/components/ui/toast";
+import { errorMessage } from "@/lib/api";
 import { firstName, useCurrentUser } from "@/lib/auth";
 import type { RuleStatus, RuleType } from "@/lib/design/tokens";
+import {
+  type DocumentInfo,
+  fetchDocumentFile,
+  invalidateMessages,
+  type Rule,
+  streamMessage,
+  stripCitations,
+  useCreateRule,
+  useDocument,
+  useDocuments,
+  useMessages,
+  useRules,
+  useUpdateRule,
+  useUploadDocument,
+} from "@/lib/documents";
 import type { FloatingAnchor } from "@/lib/floating";
 import { DESKTOP_QUERY, useMediaQuery } from "@/lib/use-media-query";
 import { cn } from "@/lib/utils";
 import { AssistantComposer, AssistantDisclaimer } from "./assistant-composer";
 
-type ChatMessage = { id: string; role: "user" | "assistant"; content: ReactNode };
-
-/** Regra criada nesta tela, com a posição do grifo em cada página. */
-type LocalRule = RuleView & { page: number; rects: PageRect[] };
+type ThreadMessage = {
+  id: string;
+  role: "user" | "assistant";
+  content: ReactNode;
+  citations?: CitedRule[];
+  streaming?: boolean;
+};
 
 type MobileTab = "chat" | "document" | "rules";
 
-// Ainda não existe API de conversa nem de extração de regras: as respostas abaixo
-// explicam isso em vez de simular uma IA. Troque pelos dados do back quando houver.
-const CHAT_UNAVAILABLE =
-  "Ainda não consigo responder: a conversa com a IA não está ligada ao back-end. Por enquanto, as mensagens ficam só nesta tela.";
-
 let nextId = 0;
-const newId = () => `m${++nextId}`;
+const localId = () => `local-${++nextId}`;
+
+/** Retângulos do grifo de uma regra numa página (vindos do back, em frações da página). */
+const rectsOn = (rule: Rule, page: number): PageRect[] =>
+  rule.boxes.filter((b) => b.page === page).map(({ x, y, width, height }) => ({ x, y, width, height }));
 
 export function AssistantView() {
   const toast = useToast();
+  const queryClient = useQueryClient();
   const { data: user } = useCurrentUser();
   const isDesktop = useMediaQuery(DESKTOP_QUERY);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const [viewerWidth, setViewerWidth] = useState(0);
 
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [draft, setDraft] = useState("");
   const [file, setFile] = useState<File | null>(null);
+  const [documentId, setDocumentId] = useState<string | null>(null);
+  const [opening, setOpening] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
   const pdf = usePdfDocument(file);
+  const upload = useUploadDocument();
+  const { data: recent } = useDocuments();
+  const { data: doc } = useDocument(documentId);
+  const ready = doc?.status === "ready";
+  const { data: rules = [] } = useRules(documentId, ready);
+  const { data: savedMessages = [] } = useMessages(documentId, ready);
+  const updateRule = useUpdateRule(documentId ?? "");
+  const createRule = useCreateRule(documentId ?? "");
+
+  // Mensagens que ainda não estão no servidor (pergunta enviada e resposta chegando).
+  const [pending, setPending] = useState<ThreadMessage[]>([]);
+  const [notes, setNotes] = useState<ThreadMessage[]>([]);
+  const [draft, setDraft] = useState("");
+  const [sending, setSending] = useState(false);
+
   // `null` = ajustar à largura do painel (até a pessoa mexer no zoom).
   const [zoomOverride, setZoomOverride] = useState<number | null>(null);
   const [page, setPage] = useState(1);
-  const [rules, setRules] = useState<LocalRule[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [hoverId, setHoverId] = useState<string | null>(null);
   const [pulse, setPulse] = useState<{ ruleId: string; key: number } | null>(null);
@@ -66,7 +100,16 @@ export function AssistantView() {
   const [mobileTab, setMobileTab] = useState<MobileTab>("document");
   const [createOpen, setCreateOpen] = useState(false);
   const selectionRef = useRef<FloatingAnchor | null>(null);
-  const selectionInfo = useRef<{ page: number; text: string; rects: PageRect[] } | null>(null);
+  const selectionInfo = useRef<{ page: number; text: string } | null>(null);
+
+  const resetView = () => {
+    setZoomOverride(null);
+    setSelectedId(null);
+    setPending([]);
+    setNotes([]);
+    setPage(1);
+    setMobileTab("document");
+  };
 
   const openFile = (picked: File | undefined) => {
     if (!picked) return;
@@ -75,36 +118,76 @@ export function AssistantView() {
       return;
     }
     setFile(picked);
-    setZoomOverride(null);
-    setRules([]);
-    setSelectedId(null);
-    setPage(1);
-    setMobileTab("document");
-    setMessages((list) => [
-      ...list,
-      {
-        id: newId(),
-        role: "assistant",
-        content: `Abri “${picked.name}”. Selecione um trecho do documento e use “Criar regra” para marcá-lo. A identificação automática das regras ainda não está ligada ao back-end.`,
-      },
-    ]);
+    setDocumentId(null);
+    resetView();
+    upload.mutate(picked, {
+      onSuccess: (created) => setDocumentId(created.id),
+      onError: (error) => toast({ title: "Não foi possível enviar", description: errorMessage(error), variant: "error" }),
+    });
   };
 
-  const send = () => {
-    const text = draft.trim();
-    if (!text) return;
-    setDraft("");
-    setMessages((list) => [
-      ...list,
-      { id: newId(), role: "user", content: text },
-      { id: newId(), role: "assistant", content: CHAT_UNAVAILABLE },
-    ]);
+  const reopen = async (existing: DocumentInfo) => {
+    setOpening(existing.id);
+    try {
+      const pdfFile = await fetchDocumentFile(existing);
+      setFile(pdfFile);
+      setDocumentId(existing.id);
+      resetView();
+    } catch (error) {
+      toast({ title: "Não foi possível abrir", description: errorMessage(error), variant: "error" });
+    } finally {
+      setOpening(null);
+    }
   };
 
   const closeDocument = () => {
     setFile(null);
-    setRules([]);
-    setSelectedId(null);
+    setDocumentId(null);
+    resetView();
+  };
+
+  const note = (content: string) =>
+    setNotes((list) => [...list, { id: localId(), role: "assistant", content }]);
+
+  const send = async () => {
+    const text = draft.trim();
+    if (!text || sending) return;
+    if (!documentId || !doc) {
+      setDraft("");
+      setNotes((list) => [...list, { id: localId(), role: "user", content: text }]);
+      note("Envie um contrato, edital ou regulamento em PDF pelo botão + e eu respondo com base nele.");
+      return;
+    }
+    if (!ready) {
+      note("Ainda estou lendo o documento. Assim que terminar, respondo sua pergunta.");
+      return;
+    }
+    setDraft("");
+    setSending(true);
+    const answerId = localId();
+    setPending([
+      { id: localId(), role: "user", content: text },
+      { id: answerId, role: "assistant", content: "", streaming: true },
+    ]);
+    let answer = "";
+    try {
+      await streamMessage(documentId, text, {
+        onDelta: (delta) => {
+          answer += delta;
+          setPending((list) =>
+            list.map((m) => (m.id === answerId ? { ...m, content: stripCitations(answer) } : m)),
+          );
+        },
+        onDone: () => undefined,
+      });
+      await invalidateMessages(queryClient, documentId);
+    } catch (error) {
+      toast({ title: "A IA não respondeu", description: errorMessage(error), variant: "error" });
+      await invalidateMessages(queryClient, documentId);
+    } finally {
+      setPending([]);
+      setSending(false);
+    }
   };
 
   // Mede a área do documento para o zoom "ajustar à largura".
@@ -124,7 +207,9 @@ export function AssistantView() {
     const pageEl = scroller?.querySelector<HTMLElement>(`[data-page="${n}"]`);
     if (!scroller || !pageEl) return;
     const top =
-      pageEl.getBoundingClientRect().top - scroller.getBoundingClientRect().top + scroller.scrollTop +
+      pageEl.getBoundingClientRect().top -
+      scroller.getBoundingClientRect().top +
+      scroller.scrollTop +
       (rect ? rect.y * pageEl.offsetHeight : 0) -
       scroller.clientHeight / 3;
     scroller.scrollTo({ top: Math.max(0, top), behavior: "smooth" });
@@ -136,38 +221,32 @@ export function AssistantView() {
     setSelectedId(id);
     setPulse((p) => ({ ruleId: id, key: (p?.key ?? 0) + 1 }));
     if (!isDesktop) setMobileTab("document");
+    const box = rule.boxes[0];
     // Na troca de aba, espera a página aparecer antes de rolar.
-    requestAnimationFrame(() => scrollToPage(rule.page, rule.rects[0]));
+    if (box) requestAnimationFrame(() => scrollToPage(box.page, box));
   };
 
   const onPageMouseUp = (pageNumber: number, pageEl: HTMLElement) => {
+    if (!ready) return;
     const sel = window.getSelection();
     if (!sel || sel.isCollapsed || !pageEl.contains(sel.anchorNode)) return;
     const text = sel.toString().replace(/\s+/g, " ").trim();
-    if (!text) return;
-    const range = sel.getRangeAt(0);
-    const box = pageEl.getBoundingClientRect();
-    selectionRef.current = range;
-    selectionInfo.current = {
-      page: pageNumber,
-      text,
-      rects: Array.from(range.getClientRects())
-        .filter((r) => r.width > 0 && r.height > 0)
-        .map((r) => ({
-          x: (r.left - box.left) / box.width,
-          y: (r.top - box.top) / box.height,
-          width: r.width / box.width,
-          height: r.height / box.height,
-        })),
-    };
+    if (text.length < 2) return;
+    selectionRef.current = sel.getRangeAt(0);
+    selectionInfo.current = { page: pageNumber, text };
     setCreateOpen(true);
   };
 
   const onPageClick = (pageNumber: number, point: { x: number; y: number }) => {
-    const hit = rules.find(
-      (r) =>
-        r.page === pageNumber &&
-        r.rects.some((b) => point.x >= b.x && point.x <= b.x + b.width && point.y >= b.y && point.y <= b.y + b.height),
+    const hit = rules.find((r) =>
+      r.boxes.some(
+        (b) =>
+          b.page === pageNumber &&
+          point.x >= b.x &&
+          point.x <= b.x + b.width &&
+          point.y >= b.y &&
+          point.y <= b.y + b.height,
+      ),
     );
     if (hit) goToRule(hit.id);
   };
@@ -233,6 +312,7 @@ export function AssistantView() {
 
   // ----- Sem documento: conversa centralizada, no estilo do lineFlow -----
   if (!file) {
+    const recentDocs = (recent ?? []).slice(0, 4);
     return (
       <div className="relative flex h-full flex-col" {...dropHandlers}>
         {fileInput}
@@ -242,16 +322,22 @@ export function AssistantView() {
           <span className="rounded-full border border-accent/40 px-2 py-0.5 text-[11px] font-medium text-accent">Beta</span>
         </div>
 
-        {messages.length === 0 ? (
+        {notes.length === 0 ? (
           <div className="relative flex flex-1 flex-col items-center justify-center gap-4 px-4 text-center">
             <h1 className="text-[28px] leading-tight font-medium tracking-tight sm:text-[38px]">
               Pronto para validar, {user ? firstName(user.name) : ""}?
             </h1>
             <p className="max-w-md text-sm text-foreground-muted">
-              Envie um contrato, edital ou regulamento. O documento abre ao lado da conversa, com as regras grifadas.
+              Envie um contrato, edital ou regulamento. A IA encontra as regras e grifa cada uma no documento.
             </p>
             <div className="mt-2 flex flex-wrap justify-center gap-2">
-              <Button size="sm" variant="primary" icon={<FileUp size={16} strokeWidth={1.75} aria-hidden />} onClick={attach} className="rounded-full">
+              <Button
+                size="sm"
+                variant="primary"
+                icon={<FileUp size={16} strokeWidth={1.75} aria-hidden />}
+                onClick={attach}
+                className="rounded-full"
+              >
                 Enviar um PDF
               </Button>
               <Link
@@ -262,9 +348,30 @@ export function AssistantView() {
                 Ver base de regras
               </Link>
             </div>
+            {recentDocs.length > 0 && (
+              <div className="mt-6 flex w-full max-w-xl flex-col gap-2">
+                <span className="text-xs text-foreground-subtle">Documentos recentes</span>
+                <ul className="flex flex-wrap justify-center gap-2">
+                  {recentDocs.map((d) => (
+                    <li key={d.id}>
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        loading={opening === d.id}
+                        icon={<FileText size={16} strokeWidth={1.75} aria-hidden />}
+                        onClick={() => reopen(d)}
+                        className="max-w-64 rounded-full"
+                      >
+                        <span className="truncate">{d.title}</span>
+                      </Button>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
           </div>
         ) : (
-          <ChatThread messages={messages} className="relative mx-auto w-full max-w-3xl flex-1 px-4 py-6" />
+          <ChatThread messages={notes} className="relative mx-auto w-full max-w-3xl flex-1 px-4 py-6" />
         )}
 
         <div className="relative mx-auto w-full max-w-3xl px-4 pb-4">
@@ -288,6 +395,27 @@ export function AssistantView() {
     : 1;
   const zoom = zoomOverride ?? fitZoom;
 
+  // Etapa atual: 0 enviando, 1 lendo, 2 identificando regras, 3 pronto.
+  const step = upload.isPending ? 0 : !doc || doc.status === "processing" ? 1 : doc.status === "extracting_rules" ? 2 : 3;
+  const failed = upload.isError || doc?.status === "error";
+  const failedStep = upload.isError ? 0 : doc?.page_count ? 2 : 1;
+
+  const intro: ThreadMessage = {
+    id: "intro",
+    role: "assistant",
+    content: failed
+      ? `Não consegui analisar “${file.name}”. ${doc?.status_message ?? errorMessage(upload.error)}`
+      : ready
+        ? `Li “${file.name}” e encontrei ${rules.length} ${rules.length === 1 ? "regra" : "regras"}. Revise na tabela ao lado ou me pergunte sobre o documento.`
+        : `Estou lendo “${file.name}” e procurando as regras. ${doc?.status_message ?? ""}`,
+  };
+  const thread: ThreadMessage[] = [
+    intro,
+    ...savedMessages.map((m) => ({ id: m.id, role: m.role, content: m.content, citations: m.citations })),
+    ...notes,
+    ...pending,
+  ];
+
   const chatPanel = (
     <section aria-label="Conversa" className="flex h-full min-h-0 flex-col bg-background">
       <div className="flex h-11 shrink-0 items-center gap-2 border-b border-border px-3">
@@ -298,7 +426,12 @@ export function AssistantView() {
         )}
         <IconButton aria-label="Fechar documento" icon={<X size={16} strokeWidth={1.75} aria-hidden />} onClick={closeDocument} />
       </div>
-      <ChatThread messages={messages} className="flex-1 px-4 py-5" />
+      <ChatThread
+        messages={thread}
+        className="flex-1 px-4 py-5"
+        onCitationHighlight={setHoverId}
+        onCitationClick={goToRule}
+      />
       <div className="shrink-0 p-3">
         {composer}
         <AssistantDisclaimer className="mt-2" />
@@ -336,8 +469,8 @@ export function AssistantView() {
           renderOverlay={(n) => (
             <HighlightLayer
               highlights={rules
-                .filter((r) => r.page === n)
-                .map((r) => ({ ruleId: r.id, type: r.type, status: r.status, rects: r.rects }))}
+                .filter((r) => r.boxes.some((b) => b.page === n))
+                .map((r) => ({ ruleId: r.id, type: r.type, status: r.status, rects: rectsOn(r, n) }))}
               activeRuleId={activeRuleId}
               pulse={pulse}
             />
@@ -345,38 +478,67 @@ export function AssistantView() {
         />
       ) : (
         // Proporção de uma folha A4 enquanto o PDF abre.
-        [1, 2].map((n) => <PdfPage key={n} pageNumber={n} width={595 * zoom * PDF_TO_CSS} height={842 * zoom * PDF_TO_CSS} loading />)
+        [1, 2].map((n) => (
+          <PdfPage key={n} pageNumber={n} width={595 * zoom * PDF_TO_CSS} height={842 * zoom * PDF_TO_CSS} loading />
+        ))
       )}
     </PdfViewer>
   );
 
   const rulesPanel = (
     <section aria-label="Regras" className="flex h-full min-h-0 flex-col bg-surface">
-      <RulesHeader
-        validated={rules.filter((r) => r.status === "validada").length}
-        total={rules.length}
-        typeFilter={typeFilter}
-        onTypeFilterChange={setTypeFilter}
-        statusFilter={statusFilter}
-        onStatusFilterChange={setStatusFilter}
-      />
-      <RulesTable
-        className="flex-1"
-        rules={visibleRules}
-        selectedId={selectedId}
-        onSelect={(r) => goToRule(r.id)}
-        onHover={(r) => setHoverId(r?.id ?? null)}
-        onSetStatus={(rule, status) => setRules((list) => list.map((r) => (r.id === rule.id ? { ...r, status } : r)))}
-        empty={
-          rules.length === 0 ? (
-            <EmptyState
-              icon={MousePointerClick}
-              title="Nenhuma regra ainda"
-              description="Selecione um trecho do documento e clique em “Criar regra”."
-            />
-          ) : undefined
-        }
-      />
+      {ready ? (
+        <>
+          <RulesHeader
+            validated={rules.filter((r) => r.status === "validada").length}
+            total={rules.length}
+            typeFilter={typeFilter}
+            onTypeFilterChange={setTypeFilter}
+            statusFilter={statusFilter}
+            onStatusFilterChange={setStatusFilter}
+          />
+          <RulesTable
+            className="flex-1"
+            rules={visibleRules.map((r) => ({ ...r, page: r.page ?? undefined }))}
+            selectedId={selectedId}
+            onSelect={(r) => goToRule(r.id)}
+            onHover={(r) => setHoverId(r?.id ?? null)}
+            onSetStatus={(rule, status) =>
+              updateRule.mutate(
+                { id: rule.id, status },
+                {
+                  onError: (error) =>
+                    toast({ title: "Não foi possível salvar", description: errorMessage(error), variant: "error" }),
+                },
+              )
+            }
+            empty={
+              rules.length === 0 ? (
+                <EmptyState
+                  icon={MousePointerClick}
+                  title="Nenhuma regra encontrada"
+                  description="Selecione um trecho do documento e clique em “Criar regra”."
+                />
+              ) : undefined
+            }
+          />
+        </>
+      ) : (
+        <div className="flex flex-1 flex-col items-center justify-center gap-6 p-6" aria-live="polite">
+          <FileSearch size={32} strokeWidth={1.5} aria-hidden className={failed ? "text-danger" : "text-accent"} />
+          <ProcessingSteps current={failed ? failedStep : step} failed={failed} />
+          <p className={cn("max-w-72 text-center text-[13px]", failed ? "text-danger" : "text-foreground-muted")}>
+            {failed
+              ? (doc?.status_message ?? errorMessage(upload.error))
+              : (doc?.status_message ?? "Isso leva de alguns segundos a poucos minutos, conforme o tamanho do documento.")}
+          </p>
+          {failed && (
+            <Button size="sm" variant="primary" onClick={attach}>
+              Enviar de novo
+            </Button>
+          )}
+        </div>
+      )}
     </section>
   );
 
@@ -410,18 +572,23 @@ export function AssistantView() {
         open={createOpen}
         onOpenChange={setCreateOpen}
         anchorRef={selectionRef}
+        creating={createRule.isPending}
         onCreate={({ type, summary }) => {
           const info = selectionInfo.current;
           if (!info) return;
-          const id = `r${Date.now()}`;
-          setRules((list) => [
-            ...list,
-            { id, type, summary, status: "pendente", page: info.page, excerpt: info.text, rects: info.rects },
-          ]);
-          setCreateOpen(false);
-          setSelectedId(id);
-          window.getSelection()?.removeAllRanges();
-          toast({ title: "Regra criada", description: "Ela fica salva só nesta tela por enquanto.", variant: "success" });
+          createRule.mutate(
+            { type, summary, page: info.page, excerpt: info.text },
+            {
+              onSuccess: (rule) => {
+                setCreateOpen(false);
+                setSelectedId(rule.id);
+                window.getSelection()?.removeAllRanges();
+                toast({ title: "Regra criada", variant: "success" });
+              },
+              onError: (error) =>
+                toast({ title: "Não foi possível criar a regra", description: errorMessage(error), variant: "error" }),
+            },
+          );
         }}
       />
       {dragging && <DropOverlay />}
@@ -429,16 +596,33 @@ export function AssistantView() {
   );
 }
 
-function ChatThread({ messages, className }: { messages: ChatMessage[]; className?: string }) {
+function ChatThread({
+  messages,
+  className,
+  onCitationHighlight,
+  onCitationClick,
+}: {
+  messages: ThreadMessage[];
+  className?: string;
+  onCitationHighlight?: (ruleId: string | null) => void;
+  onCitationClick?: (ruleId: string) => void;
+}) {
   return (
     <div role="log" aria-label="Mensagens" className={cn("flex min-h-0 flex-col gap-5 overflow-auto", className)}>
-      {messages.length === 0 && (
-        <p className="m-auto max-w-64 text-center text-[13px] text-foreground-subtle">
-          Pergunte sobre o documento ou selecione um trecho para criar uma regra.
-        </p>
-      )}
       {messages.map((m) =>
-        m.role === "user" ? <UserMessage key={m.id}>{m.content}</UserMessage> : <AssistantMessage key={m.id}>{m.content}</AssistantMessage>,
+        m.role === "user" ? (
+          <UserMessage key={m.id}>{m.content}</UserMessage>
+        ) : (
+          <AssistantMessage
+            key={m.id}
+            streaming={m.streaming}
+            citations={m.citations}
+            onCitationHighlight={onCitationHighlight}
+            onCitationClick={onCitationClick}
+          >
+            {m.content}
+          </AssistantMessage>
+        ),
       )}
     </div>
   );
@@ -458,7 +642,7 @@ function DropOverlay() {
   return (
     <div className="pointer-events-none absolute inset-3 z-30 flex flex-col items-center justify-center gap-3 rounded-lg border-2 border-dashed border-accent bg-accent-soft/80 backdrop-blur-sm">
       <BrandLogo size={40} />
-      <p className="text-sm font-medium">Solte o PDF para abrir</p>
+      <p className="text-sm font-medium">Solte o PDF para analisar</p>
     </div>
   );
 }
@@ -482,7 +666,15 @@ const TABS: { value: MobileTab; label: string }[] = [
   { value: "rules", label: "Regras" },
 ];
 
-function MobileTabs({ value, onChange, ruleCount }: { value: MobileTab; onChange: (tab: MobileTab) => void; ruleCount: number }) {
+function MobileTabs({
+  value,
+  onChange,
+  ruleCount,
+}: {
+  value: MobileTab;
+  onChange: (tab: MobileTab) => void;
+  ruleCount: number;
+}) {
   return (
     <div role="tablist" aria-label="Painéis" className="flex h-11 shrink-0 border-b border-border bg-surface px-2">
       {TABS.map((tab) => (
@@ -501,7 +693,9 @@ function MobileTabs({ value, onChange, ruleCount }: { value: MobileTab; onChange
           {tab.value === "rules" && ruleCount > 0 && (
             <span className="rounded-full bg-surface-muted px-1.5 font-mono text-[11px] tabular-nums">{ruleCount}</span>
           )}
-          {value === tab.value && <span aria-hidden className="bg-brand-gradient absolute inset-x-3 bottom-0 h-0.5 rounded-full" />}
+          {value === tab.value && (
+            <span aria-hidden className="bg-brand-gradient absolute inset-x-3 bottom-0 h-0.5 rounded-full" />
+          )}
         </button>
       ))}
     </div>
