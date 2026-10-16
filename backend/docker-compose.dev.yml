@@ -1,0 +1,22 @@
+# Postgres com pgvector para desenvolvimento local e testes.
+# Uso: docker compose -f docker-compose.dev.yml up -d
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: icgrifo
+    ports:
+      - "54329:5432"
+    volumes:
+      - db-data:/var/lib/postgresql/data
+      - ./scripts/init-test-db.sql:/docker-entrypoint-initdb.d/init-test-db.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 2s
+      retries: 20
+
+volumes:
+  db-data:

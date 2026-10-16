@@ -1,0 +1,293 @@
+@import "tailwindcss";
+
+/* Um trecho com `.light` dentro da página escura não recebe os estilos `dark:`. */
+@custom-variant dark (&:where(.dark, .dark *):not(:where(.light, .light *)));
+
+/* `.light` e `.dark` também funcionam num trecho da página (usado no /dev/ui). */
+:root,
+.light {
+  --brand-cyan: #22d3ee;
+  --brand-500: #0a84ff;
+  --brand-600: #0058f0;
+  --brand-700: #0038d6;
+  --brand-navy: #030a1f;
+  --brand-gradient: linear-gradient(135deg, #22d3ee 0%, #0a84ff 45%, #0038d6 100%);
+
+  --background: #f5f7fb;
+  --surface: #ffffff;
+  --surface-muted: #eef2f8;
+  --surface-hover: #e6ebf4;
+  --viewer: #e3e8f0;
+  --border: #dde3ed;
+  --border-strong: #c8d1df;
+
+  --foreground: #0b1324;
+  --foreground-muted: #46536a;
+  /* Ajustado de #5f6b84 para manter 4.5:1 também sobre surface-hover. */
+  --foreground-subtle: #5a6680;
+
+  --primary: #0058f0;
+  --primary-hover: #0038d6;
+  --primary-foreground: #ffffff;
+  --accent: #0058f0;
+  --accent-soft: #e6eeff;
+  --ring: #0058f0;
+
+  --success: #15803d;
+  --success-soft: #dcfce7;
+  --danger: #b91c1c;
+  --danger-soft: #fee2e2;
+  --danger-foreground: #ffffff;
+  --pending: #46536a;
+  --pending-soft: #eef2f8;
+
+  /* Espelha RULE_TYPES em lib/design/tokens.ts. */
+  --rule-obrigacao: #10b981;
+  --rule-proibicao: #f43f5e;
+  --rule-prazo: #f59e0b;
+  --rule-condicao: #a855f7;
+  --rule-outro: #64748b;
+
+  --search: #0a84ff;
+  --search-current: #0038d6;
+
+  --shadow-sm: 0 1px 2px rgb(11 19 36 / 0.06);
+  --shadow-md: 0 4px 16px rgb(11 19 36 / 0.1);
+}
+
+.dark {
+  --background: #030a1f;
+  --surface: #0a1430;
+  --surface-muted: #0f1b3d;
+  --surface-hover: #15234a;
+  --viewer: #020617;
+  --border: #1c2a52;
+  --border-strong: #2a3b6b;
+
+  --foreground: #f1f5ff;
+  --foreground-muted: #a3b1cc;
+  /* Ajustado de #8593b0 para manter 4.5:1 sobre accent-soft (linha selecionada). */
+  --foreground-subtle: #8c9ab6;
+
+  --primary: #0058f0;
+  /* Ajustado de #0a84ff: texto branco sobre ele ficava em 3.65:1. */
+  --primary-hover: #1466ff;
+  --primary-foreground: #ffffff;
+  --accent: #4da3ff;
+  --accent-soft: #0b2a66;
+  --ring: #4da3ff;
+
+  --success: #4ade80;
+  --success-soft: #0e3a24;
+  --danger: #f87171;
+  --danger-soft: #3f0d14;
+  /* Branco sobre #f87171 fica em 2.8:1; o azul-marinho passa de 7:1. */
+  --danger-foreground: #030a1f;
+  --pending: #a3b1cc;
+  --pending-soft: #15234a;
+
+  --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.5);
+  --shadow-md: 0 8px 24px rgb(0 0 0 / 0.55);
+}
+
+@theme inline {
+  --color-brand-cyan: var(--brand-cyan);
+  --color-brand-500: var(--brand-500);
+  --color-brand-600: var(--brand-600);
+  --color-brand-700: var(--brand-700);
+  --color-brand-navy: var(--brand-navy);
+
+  --color-background: var(--background);
+  --color-surface: var(--surface);
+  --color-surface-muted: var(--surface-muted);
+  --color-surface-hover: var(--surface-hover);
+  --color-viewer: var(--viewer);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-foreground: var(--foreground);
+  --color-foreground-muted: var(--foreground-muted);
+  --color-foreground-subtle: var(--foreground-subtle);
+  --color-primary: var(--primary);
+  --color-primary-hover: var(--primary-hover);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-accent: var(--accent);
+  --color-accent-soft: var(--accent-soft);
+  --color-ring: var(--ring);
+  --color-success: var(--success);
+  --color-success-soft: var(--success-soft);
+  --color-danger: var(--danger);
+  --color-danger-soft: var(--danger-soft);
+  --color-danger-foreground: var(--danger-foreground);
+  --color-pending: var(--pending);
+  --color-pending-soft: var(--pending-soft);
+  --color-rule-obrigacao: var(--rule-obrigacao);
+  --color-rule-proibicao: var(--rule-proibicao);
+  --color-rule-prazo: var(--rule-prazo);
+  --color-rule-condicao: var(--rule-condicao);
+  --color-rule-outro: var(--rule-outro);
+  --color-search: var(--search);
+  --color-search-current: var(--search-current);
+
+  --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, monospace;
+
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+
+  --shadow-sm: var(--shadow-sm);
+  --shadow-md: var(--shadow-md);
+
+  /* Entrada de popovers, dialogs, tooltips e toasts: fade com 4 px de deslocamento. */
+  --animate-enter: enter 150ms ease-out;
+
+  @keyframes enter {
+    from {
+      opacity: 0;
+      transform: translateY(4px);
+    }
+  }
+
+  /* Pulso curto no contorno do grifo ao navegar até ele. Cor em --hl-pulse. */
+  --animate-highlight-pulse: highlight-pulse 300ms ease-out;
+
+  @keyframes highlight-pulse {
+    from {
+      box-shadow: 0 0 0 0 var(--hl-pulse);
+    }
+    to {
+      box-shadow: 0 0 0 8px transparent;
+    }
+  }
+
+  /* Cursor do texto em streaming. */
+  --animate-blink: blink 1s steps(2, start) infinite;
+
+  @keyframes blink {
+    to {
+      visibility: hidden;
+    }
+  }
+}
+
+/* Na camada base, para que utilitários como `outline-none` possam sobrescrever. */
+@layer base {
+  html,
+  .light {
+    color-scheme: light;
+  }
+
+  html.dark,
+  .dark {
+    color-scheme: dark;
+  }
+
+  body {
+    background: var(--background);
+    color: var(--foreground);
+    font-family: var(--font-sans);
+    font-size: 14px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
+
+  ::selection {
+    background: var(--accent-soft);
+  }
+}
+
+/*
+ * Seleção de texto sobre o papel (páginas do documento). O azul translúcido deixa
+ * o texto legível nos dois temas: o `accent-soft` do tema escuro é quase preto e
+ * escondia o texto escuro da página.
+ */
+.paper ::selection {
+  background: rgb(10 132 255 / 0.3);
+}
+
+/*
+ * Camada de texto do pdf.js (texto transparente sobre o canvas, para permitir
+ * selecionar e buscar). Recorte do `pdfjs-dist/web/pdf_viewer.css`.
+ */
+.textLayer {
+  position: absolute;
+  inset: 0;
+  overflow: clip;
+  text-align: initial;
+  line-height: 1;
+  letter-spacing: normal;
+  word-spacing: normal;
+  text-size-adjust: none;
+  forced-color-adjust: none;
+  transform-origin: 0 0;
+  caret-color: CanvasText;
+  z-index: 0;
+  --min-font-size: 1;
+  --text-scale-factor: calc(var(--total-scale-factor) * var(--min-font-size));
+  --min-font-size-inv: calc(1 / var(--min-font-size));
+
+  :is(span, br) {
+    color: transparent;
+    position: absolute;
+    white-space: pre;
+    cursor: text;
+    transform-origin: 0% 0%;
+  }
+
+  > :not(.markedContent),
+  .markedContent span:not(.markedContent) {
+    z-index: 1;
+    --font-height: 0;
+    font-size: calc(var(--text-scale-factor) * var(--font-height));
+    --scale-x: 1;
+    --rotate: 0deg;
+    transform: rotate(var(--rotate)) scaleX(var(--scale-x)) scale(var(--min-font-size-inv));
+  }
+
+  .markedContent {
+    display: contents;
+  }
+
+  br::selection {
+    background: transparent;
+  }
+
+  .endOfContent {
+    display: block;
+    position: absolute;
+    inset: 100% 0 0;
+    z-index: 0;
+    cursor: default;
+    user-select: none;
+  }
+
+  &.selecting .endOfContent {
+    top: 0;
+  }
+}
+
+@utility bg-brand-gradient {
+  background-image: var(--brand-gradient);
+}
+
+@utility text-brand-gradient {
+  background-image: var(--brand-gradient);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

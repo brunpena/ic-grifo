@@ -1,0 +1,12 @@
+{
+  "name": "ic-grifo",
+  "private": true,
+  "scripts": {
+    "dev": "concurrently -k -n api,web -c blue,magenta \"npm:dev:backend\" \"npm:dev:frontend\"",
+    "dev:backend": "node scripts/dev-backend.mjs",
+    "dev:frontend": "npm --prefix frontend run dev"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  }
+}
