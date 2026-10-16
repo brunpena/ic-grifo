@@ -12,8 +12,16 @@ if (!existsSync(bin)) {
 }
 
 function run(cmd, args) {
-  const { status } = spawnSync(cmd, args, { cwd, stdio: "inherit" });
-  if (status !== 0) process.exit(status ?? 1);
+  const { status, error } = spawnSync(cmd, args, { cwd, stdio: "inherit" });
+  if (error) {
+    console.error(`Falha ao executar \`${cmd}\`: ${error.message}`);
+    if (error.code === "ENOENT") console.error("Verifique se está instalado e no PATH (reabra o terminal após instalar).");
+    process.exit(1);
+  }
+  if (status !== 0) {
+    console.error(`\`${cmd} ${args.join(" ")}\` saiu com código ${status}.`);
+    process.exit(status ?? 1);
+  }
 }
 
 run("docker", ["compose", "-f", "docker-compose.dev.yml", "up", "-d", "--wait"]);
