@@ -16,7 +16,6 @@ from app.db.session import SessionLocal
 from app.services import llm
 from app.services.pdf_text import PdfReadError, extract_pdf
 from app.services.storage import StorageError, read_pdf
-from app.services.text_match import find_excerpt
 
 logger = logging.getLogger(__name__)
 
@@ -91,7 +90,7 @@ async def process_document(document_id: uuid.UUID) -> None:
 
         with log_step(logger, "extract_rules", document_id=str(document_id)) as info:
             found = await llm.extract_rules(extracted.full_text, on_progress=progress)
-            rules = locate_rules(extracted.full_text, found)
+            rules = dedupe_rules(found)
             info["found"] = len(found)
             info["kept"] = len(rules)
 
@@ -101,12 +100,12 @@ async def process_document(document_id: uuid.UUID) -> None:
                     document_id=document_id,
                     type=r.type,
                     summary=r.summary[:200],
-                    excerpt=extracted.full_text[start:end],
-                    char_start=start,
-                    char_end=end,
+                    excerpt=extracted.full_text[r.start : r.end],
+                    char_start=r.start,
+                    char_end=r.end,
                     origin="ia",
                 )
-                for r, start, end in rules
+                for r in rules
             )
             await db.execute(
                 update(Document)
@@ -128,23 +127,19 @@ async def process_document(document_id: uuid.UUID) -> None:
         )
 
 
-def locate_rules(full_text: str, found: list) -> list[tuple]:
-    """Acha cada trecho no texto e descarta repetições (os blocos se sobrepõem)."""
-    located: list[tuple] = []
-    for chunk, rule in found:
-        span = find_excerpt(full_text, rule.excerpt, chunk.start)
-        if span is None:
-            logger.info("excerpt_not_found", extra={"excerpt": rule.excerpt[:80]})
-            continue
-        start, end = span
+def dedupe_rules(found: list[llm.ExtractedRule]) -> list[llm.ExtractedRule]:
+    """Descarta repetições (os blocos se sobrepõem) e ordena pela posição no texto."""
+    kept: list[llm.ExtractedRule] = []
+    for rule in sorted(found, key=lambda r: (r.start, r.end)):
         duplicate = any(
-            other.type == rule.type and min(end, e) - max(start, s) > 0.5 * min(end - start, e - s)
-            for other, s, e in located
+            other.type == rule.type
+            and min(rule.end, other.end) - max(rule.start, other.start)
+            > 0.5 * min(rule.end - rule.start, other.end - other.start)
+            for other in kept
         )
         if not duplicate:
-            located.append((rule, start, end))
-    located.sort(key=lambda item: item[1])
-    return located
+            kept.append(rule)
+    return kept
 
 
 async def recover_interrupted() -> None:

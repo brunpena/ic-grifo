@@ -48,10 +48,15 @@ class Settings(BaseSettings):
     gemini_api_key: SecretStr = SecretStr("")
     # Alias que acompanha o Flash mais recente, disponível no plano gratuito.
     gemini_model: str = "gemini-flash-latest"
-    # O plano gratuito aceita poucas requisições por minuto.
-    llm_max_concurrency: int = 2
+    # Raciocínio na extração de regras ("low", "medium", "high"; vazio = padrão do modelo).
+    # O padrão do Flash é pensar bastante, o que deixa cada bloco várias vezes mais lento.
+    gemini_thinking_level: str = "low"
+    # O plano gratuito tem cota de requisições por minuto e por dia (por modelo).
+    llm_max_concurrency: int = 4
+    # Blocos maiores gastam menos requisições, mas a IA passa a deixar regras de fora
+    # (ver docs/v1.1.md). Os blocos terminam sempre em fim de frase.
     llm_chunk_chars: int = 12000
-    llm_chunk_overlap: int = 1500
+    llm_chunk_overlap: int = 400
 
     # Embeddings
     embedding_provider: Literal["local", "api"] = "local"

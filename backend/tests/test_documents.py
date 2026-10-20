@@ -8,8 +8,8 @@ import pytest
 
 from app.main import app
 from app.services import llm
-from app.services.ingest import locate_rules
-from app.services.llm import ExtractedRule, TextChunk, split_chunks
+from app.services.ingest import dedupe_rules
+from app.services.llm import ExtractedRule, numbered, split_chunks, split_sentences
 from app.services.pdf_text import PdfReadError, extract_pdf
 from app.services.text_match import find_excerpt
 
@@ -60,26 +60,36 @@ def test_find_excerpt_tolerates_whitespace_and_dashes():
     assert find_excerpt(text, "algo que não existe") is None
 
 
-def test_split_chunks_cover_text_with_overlap():
-    text = "\n\n".join(f"Parágrafo {i} " + "x" * 80 for i in range(50))
-    chunks = split_chunks(text, size=1000, overlap=200)
-    assert chunks[0].start == 0
-    assert chunks[-1].start + len(chunks[-1].text) == len(text)
-    for a, b in zip(chunks, chunks[1:], strict=False):
-        assert b.start < a.start + len(a.text)  # há sobreposição
-        assert text[a.start : a.start + len(a.text)] == a.text
-
-
-def test_locate_rules_drops_duplicates_from_overlapping_chunks():
-    text = "Antes. A contratada deverá pagar em 30 dias. Depois."
-    rule = ExtractedRule("obrigacao", "A contratada deverá pagar em 30 dias.", "Pagar em 30 dias")
-    located = locate_rules(
-        text,
-        [(TextChunk(0, text), rule), (TextChunk(5, text[5:]), rule)]
-        + [(TextChunk(0, text), ExtractedRule("prazo", "trecho inexistente", "x"))],
+def test_split_sentences_keeps_offsets():
+    text = "CLÁUSULA 1\n\nA contratada deverá\npagar em 30 dias; caso atrase, haverá multa.  Fim"
+    sentences = split_sentences(text)
+    assert [text[x.start : x.end] for x in sentences] == [
+        "CLÁUSULA 1",
+        "A contratada deverá\npagar em 30 dias;",
+        "caso atrase, haverá multa.",
+        "Fim",
+    ]
+    assert numbered(text, sentences, range(1, 3)) == (
+        "[2] A contratada deverá pagar em 30 dias;\n[3] caso atrase, haverá multa."
     )
-    assert len(located) == 1
-    assert text[located[0][1] : located[0][2]] == rule.excerpt
+
+
+def test_split_chunks_cover_sentences_with_overlap():
+    text = " ".join(f"Frase número {i} com algum texto." for i in range(200))
+    sentences = split_sentences(text)
+    chunks = split_chunks(sentences, size=1000, overlap=200)
+    assert chunks[0].start == 0 and chunks[-1].stop == len(sentences)
+    for a, b in zip(chunks, chunks[1:], strict=False):
+        assert a.start < b.start < a.stop  # há sobreposição e o bloco seguinte avança
+        assert sum(sentences[i].end - sentences[i].start for i in a) <= 1000
+
+
+def test_dedupe_rules_drops_duplicates_from_overlapping_chunks():
+    rule = ExtractedRule("obrigacao", 7, 44, "Pagar em 30 dias")
+    kept = dedupe_rules(
+        [ExtractedRule("prazo", 50, 60, "x"), rule, ExtractedRule("obrigacao", 7, 44, "Pagar")]
+    )
+    assert kept == [rule, ExtractedRule("prazo", 50, 60, "x")]
 
 
 # ----- fluxo completo, com a IA simulada -----
@@ -90,18 +100,14 @@ def fake_llm(monkeypatch):
     async def extract(text, on_progress=None):
         if on_progress:
             await on_progress(1, 1)
-        chunk = TextChunk(0, text)
+
+        def rule(type_: str, excerpt: str, summary: str) -> ExtractedRule:
+            start = text.index(excerpt)
+            return ExtractedRule(type_, start, start + len(excerpt), summary)
+
         return [
-            (
-                chunk,
-                ExtractedRule("prazo", "em até 10 dias úteis", "Relatório em até 10 dias úteis"),
-            ),
-            (
-                chunk,
-                ExtractedRule(
-                    "proibicao", "É vedada a subcontratação do objeto", "Sem subcontratar"
-                ),
-            ),
+            rule("prazo", "em até 10 dias úteis", "Relatório em até 10 dias úteis"),
+            rule("proibicao", "É vedada a subcontratação do objeto", "Sem subcontratar"),
         ]
 
     async def chat(context, history):

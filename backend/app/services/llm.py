@@ -42,6 +42,11 @@ def friendly_error(status: int, body: str) -> str:
     lower = body.lower()
     if "api key not valid" in lower or "api_key_invalid" in lower:
         return "A chave do Gemini é inválida. Confira GEMINI_API_KEY no .env do back-end."
+    if status == 429 and _daily_quota(body):
+        return (
+            "A cota diária do Gemini para este modelo acabou. Tente amanhã, troque "
+            "GEMINI_MODEL no .env (cada modelo tem cota própria) ou ative o faturamento."
+        )
     if status == 429:
         return (
             "Limite de uso gratuito do Gemini atingido. Espere um minuto e tente de novo "
@@ -54,6 +59,11 @@ def friendly_error(status: int, body: str) -> str:
     if status >= 500:
         return "O Gemini está sobrecarregado agora. Tente de novo em alguns minutos."
     return "A IA não conseguiu responder agora. Tente de novo."
+
+
+def _daily_quota(body: str) -> bool:
+    # Cota por dia (ex.: GenerateRequestsPerDayPerProjectPerModel-FreeTier): repetir não adianta.
+    return "PerDay" in body
 
 
 def _retry_delay(attempt: int, body: str) -> float:
@@ -97,7 +107,7 @@ async def _generate(payload: dict) -> dict:
             if response.status_code == 200:
                 return response.json()
             body = response.text
-            if response.status_code in RETRY_STATUS and not last:
+            if response.status_code in RETRY_STATUS and not last and not _daily_quota(body):
                 await asyncio.sleep(_retry_delay(attempt, body))
                 continue
             logger.warning("gemini_error", extra={"status": response.status_code})
@@ -112,6 +122,9 @@ async def _generate(payload: dict) -> dict:
 EXTRACTION_SYSTEM = """Você analisa trechos de documentos normativos em português \
 (contratos, editais, regulamentos) e identifica as regras que eles contêm.
 
+O trecho vem dividido em frases numeradas, uma por linha: "[12] texto da frase". \
+Algumas frases são pedaços de uma frase maior, cortada em ";" ou ":".
+
 Uma regra é uma frase ou oração com força normativa:
 - obrigacao: algo que alguém deve fazer ("deverá", "é obrigado a", "compete à contratada").
 - proibicao: algo que não pode ser feito ("é vedado", "não poderá", "fica proibido").
@@ -120,17 +133,16 @@ Uma regra é uma frase ou oração com força normativa:
 - outro: outra disposição normativa que não se encaixa acima (competência, definição vinculante).
 
 Para cada regra:
-- excerpt: copie o trecho EXATAMENTE como aparece no texto, caractere por caractere, \
-sem resumir, corrigir ou juntar partes distantes. Use o menor trecho contínuo que \
-expressa a regra inteira (normalmente uma oração ou frase).
+- first e last: números da primeira e da última frase que formam a regra (iguais \
+quando ela cabe em uma frase só). Use o menor intervalo contínuo que expressa a regra \
+inteira; nunca junte frases distantes.
 - summary: resumo curto em português, até 80 caracteres, começando por verbo ou \
 substantivo (ex.: "Entregar relatório mensal em até 10 dias úteis").
 - type: um dos tipos acima. Se a frase traz um prazo para cumprir uma obrigação, \
 prefira "prazo" quando o tempo é o ponto central e "obrigacao" quando é a ação.
 
 Ignore títulos, sumários, cabeçalhos, rodapés, numeração e texto puramente \
-descritivo. Não invente regras: se o trecho não tiver nenhuma, devolva uma lista vazia. \
-O trecho pode começar ou terminar no meio de uma frase; ignore frases cortadas nas bordas."""
+descritivo. Não invente regras: se o trecho não tiver nenhuma, devolva uma lista vazia."""
 
 # Formato de schema da API do Gemini (subconjunto do OpenAPI).
 EXTRACTION_SCHEMA = {
@@ -142,104 +154,170 @@ EXTRACTION_SCHEMA = {
                 "type": "OBJECT",
                 "properties": {
                     "type": {"type": "STRING", "enum": list(RULE_TYPES)},
-                    "excerpt": {"type": "STRING"},
+                    "first": {"type": "INTEGER"},
+                    "last": {"type": "INTEGER"},
                     "summary": {"type": "STRING"},
                 },
-                "required": ["type", "excerpt", "summary"],
-                "propertyOrdering": ["type", "excerpt", "summary"],
+                "required": ["type", "first", "last", "summary"],
+                "propertyOrdering": ["type", "first", "last", "summary"],
             },
         }
     },
     "required": ["rules"],
 }
 
+# Uma regra com mais frases do que isso é quase sempre um intervalo errado.
+MAX_RULE_SENTENCES = 8
+
+# Fim de frase (ou de oração em ";" e ":") seguido de espaço, ou fim de parágrafo.
+_SENTENCE_END = re.compile(r"[.;:!?](?=\s)|\n[ \t]*\n")
+
 
 @dataclass
 class ExtractedRule:
+    """Regra com a posição (offsets em code points) no texto completo do documento."""
+
     type: str
-    excerpt: str
+    start: int
+    end: int
     summary: str
 
 
 @dataclass
-class TextChunk:
+class Sentence:
     start: int
-    text: str
+    end: int
 
 
-def split_chunks(text: str, size: int, overlap: int) -> list[TextChunk]:
-    """Divide o texto em blocos com sobreposição, cortando de preferência entre parágrafos."""
-    chunks: list[TextChunk] = []
+def split_sentences(text: str) -> list[Sentence]:
+    """Frases do texto, com offsets. Os números delas são o que a IA devolve."""
+    sentences: list[Sentence] = []
     start = 0
-    while start < len(text):
-        end = min(len(text), start + size)
-        if end < len(text):
-            # Volta até a última quebra de parágrafo (ou de linha) na metade final do bloco.
-            for sep in ("\n\n", "\n", ". "):
-                cut = text.rfind(sep, start + size // 2, end)
-                if cut > 0:
-                    end = cut + len(sep)
-                    break
-        chunks.append(TextChunk(start, text[start:end]))
-        if end >= len(text):
+    for match in [*_SENTENCE_END.finditer(text), None]:
+        end = match.end() if match else len(text)
+        piece = text[start:end]
+        stripped = piece.strip()
+        if stripped:
+            first = start + len(piece) - len(piece.lstrip())
+            sentences.append(Sentence(first, first + len(stripped)))
+        start = end
+    return sentences
+
+
+def split_chunks(sentences: list[Sentence], size: int, overlap: int) -> list[range]:
+    """Agrupa as frases em blocos de até `size` caracteres, repetindo ~`overlap` no início
+    do bloco seguinte (uma regra de várias frases pode cair na divisa)."""
+    chunks: list[range] = []
+    first = 0
+    while first < len(sentences):
+        last, length = first, 0
+        while last < len(sentences):
+            sentence = sentences[last]
+            length += sentence.end - sentence.start
+            if length > size and last > first:
+                break
+            last += 1
+        chunks.append(range(first, last))
+        if last >= len(sentences):
             break
-        start = max(end - overlap, start + 1)
+        back, covered = last, 0
+        while back > first + 1 and covered < overlap:
+            back -= 1
+            covered += sentences[back].end - sentences[back].start
+        first = back
     return chunks
 
 
-async def extract_rules_from_chunk(chunk: TextChunk) -> list[ExtractedRule]:
+def numbered(text: str, sentences: list[Sentence], ids: range) -> str:
+    """Frases do bloco, uma por linha e numeradas a partir de 1 no documento inteiro."""
+    return "\n".join(
+        f"[{i + 1}] {' '.join(text[sentences[i].start : sentences[i].end].split())}" for i in ids
+    )
+
+
+async def extract_rules_from_chunk(
+    text: str, sentences: list[Sentence], ids: range
+) -> list[ExtractedRule]:
+    settings = get_settings()
+    config: dict = {
+        "temperature": 0,
+        "maxOutputTokens": 16000,
+        "responseMimeType": "application/json",
+        "responseSchema": EXTRACTION_SCHEMA,
+    }
+    if settings.gemini_thinking_level:
+        config["thinkingConfig"] = {"thinkingLevel": settings.gemini_thinking_level}
     data = await _generate(
         {
             "systemInstruction": {"parts": [{"text": EXTRACTION_SYSTEM}]},
             "contents": [
-                {"role": "user", "parts": [{"text": f"<trecho>\n{chunk.text}\n</trecho>"}]}
+                {
+                    "role": "user",
+                    "parts": [{"text": f"<trecho>\n{numbered(text, sentences, ids)}\n</trecho>"}],
+                }
             ],
-            "generationConfig": {
-                "temperature": 0,
-                "maxOutputTokens": 16000,
-                "responseMimeType": "application/json",
-                "responseSchema": EXTRACTION_SCHEMA,
-            },
+            "generationConfig": config,
         }
     )
-    text, finish = _text(data)
+    answer, finish = _text(data)
     if finish != "STOP":
-        logger.warning("llm_finish", extra={"chunk_start": chunk.start, "reason": finish})
+        logger.warning("llm_finish", extra={"chunk_first": ids.start, "reason": finish})
     try:
-        rules = json.loads(text)["rules"]
+        rules = json.loads(answer)["rules"]
     except (json.JSONDecodeError, KeyError, TypeError):
-        logger.warning("llm_invalid_json", extra={"chunk_start": chunk.start})
+        logger.warning("llm_invalid_json", extra={"chunk_first": ids.start})
         return []
-    return [
-        ExtractedRule(r["type"], r["excerpt"], r["summary"].strip())
-        for r in rules
-        if r.get("type") in RULE_TYPES and r.get("excerpt") and r.get("summary")
-    ]
+    result: list[ExtractedRule] = []
+    for r in rules:
+        if r.get("type") not in RULE_TYPES or not str(r.get("summary") or "").strip():
+            continue
+        try:
+            first, last = sorted((int(r["first"]) - 1, int(r["last"]) - 1))
+        except (KeyError, TypeError, ValueError):
+            continue
+        if first not in ids or last not in ids or last - first >= MAX_RULE_SENTENCES:
+            logger.info("rule_out_of_range", extra={"first": first + 1, "last": last + 1})
+            continue
+        result.append(
+            ExtractedRule(
+                r["type"], sentences[first].start, sentences[last].end, r["summary"].strip()
+            )
+        )
+    return result
 
 
 async def extract_rules(
     text: str,
     on_progress: Callable[[int, int], Awaitable[None]] | None = None,
-) -> list[tuple[TextChunk, ExtractedRule]]:
+) -> list[ExtractedRule]:
     """Extrai regras de todos os blocos, em paralelo (até LLM_MAX_CONCURRENCY ao mesmo tempo)."""
     ensure_configured()
     settings = get_settings()
-    chunks = split_chunks(text, settings.llm_chunk_chars, settings.llm_chunk_overlap)
+    sentences = split_sentences(text)
+    chunks = split_chunks(sentences, settings.llm_chunk_chars, settings.llm_chunk_overlap)
     semaphore = asyncio.Semaphore(settings.llm_max_concurrency)
     done = 0
     lock = asyncio.Lock()
 
-    async def run(chunk: TextChunk) -> list[tuple[TextChunk, ExtractedRule]]:
+    async def run(ids: range) -> list[ExtractedRule]:
         nonlocal done
         async with semaphore:
-            rules = await extract_rules_from_chunk(chunk)
+            rules = await extract_rules_from_chunk(text, sentences, ids)
         async with lock:
             done += 1
             if on_progress:
                 await on_progress(done, len(chunks))
-        return [(chunk, rule) for rule in rules]
+        return rules
 
-    results = await asyncio.gather(*(run(c) for c in chunks))
+    tasks = [asyncio.ensure_future(run(c)) for c in chunks]
+    try:
+        results = await asyncio.gather(*tasks)
+    except BaseException:
+        # O gather repassa o primeiro erro mas deixa os outros blocos rodando, e cada
+        # um continuaria gastando cota da API à toa.
+        for task in tasks:
+            task.cancel()
+        raise
     return [item for batch in results for item in batch]
 
 
