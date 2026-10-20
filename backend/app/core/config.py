@@ -52,7 +52,10 @@ class Settings(BaseSettings):
     # O padrão do Flash é pensar bastante, o que deixa cada bloco várias vezes mais lento.
     gemini_thinking_level: str = "low"
     # O plano gratuito tem cota de requisições por minuto e por dia (por modelo).
-    llm_max_concurrency: int = 4
+    llm_max_concurrency: int = 6
+    # Segundos sem resposta até mandar a mesma requisição de novo (0 = desligado).
+    # Cada reforço gasta uma requisição a mais da cota.
+    llm_hedge_seconds: float = 25
     # Blocos maiores gastam menos requisições, mas a IA passa a deixar regras de fora
     # (ver docs/v1.1.md). Os blocos terminam sempre em fim de frase.
     llm_chunk_chars: int = 12000

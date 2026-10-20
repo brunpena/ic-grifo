@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import random
 import re
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
@@ -17,7 +18,8 @@ logger = logging.getLogger(__name__)
 API_URL = "https://generativelanguage.googleapis.com/v1beta/models"
 # Respostas 429 (cota do plano gratuito) e 5xx (modelo sobrecarregado) são refeitas.
 RETRY_STATUS = {429, 500, 502, 503, 504}
-MAX_ATTEMPTS = 4
+# O 503 de sobrecarga volta em ~1 s; picos curtos passam em menos de um minuto.
+MAX_ATTEMPTS = 6
 CONNECTION_ERROR = "Não foi possível falar com a API do Gemini. Verifique a conexão do servidor."
 BLOCKED = {"SAFETY", "PROHIBITED_CONTENT", "BLOCKLIST", "SPII", "OTHER"}
 
@@ -71,7 +73,8 @@ def _retry_delay(attempt: int, body: str) -> float:
     match = re.search(r'"retryDelay":\s*"(\d+(?:\.\d+)?)s"', body)
     if match:
         return min(float(match.group(1)) + 1, 60)
-    return min(2 ** (attempt + 1), 30)
+    # Com jitter, para os blocos em paralelo não voltarem todos no mesmo instante.
+    return min(2 ** (attempt + 1), 20) * random.uniform(0.5, 1.0)
 
 
 def _url(method: str) -> str:
@@ -89,6 +92,40 @@ def _text(data: dict) -> tuple[str, str | None]:
     return text, candidate.get("finishReason")
 
 
+async def _post_hedged(client: httpx.AsyncClient, key: str, payload: dict) -> httpx.Response:
+    """Uma tentativa de generateContent. Sob carga a mesma requisição leva de 15 s a mais
+    de 2 min; passados LLM_HEDGE_SECONDS sem resposta, manda outra igual e fica com a
+    primeira que der certo."""
+    hedge = get_settings().llm_hedge_seconds
+
+    def send() -> asyncio.Future[httpx.Response]:
+        return asyncio.ensure_future(
+            client.post(_url("generateContent"), headers={"x-goog-api-key": key}, json=payload)
+        )
+
+    pending = {send()}
+    hedged = hedge <= 0
+    try:
+        while True:
+            done, pending = await asyncio.wait(
+                pending, timeout=None if hedged else hedge, return_when=asyncio.FIRST_COMPLETED
+            )
+            if not done:
+                logger.info("gemini_hedge", extra={"after_s": hedge})
+                pending.add(send())
+                hedged = True
+                continue
+            for task in done:
+                if task.exception() is None and task.result().status_code == 200:
+                    return task.result()
+            if not pending:
+                return done.pop().result()
+            hedged = True
+    finally:
+        for task in pending:
+            task.cancel()
+
+
 async def _generate(payload: dict) -> dict:
     """generateContent com novas tentativas em limite de uso e sobrecarga."""
     key = ensure_configured()
@@ -96,9 +133,7 @@ async def _generate(payload: dict) -> dict:
         for attempt in range(MAX_ATTEMPTS):
             last = attempt == MAX_ATTEMPTS - 1
             try:
-                response = await client.post(
-                    _url("generateContent"), headers={"x-goog-api-key": key}, json=payload
-                )
+                response = await _post_hedged(client, key, payload)
             except httpx.HTTPError as exc:
                 if last:
                     raise LlmApiError(CONNECTION_ERROR) from exc

@@ -104,6 +104,24 @@ async def test_missing_key_is_reported(monkeypatch):
         await llm.extract_rules("texto")
 
 
+async def test_slow_request_is_hedged(monkeypatch):
+    monkeypatch.setattr(get_settings(), "llm_hedge_seconds", 0.01)
+    calls = 0
+    slow = asyncio.Event()
+
+    class Client:
+        async def post(self, *_args, **_kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                await slow.wait()
+            return httpx.Response(200, json=_answer("ok"))
+
+    response = await llm._post_hedged(Client(), "chave-teste", {})
+    assert response.status_code == 200
+    assert calls == 2
+
+
 async def test_failed_chunk_cancels_the_others(monkeypatch):
     monkeypatch.setattr(get_settings(), "gemini_api_key", SecretStr("chave-teste"))
     monkeypatch.setattr(get_settings(), "llm_chunk_chars", 20)
