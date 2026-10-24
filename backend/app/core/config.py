@@ -42,6 +42,10 @@ class Settings(BaseSettings):
 
     # Limites
     max_upload_mb: int = 50
+    # Bases de dados (CSV): tamanho do arquivo, linhas e colunas por base.
+    max_dataset_mb: int = 20
+    max_dataset_rows: int = 200_000
+    max_dataset_columns: int = 200
     llm_rate_limit_per_minute: int = 20
 
     # LLM (Gemini; chave gratuita em aistudio.google.com/apikey)
@@ -93,6 +97,10 @@ class Settings(BaseSettings):
     @property
     def max_upload_bytes(self) -> int:
         return self.max_upload_mb * 1024 * 1024
+
+    @property
+    def max_dataset_bytes(self) -> int:
+        return self.max_dataset_mb * 1024 * 1024
 
 
 @lru_cache

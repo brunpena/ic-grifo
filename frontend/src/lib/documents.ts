@@ -1,6 +1,7 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { analysisKeys } from "@/lib/analyses";
 import { api, ApiError, apiUrl, type Schemas, unwrap } from "@/lib/api";
 
 export type DocumentInfo = Schemas["DocumentOut"];
@@ -35,13 +36,15 @@ export function useDocument(id: string | null) {
 export function useUploadDocument() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (file: File) =>
+    /** Sem `analysisId`, o back cria uma análise só para o documento. */
+    mutationFn: ({ file, analysisId }: { file: File; analysisId?: string | null }) =>
       unwrap(
         api.POST("/api/v1/documents", {
-          body: { file: file as unknown as string },
+          body: { file: file as unknown as string, analysis_id: analysisId },
           bodySerializer: () => {
             const form = new FormData();
             form.append("file", file);
+            if (analysisId) form.append("analysis_id", analysisId);
             return form;
           },
         }),
@@ -49,6 +52,8 @@ export function useUploadDocument() {
     onSuccess: (doc) => {
       queryClient.setQueryData(keys.doc(doc.id), doc);
       void queryClient.invalidateQueries({ queryKey: keys.list, exact: true });
+      void queryClient.invalidateQueries({ queryKey: analysisKeys.detail(doc.analysis_id) });
+      void queryClient.invalidateQueries({ queryKey: analysisKeys.list, exact: true });
     },
   });
 }

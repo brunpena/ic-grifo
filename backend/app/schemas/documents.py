@@ -7,13 +7,17 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 RuleType = Literal["obrigacao", "proibicao", "prazo", "condicao", "outro"]
 RuleStatus = Literal["pendente", "validada", "rejeitada"]
 DocumentStatus = Literal["processing", "extracting_rules", "ready", "error"]
+SourceType = Literal["pdf", "text", "html", "url"]
 
 
 class DocumentOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: uuid.UUID
+    analysis_id: uuid.UUID
     title: str
+    source_type: SourceType = Field(description="Como o documento foi enviado.")
+    source_url: str | None = Field(description="Endereço de origem, se veio de um link.")
     status: DocumentStatus = Field(
         description="processing (lendo o PDF), extracting_rules (IA analisando), ready ou error."
     )

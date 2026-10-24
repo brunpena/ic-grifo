@@ -8,6 +8,7 @@ import { Group, Panel, Separator } from "react-resizable-panels";
 import { BrandLogo } from "@/components/brand-logo";
 import { AssistantMessage, type CitedRule, UserMessage } from "@/components/chat/chat-message";
 import { ProcessingSteps } from "@/components/chat/processing-steps";
+import { DatasetUploader } from "@/components/datasets/dataset-uploader";
 import { CreateRulePopover } from "@/components/document/create-rule-popover";
 import { HighlightLayer, type PageRect } from "@/components/document/highlight-layer";
 import { PDF_TO_CSS, PdfDocumentPages, usePdfDocument } from "@/components/document/pdf-document";
@@ -20,6 +21,7 @@ import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { IconButton } from "@/components/ui/icon-button";
 import { useToast } from "@/components/ui/toast";
+import { useAnalysis, useCreateAnalysis } from "@/lib/analyses";
 import { errorMessage } from "@/lib/api";
 import { firstName, useCurrentUser } from "@/lib/auth";
 import type { RuleStatus, RuleType } from "@/lib/design/tokens";
@@ -70,6 +72,10 @@ export function AssistantView() {
   const [viewerWidth, setViewerWidth] = useState(0);
 
   const [file, setFile] = useState<File | null>(null);
+  // Análise em montagem: as bases vão antes do documento.
+  const [analysisId, setAnalysisId] = useState<string | null>(null);
+  const { data: analysis } = useAnalysis(analysisId);
+  const createAnalysis = useCreateAnalysis();
   const [documentId, setDocumentId] = useState<string | null>(null);
   const [opening, setOpening] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
@@ -120,10 +126,23 @@ export function AssistantView() {
     setFile(picked);
     setDocumentId(null);
     resetView();
-    upload.mutate(picked, {
-      onSuccess: (created) => setDocumentId(created.id),
-      onError: (error) => toast({ title: "Não foi possível enviar", description: errorMessage(error), variant: "error" }),
-    });
+    upload.mutate(
+      { file: picked, analysisId },
+      {
+        onSuccess: (created) => {
+          setDocumentId(created.id);
+          setAnalysisId(created.analysis_id);
+        },
+        onError: (error) => toast({ title: "Não foi possível enviar", description: errorMessage(error), variant: "error" }),
+      },
+    );
+  };
+
+  const ensureAnalysis = async () => {
+    if (analysisId) return analysisId;
+    const created = await createAnalysis.mutateAsync(undefined);
+    setAnalysisId(created.id);
+    return created.id;
   };
 
   const reopen = async (existing: DocumentInfo) => {
@@ -132,6 +151,7 @@ export function AssistantView() {
       const pdfFile = await fetchDocumentFile(existing);
       setFile(pdfFile);
       setDocumentId(existing.id);
+      setAnalysisId(existing.analysis_id);
       resetView();
     } catch (error) {
       toast({ title: "Não foi possível abrir", description: errorMessage(error), variant: "error" });
@@ -143,6 +163,7 @@ export function AssistantView() {
   const closeDocument = () => {
     setFile(null);
     setDocumentId(null);
+    setAnalysisId(null);
     resetView();
   };
 
@@ -323,52 +344,74 @@ export function AssistantView() {
         </div>
 
         {notes.length === 0 ? (
-          <div className="relative flex flex-1 flex-col items-center justify-center gap-4 px-4 text-center">
-            <h1 className="text-[28px] leading-tight font-medium tracking-tight sm:text-[38px]">
-              Pronto para validar, {user ? firstName(user.name) : ""}?
-            </h1>
-            <p className="max-w-md text-sm text-foreground-muted">
-              Envie um contrato, edital ou regulamento. A IA encontra as regras e grifa cada uma no documento.
-            </p>
-            <div className="mt-2 flex flex-wrap justify-center gap-2">
-              <Button
-                size="sm"
-                variant="primary"
-                icon={<FileUp size={16} strokeWidth={1.75} aria-hidden />}
-                onClick={attach}
-                className="rounded-full"
-              >
-                Enviar um PDF
-              </Button>
-              <Link
-                href="/regras"
-                className="inline-flex h-8 items-center gap-2 rounded-full border border-border-strong bg-surface px-3 text-[13px] font-medium transition-colors duration-150 ease-out hover:bg-surface-hover"
-              >
-                <Library size={16} strokeWidth={1.75} aria-hidden />
-                Ver base de regras
-              </Link>
+          <div className="relative flex min-h-0 flex-1 flex-col items-center overflow-auto px-4 py-6 text-center">
+            <div className="my-auto flex w-full max-w-xl flex-col items-center gap-4">
+              <h1 className="text-[28px] leading-tight font-medium tracking-tight sm:text-[38px]">
+                Pronto para validar, {user ? firstName(user.name) : ""}?
+              </h1>
+              <p className="max-w-md text-sm text-foreground-muted">
+                Envie as bases de dados que serão verificadas e depois o documento. A IA encontra as regras, grifa cada
+                uma e busca nas bases os registros ligados a ela.
+              </p>
+
+              <section aria-labelledby="step-datasets" className="mt-2 flex w-full flex-col gap-2 text-left">
+                <h2 id="step-datasets" className="text-[13px] font-medium">
+                  <span className="text-foreground-subtle">1.</span> Bases de dados (CSV)
+                </h2>
+                <DatasetUploader datasets={analysis?.datasets ?? []} ensureAnalysis={ensureAnalysis} />
+              </section>
+
+              <section aria-labelledby="step-document" className="flex w-full flex-col gap-2 text-left">
+                <h2 id="step-document" className="text-[13px] font-medium">
+                  <span className="text-foreground-subtle">2.</span> Documento
+                </h2>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button
+                    size="sm"
+                    variant="primary"
+                    icon={<FileUp size={16} strokeWidth={1.75} aria-hidden />}
+                    onClick={attach}
+                    className="rounded-full"
+                  >
+                    Enviar um PDF
+                  </Button>
+                  <Link
+                    href="/regras"
+                    className="inline-flex h-8 items-center gap-2 rounded-full border border-border-strong bg-surface px-3 text-[13px] font-medium transition-colors duration-150 ease-out hover:bg-surface-hover"
+                  >
+                    <Library size={16} strokeWidth={1.75} aria-hidden />
+                    Ver base de regras
+                  </Link>
+                </div>
+                {!analysis?.datasets.length && (
+                  <p className="text-xs text-foreground-subtle">
+                    Sem bases, a IA só encontra as regras do documento, sem buscar registros.
+                  </p>
+                )}
+              </section>
+
+              {recentDocs.length > 0 && (
+                <div className="mt-4 flex w-full flex-col gap-2">
+                  <span className="text-xs text-foreground-subtle">Documentos recentes</span>
+                  <ul className="flex flex-wrap justify-center gap-2">
+                    {recentDocs.map((d) => (
+                      <li key={d.id}>
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          loading={opening === d.id}
+                          icon={<FileText size={16} strokeWidth={1.75} aria-hidden />}
+                          onClick={() => reopen(d)}
+                          className="max-w-64 rounded-full"
+                        >
+                          <span className="truncate">{d.title}</span>
+                        </Button>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
             </div>
-            {recentDocs.length > 0 && (
-              <div className="mt-6 flex w-full max-w-xl flex-col gap-2">
-                <span className="text-xs text-foreground-subtle">Documentos recentes</span>
-                <ul className="flex flex-wrap justify-center gap-2">
-                  {recentDocs.map((d) => (
-                    <li key={d.id}>
-                      <Button
-                        size="sm"
-                        variant="secondary"
-                        loading={opening === d.id}
-                        icon={<FileText size={16} strokeWidth={1.75} aria-hidden />}
-                        onClick={() => reopen(d)}
-                        className="max-w-64 rounded-full"
-                      >
-                        <span className="truncate">{d.title}</span>
-                      </Button>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
           </div>
         ) : (
           <ChatThread messages={notes} className="relative mx-auto w-full max-w-3xl flex-1 px-4 py-6" />

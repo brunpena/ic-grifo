@@ -17,20 +17,24 @@ from sqlalchemy import (
     Text,
     func,
 )
-from sqlalchemy.dialects.postgresql import ARRAY, UUID
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 from app.core.config import get_settings
 
 EMBEDDING_DIM = get_settings().embedding_dim
 
-SOURCE_TYPES = ("pdf", "text")
+SOURCE_TYPES = ("pdf", "text", "html", "url")
 MODES = ("assistant", "knowledge_base")
 DOCUMENT_STATUSES = ("processing", "extracting_rules", "ready", "error")
 RULE_TYPES = ("obrigacao", "proibicao", "prazo", "condicao", "outro")
 RULE_STATUSES = ("pendente", "validada", "rejeitada")
 RULE_ORIGINS = ("ia", "manual")
 MESSAGE_ROLES = ("user", "assistant")
+QUERY_ORIGINS = ("ia", "manual")
+QUERY_STATES = ("pendente", "ok", "erro")
+# Resultado da verificação da regra contra os registros (página de violações, futura).
+VERDICTS = ("segue", "viola")
 
 
 def _in(column: str, values: tuple[str, ...]) -> str:
@@ -39,6 +43,58 @@ def _in(column: str, values: tuple[str, ...]) -> str:
 
 class Base(DeclarativeBase):
     pass
+
+
+class Analysis(Base):
+    """Uma análise: as bases de dados (CSV) verificadas e os documentos de onde saem as regras."""
+
+    __tablename__ = "analyses"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    # Nulo apenas em análises criadas para documentos anteriores ao login.
+    user_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    title: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    datasets: Mapped[list["Dataset"]] = relationship(
+        back_populates="analysis",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        order_by="Dataset.created_at",
+    )
+    documents: Mapped[list["Document"]] = relationship(
+        back_populates="analysis",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        order_by="Document.created_at",
+    )
+
+
+class Dataset(Base):
+    """Base de dados enviada em CSV. O arquivo fica no storage; aqui só o schema e a amostra."""
+
+    __tablename__ = "datasets"
+    __table_args__ = (Index("ix_datasets_analysis_id", "analysis_id"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    analysis_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("analyses.id", ondelete="CASCADE"))
+    # Nome único na análise; é como a IA se refere à base nas buscas.
+    name: Mapped[str] = mapped_column(Text)
+    filename: Mapped[str] = mapped_column(Text)
+    storage_path: Mapped[str | None] = mapped_column(Text)
+    size_bytes: Mapped[int] = mapped_column(Integer)
+    encoding: Mapped[str] = mapped_column(Text)
+    delimiter: Mapped[str] = mapped_column(Text)
+    row_count: Mapped[int] = mapped_column(Integer)
+    # [{name, type, format, null_count, distinct_count, examples, values}] (ver services.datasets)
+    columns: Mapped[list[dict]] = mapped_column(JSONB)
+    # Primeiras linhas, como texto, na ordem de `columns`.
+    sample_rows: Mapped[list[list[str | None]]] = mapped_column(JSONB)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    analysis: Mapped[Analysis] = relationship(back_populates="datasets")
 
 
 class Document(Base):
@@ -54,8 +110,13 @@ class Document(Base):
     user_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"), index=True
     )
+    analysis_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("analyses.id", ondelete="CASCADE"), index=True
+    )
     title: Mapped[str] = mapped_column(Text)
     source_type: Mapped[str] = mapped_column(Text)
+    # Endereço de origem, quando o documento veio de um link.
+    source_url: Mapped[str | None] = mapped_column(Text)
     mode: Mapped[str] = mapped_column(Text)
     storage_path: Mapped[str | None] = mapped_column(Text)
     full_text: Mapped[str | None] = mapped_column(Text)
@@ -64,6 +125,7 @@ class Document(Base):
     status_message: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
+    analysis: Mapped[Analysis] = relationship(back_populates="documents")
     pages: Mapped[list["Page"]] = relationship(
         back_populates="document", cascade="all, delete-orphan", order_by="Page.page_number"
     )
@@ -134,6 +196,50 @@ class Rule(Base):
     comment: Mapped[str | None] = mapped_column(Text)
     origin: Mapped[str] = mapped_column(Text)
     embedding: Mapped[list[float] | None] = mapped_column(Vector(EMBEDDING_DIM))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class RuleQuery(Base):
+    """A busca estruturada que transforma uma regra em consulta a uma base de dados.
+
+    `query` segue o formato de `app.schemas.queries.StructuredQuery` e é sempre validada
+    contra o schema da base antes de rodar. Os registros encontrados são guardados pelo
+    índice da linha no CSV (0 = primeira linha depois do cabeçalho).
+    """
+
+    __tablename__ = "rule_queries"
+    __table_args__ = (
+        CheckConstraint(_in("origin", QUERY_ORIGINS), name="ck_rule_queries_origin"),
+        CheckConstraint(_in("state", QUERY_STATES), name="ck_rule_queries_state"),
+        CheckConstraint(
+            f"verdict IS NULL OR {_in('verdict', VERDICTS)}", name="ck_rule_queries_verdict"
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    rule_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("rules.id", ondelete="CASCADE"), unique=True
+    )
+    # Nulo se a base foi excluída depois de a busca ser gerada.
+    dataset_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("datasets.id", ondelete="SET NULL"), index=True
+    )
+    query: Mapped[dict] = mapped_column(JSONB)
+    origin: Mapped[str] = mapped_column(Text)
+    # pendente (ainda não rodou), ok ou erro (ver `error`).
+    state: Mapped[str] = mapped_column(Text, default="pendente")
+    error: Mapped[str | None] = mapped_column(Text)
+    match_count: Mapped[int | None] = mapped_column(Integer)
+    matched_rows: Mapped[list[int]] = mapped_column(
+        ARRAY(Integer), default=list, server_default="{}"
+    )
+    executed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Preparado para a página de violações: segue/viola e os detalhes da verificação.
+    verdict: Mapped[str | None] = mapped_column(Text)
+    verdict_details: Mapped[dict | None] = mapped_column(JSONB)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()

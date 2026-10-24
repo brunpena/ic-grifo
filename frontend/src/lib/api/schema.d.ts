@@ -121,6 +121,84 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/analyses": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Análises do usuário, da mais recente à mais antiga */
+        get: operations["list_analyses_api_v1_analyses_get"];
+        put?: never;
+        /** Cria uma análise vazia (as bases e os documentos são enviados depois) */
+        post: operations["create_analysis_api_v1_analyses_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/analyses/{analysis_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** A análise com suas bases e documentos */
+        get: operations["get_analysis_api_v1_analyses__analysis_id__get"];
+        put?: never;
+        post?: never;
+        /** Exclui a análise, com as bases, os documentos, as regras e as conversas */
+        delete: operations["delete_analysis_api_v1_analyses__analysis_id__delete"];
+        options?: never;
+        head?: never;
+        /** Renomeia a análise */
+        patch: operations["update_analysis_api_v1_analyses__analysis_id__patch"];
+        trace?: never;
+    };
+    "/api/v1/analyses/{analysis_id}/datasets": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Envia uma base de dados em CSV; devolve o schema detectado
+         * @description Um arquivo por requisição. O separador (vírgula, ponto e vírgula, tab ou barra), a codificação e o tipo de cada coluna são detectados automaticamente.
+         */
+        post: operations["upload_dataset_api_v1_analyses__analysis_id__datasets_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/datasets/{dataset_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Schema e linhas de amostra de uma base */
+        get: operations["get_dataset_api_v1_datasets__dataset_id__get"];
+        put?: never;
+        post?: never;
+        /**
+         * Remove a base da análise
+         * @description As buscas das regras que usavam esta base ficam sem base (dataset_id nulo).
+         */
+        delete: operations["delete_dataset_api_v1_datasets__dataset_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/documents": {
         parameters: {
             query?: never;
@@ -131,7 +209,10 @@ export interface paths {
         /** Documentos do usuário, do mais recente ao mais antigo */
         get: operations["list_documents_api_v1_documents_get"];
         put?: never;
-        /** Envia um PDF; a leitura e a extração de regras continuam em segundo plano */
+        /**
+         * Envia um PDF; a leitura e a extração de regras continuam em segundo plano
+         * @description Sem `analysis_id`, o documento ganha uma análise só dele.
+         */
         post: operations["upload_document_api_v1_documents_post"];
         delete?: never;
         options?: never;
@@ -235,6 +316,65 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** AnalysisCreateIn */
+        AnalysisCreateIn: {
+            /**
+             * Title
+             * @default Nova análise
+             */
+            title: string;
+        };
+        /** AnalysisDetailOut */
+        AnalysisDetailOut: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Title */
+            title: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Datasets */
+            datasets: components["schemas"]["DatasetOut"][];
+            /** Documents */
+            documents: components["schemas"]["DocumentOut"][];
+        };
+        /** AnalysisOut */
+        AnalysisOut: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Title */
+            title: string;
+            /** Dataset Count */
+            dataset_count: number;
+            /** Document Count */
+            document_count: number;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+        };
+        /** AnalysisUpdateIn */
+        AnalysisUpdateIn: {
+            /** Title */
+            title: string;
+        };
+        /** Body_upload_dataset_api_v1_analyses__analysis_id__datasets_post */
+        Body_upload_dataset_api_v1_analyses__analysis_id__datasets_post: {
+            /**
+             * File
+             * @description Arquivo CSV
+             */
+            file: string;
+        };
         /** Body_upload_document_api_v1_documents_post */
         Body_upload_document_api_v1_documents_post: {
             /**
@@ -242,6 +382,11 @@ export interface components {
              * @description Arquivo PDF
              */
             file: string;
+            /**
+             * Analysis Id
+             * @description Análise do documento
+             */
+            analysis_id?: string | null;
         };
         /** CitedRule */
         CitedRule: {
@@ -258,6 +403,79 @@ export interface components {
             /** Summary */
             summary: string;
         };
+        /** DatasetColumn */
+        DatasetColumn: {
+            /** Name */
+            name: string;
+            /**
+             * Type
+             * @description Tipo inferido a partir de todos os valores da coluna.
+             * @enum {string}
+             */
+            type: "integer" | "decimal" | "date" | "datetime" | "boolean" | "text";
+            /**
+             * Format
+             * @description Números: br (1.234,56) ou us (1,234.56). Datas: iso ou br (dd/mm/aaaa).
+             */
+            format: string | null;
+            /**
+             * Null Count
+             * @description Células vazias.
+             */
+            null_count: number;
+            /**
+             * Distinct Count
+             * @description Valores distintos (contados até 1.000).
+             */
+            distinct_count: number;
+            /** Examples */
+            examples: string[];
+            /**
+             * Values
+             * @description Todos os valores distintos, em colunas de categorias (até 30); senão vazio.
+             */
+            values: string[];
+        };
+        /** DatasetOut */
+        DatasetOut: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /**
+             * Analysis Id
+             * Format: uuid
+             */
+            analysis_id: string;
+            /**
+             * Name
+             * @description Nome único na análise, usado pela IA para citar a base.
+             */
+            name: string;
+            /** Filename */
+            filename: string;
+            /** Size Bytes */
+            size_bytes: number;
+            /** Encoding */
+            encoding: string;
+            /** Delimiter */
+            delimiter: string;
+            /** Row Count */
+            row_count: number;
+            /** Columns */
+            columns: components["schemas"]["DatasetColumn"][];
+            /**
+             * Sample Rows
+             * @description Primeiras linhas, como texto, na ordem de `columns` (None = célula vazia).
+             */
+            sample_rows: (string | null)[][];
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+        };
         /** DocumentOut */
         DocumentOut: {
             /**
@@ -265,8 +483,24 @@ export interface components {
              * Format: uuid
              */
             id: string;
+            /**
+             * Analysis Id
+             * Format: uuid
+             */
+            analysis_id: string;
             /** Title */
             title: string;
+            /**
+             * Source Type
+             * @description Como o documento foi enviado.
+             * @enum {string}
+             */
+            source_type: "pdf" | "text" | "html" | "url";
+            /**
+             * Source Url
+             * @description Endereço de origem, se veio de um link.
+             */
+            source_url: string | null;
             /**
              * Status
              * @description processing (lendo o PDF), extracting_rules (IA analisando), ready ou error.
@@ -762,6 +996,312 @@ export interface operations {
             };
         };
     };
+    list_analyses_api_v1_analyses_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AnalysisOut"][];
+                };
+            };
+        };
+    };
+    create_analysis_api_v1_analyses_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AnalysisCreateIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AnalysisDetailOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_analysis_api_v1_analyses__analysis_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                analysis_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AnalysisDetailOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_analysis_api_v1_analyses__analysis_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                analysis_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_analysis_api_v1_analyses__analysis_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                analysis_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AnalysisUpdateIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AnalysisDetailOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    upload_dataset_api_v1_analyses__analysis_id__datasets_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                analysis_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": components["schemas"]["Body_upload_dataset_api_v1_analyses__analysis_id__datasets_post"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DatasetOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request Entity Too Large */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    get_dataset_api_v1_datasets__dataset_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                dataset_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DatasetOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_dataset_api_v1_datasets__dataset_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                dataset_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     list_documents_api_v1_documents_get: {
         parameters: {
             query?: never;
@@ -806,6 +1346,15 @@ export interface operations {
             };
             /** @description Unauthorized */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

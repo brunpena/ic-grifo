@@ -6,14 +6,15 @@ import re
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, File, Response, UploadFile, status
+from fastapi import APIRouter, File, Form, Response, UploadFile, status
 from sqlalchemy import delete, func, select
 from sse_starlette.sse import EventSourceResponse
 
 from app.api.deps import SessionDep, UserDep
+from app.api.v1.analyses import owned_analysis
 from app.core.config import get_settings
 from app.core.errors import AppError, NotFoundError, PayloadTooLargeError
-from app.db.models import Conversation, Document, Message, Rule, User, Word
+from app.db.models import Analysis, Conversation, Document, Message, Rule, User, Word
 from app.db.session import SessionLocal
 from app.schemas.common import error_responses
 from app.schemas.documents import (
@@ -78,10 +79,14 @@ async def _rules_out(db: SessionDep, document_id: uuid.UUID, rules: list[Rule]) 
     "/documents",
     status_code=status.HTTP_202_ACCEPTED,
     summary="Envia um PDF; a leitura e a extração de regras continuam em segundo plano",
-    responses=error_responses(401, 413, 422),
+    description="Sem `analysis_id`, o documento ganha uma análise só dele.",
+    responses=error_responses(401, 404, 413, 422),
 )
 async def upload_document(
-    file: Annotated[UploadFile, File(description="Arquivo PDF")], user: UserDep, db: SessionDep
+    file: Annotated[UploadFile, File(description="Arquivo PDF")],
+    user: UserDep,
+    db: SessionDep,
+    analysis_id: Annotated[uuid.UUID | None, Form(description="Análise do documento")] = None,
 ) -> DocumentOut:
     limit = get_settings().max_upload_bytes
     data = await file.read(limit + 1)
@@ -92,9 +97,18 @@ async def upload_document(
     if not data.startswith(b"%PDF-"):
         raise AppError("Envie um arquivo PDF.", code="not_a_pdf", status_code=422)
 
+    title = (file.filename or "documento.pdf")[:200]
+    if analysis_id is None:
+        analysis = Analysis(user_id=user.id, title=title)
+        db.add(analysis)
+        await db.flush()
+        analysis_id = analysis.id
+    else:
+        await owned_analysis(db, analysis_id, user)
     doc = Document(
         user_id=user.id,
-        title=(file.filename or "documento.pdf")[:200],
+        analysis_id=analysis_id,
+        title=title,
         source_type="pdf",
         mode="assistant",
         status="processing",
