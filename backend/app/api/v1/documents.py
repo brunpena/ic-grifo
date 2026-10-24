@@ -1,5 +1,6 @@
 """Documentos, regras e conversa sobre o documento."""
 
+import asyncio
 import json
 import logging
 import re
@@ -25,8 +26,17 @@ from app.schemas.documents import (
     RuleCreateIn,
     RuleOut,
     RuleUpdateIn,
+    TextDocumentIn,
+    UrlDocumentIn,
 )
-from app.services import ingest, llm, storage
+from app.services import ingest, llm, safe_fetch, storage
+from app.services.converters import (
+    ConversionError,
+    SourceFile,
+    UnsupportedFormatError,
+    registry,
+)
+from app.services.converters.text import title_from_text
 from app.services.highlights import page_range, rule_boxes
 from app.services.text_match import find_excerpt
 
@@ -35,6 +45,7 @@ router = APIRouter(tags=["documentos"])
 
 CITATION = re.compile(r"\[(R\d+(?:\s*,\s*R\d+)*)\]")
 CITATION_WITH_SPACE = re.compile(r"\s*\[R\d+(?:\s*,\s*R\d+)*\]")
+DEFAULT_ANALYSIS_TITLE = "Nova análise"
 
 
 async def _owned_document(db: SessionDep, document_id: uuid.UUID, user: User) -> Document:
@@ -75,15 +86,72 @@ async def _rules_out(db: SessionDep, document_id: uuid.UUID, rules: list[Rule]) 
 # ---------------------------------------------------------------------------
 
 
+async def _target_analysis(db: SessionDep, user: User, analysis_id: uuid.UUID | None) -> Analysis:
+    if analysis_id is not None:
+        return await owned_analysis(db, analysis_id, user)
+    analysis = Analysis(user_id=user.id, title=DEFAULT_ANALYSIS_TITLE)
+    db.add(analysis)
+    await db.flush()
+    return analysis
+
+
+async def _create_document(
+    db: SessionDep,
+    user: User,
+    analysis_id: uuid.UUID | None,
+    source: SourceFile,
+    *,
+    source_url: str | None = None,
+    title: str | None = None,
+) -> DocumentOut:
+    """Converte o conteúdo (qualquer formato do registro), guarda o PDF e começa a extração."""
+    analysis = await _target_analysis(db, user, analysis_id)
+    try:
+        converted = await asyncio.to_thread(registry.convert, source)
+    except UnsupportedFormatError as exc:
+        raise AppError(str(exc), code="unsupported_format", status_code=422) from exc
+    except ConversionError as exc:
+        raise AppError(str(exc), code="conversion_error", status_code=422) from exc
+    title = title or converted.title
+
+    has_documents = await db.scalar(select(func.count()).where(Document.analysis_id == analysis.id))
+    if analysis.title == DEFAULT_ANALYSIS_TITLE and not has_documents:
+        analysis.title = title
+    doc = Document(
+        user_id=user.id,
+        analysis_id=analysis.id,
+        title=title,
+        source_type=converted.source_type,
+        source_url=source_url,
+        mode="assistant",
+        status="processing",
+    )
+    db.add(doc)
+    await db.flush()
+    try:
+        doc.storage_path = await storage.save_pdf(doc.id, converted.pdf)
+    except storage.StorageError as exc:
+        raise AppError(str(exc), code="storage_error", status_code=502) from exc
+    await db.commit()
+    await db.refresh(doc)
+    ingest.start_processing(doc.id, converted.extracted)
+    return DocumentOut.model_validate(doc)
+
+
 @router.post(
     "/documents",
     status_code=status.HTTP_202_ACCEPTED,
-    summary="Envia um PDF; a leitura e a extração de regras continuam em segundo plano",
-    description="Sem `analysis_id`, o documento ganha uma análise só dele.",
+    summary="Envia um arquivo (PDF, HTML ou TXT); a extração de regras continua em segundo plano",
+    description=(
+        "O arquivo é convertido na hora: um PDF sem texto (digitalizado), uma página sem "
+        "conteúdo ou um formato desconhecido voltam com 422. HTML e TXT são diagramados em "
+        "PDF, que é o que `GET /documents/{id}/file` devolve. Sem `analysis_id`, o "
+        "documento ganha uma análise só dele."
+    ),
     responses=error_responses(401, 404, 413, 422),
 )
 async def upload_document(
-    file: Annotated[UploadFile, File(description="Arquivo PDF")],
+    file: Annotated[UploadFile, File(description="Arquivo PDF, HTML ou TXT")],
     user: UserDep,
     db: SessionDep,
     analysis_id: Annotated[uuid.UUID | None, Form(description="Análise do documento")] = None,
@@ -94,35 +162,62 @@ async def upload_document(
         raise PayloadTooLargeError(
             f"O arquivo passa do limite de {get_settings().max_upload_mb} MB."
         )
-    if not data.startswith(b"%PDF-"):
-        raise AppError("Envie um arquivo PDF.", code="not_a_pdf", status_code=422)
+    content_type = (file.content_type or "").split(";")[0].strip().lower() or None
+    source = SourceFile(data=data, filename=file.filename, content_type=content_type)
+    return await _create_document(db, user, analysis_id, source)
 
-    title = (file.filename or "documento.pdf")[:200]
-    if analysis_id is None:
-        analysis = Analysis(user_id=user.id, title=title)
-        db.add(analysis)
-        await db.flush()
-        analysis_id = analysis.id
-    else:
-        await owned_analysis(db, analysis_id, user)
-    doc = Document(
-        user_id=user.id,
-        analysis_id=analysis_id,
-        title=title,
-        source_type="pdf",
-        mode="assistant",
-        status="processing",
+
+@router.post(
+    "/documents/text",
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Cria um documento a partir de texto colado",
+    responses=error_responses(401, 404, 422),
+)
+async def create_text_document(body: TextDocumentIn, user: UserDep, db: SessionDep) -> DocumentOut:
+    limit = get_settings().max_pasted_chars
+    if len(body.content) > limit:
+        raise AppError(
+            f"O texto passa do limite de {limit:_} caracteres.".replace("_", "."),
+            code="text_too_long",
+            status_code=422,
+        )
+    source = SourceFile(
+        data=body.content.encode("utf-8"), content_type="text/plain", charset="utf-8"
     )
-    db.add(doc)
-    await db.flush()
+    title = body.title or title_from_text(body.content)
+    return await _create_document(db, user, body.analysis_id, source, title=title)
+
+
+@router.post(
+    "/documents/url",
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Baixa um documento (PDF ou página HTML) a partir de um link",
+    description=(
+        "Só http/https. Endereços internos ou privados são bloqueados, inclusive depois de "
+        "redirecionamentos. O download tem tempo e tamanho limitados; falhas voltam com "
+        "422 e uma mensagem explicando o motivo (`fetch_error`)."
+    ),
+    responses=error_responses(401, 404, 413, 422),
+)
+async def create_url_document(body: UrlDocumentIn, user: UserDep, db: SessionDep) -> DocumentOut:
+    settings = get_settings()
+    if body.analysis_id is not None:
+        await owned_analysis(db, body.analysis_id, user)
     try:
-        doc.storage_path = await storage.save_pdf(doc.id, data)
-    except storage.StorageError as exc:
-        raise AppError(str(exc), code="storage_error", status_code=502) from exc
-    await db.commit()
-    await db.refresh(doc)
-    ingest.start_processing(doc.id)
-    return DocumentOut.model_validate(doc)
+        fetched = await safe_fetch.fetch_url(
+            body.url,
+            max_bytes=settings.max_upload_bytes,
+            time_limit=settings.url_fetch_timeout_seconds,
+        )
+    except safe_fetch.FetchError as exc:
+        raise AppError(str(exc), code="fetch_error", status_code=422) from exc
+    source = SourceFile(
+        data=fetched.data,
+        filename=fetched.filename,
+        content_type=fetched.content_type,
+        charset=fetched.charset,
+    )
+    return await _create_document(db, user, body.analysis_id, source, source_url=fetched.final_url)
 
 
 @router.get("/documents", summary="Documentos do usuário, do mais recente ao mais antigo")

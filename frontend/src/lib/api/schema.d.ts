@@ -210,10 +210,47 @@ export interface paths {
         get: operations["list_documents_api_v1_documents_get"];
         put?: never;
         /**
-         * Envia um PDF; a leitura e a extração de regras continuam em segundo plano
-         * @description Sem `analysis_id`, o documento ganha uma análise só dele.
+         * Envia um arquivo (PDF, HTML ou TXT); a extração de regras continua em segundo plano
+         * @description O arquivo é convertido na hora: um PDF sem texto (digitalizado), uma página sem conteúdo ou um formato desconhecido voltam com 422. HTML e TXT são diagramados em PDF, que é o que `GET /documents/{id}/file` devolve. Sem `analysis_id`, o documento ganha uma análise só dele.
          */
         post: operations["upload_document_api_v1_documents_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/documents/text": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Cria um documento a partir de texto colado */
+        post: operations["create_text_document_api_v1_documents_text_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/documents/url": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Baixa um documento (PDF ou página HTML) a partir de um link
+         * @description Só http/https. Endereços internos ou privados são bloqueados, inclusive depois de redirecionamentos. O download tem tempo e tamanho limitados; falhas voltam com 422 e uma mensagem explicando o motivo (`fetch_error`).
+         */
+        post: operations["create_url_document_api_v1_documents_url_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -379,7 +416,7 @@ export interface components {
         Body_upload_document_api_v1_documents_post: {
             /**
              * File
-             * @description Arquivo PDF
+             * @description Arquivo PDF, HTML ou TXT
              */
             file: string;
             /**
@@ -701,6 +738,28 @@ export interface components {
             summary?: string | null;
             /** Comment */
             comment?: string | null;
+        };
+        /** TextDocumentIn */
+        TextDocumentIn: {
+            /** Analysis Id */
+            analysis_id?: string | null;
+            /** Title */
+            title?: string | null;
+            /**
+             * Content
+             * @description Texto do documento.
+             */
+            content: string;
+        };
+        /** UrlDocumentIn */
+        UrlDocumentIn: {
+            /** Analysis Id */
+            analysis_id?: string | null;
+            /**
+             * Url
+             * @description Link http(s) do PDF ou da página.
+             */
+            url: string;
         };
         /** UserOut */
         UserOut: {
@@ -1332,6 +1391,117 @@ export interface operations {
         requestBody: {
             content: {
                 "multipart/form-data": components["schemas"]["Body_upload_document_api_v1_documents_post"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DocumentOut"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request Entity Too Large */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    create_text_document_api_v1_documents_text_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TextDocumentIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DocumentOut"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    create_url_document_api_v1_documents_url_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UrlDocumentIn"];
             };
         };
         responses: {

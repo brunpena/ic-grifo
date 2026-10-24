@@ -13,6 +13,7 @@ export type RuleType = Rule["type"];
 const keys = {
   list: ["documents"] as const,
   doc: (id: string) => ["documents", id] as const,
+  file: (id: string) => ["documents", id, "file"] as const,
   rules: (id: string) => ["documents", id, "rules"] as const,
   messages: (id: string) => ["documents", id, "messages"] as const,
 };
@@ -33,8 +34,28 @@ export function useDocument(id: string | null) {
   });
 }
 
+/** Formatos aceitos no envio de arquivo (o back escolhe o conversor). */
+export const DOCUMENT_ACCEPT = "application/pdf,.pdf,text/html,.html,.htm,text/plain,.txt";
+
+export function isDocumentFile(file: File) {
+  return /\.(pdf|html?|txt)$/i.test(file.name) || ["application/pdf", "text/html", "text/plain"].includes(file.type);
+}
+
+export const isPdfFile = (file: File) => file.type === "application/pdf" || /\.pdf$/i.test(file.name);
+
+function useDocumentCreated() {
+  const queryClient = useQueryClient();
+  return (doc: DocumentInfo) => {
+    queryClient.setQueryData(keys.doc(doc.id), doc);
+    void queryClient.invalidateQueries({ queryKey: keys.list, exact: true });
+    void queryClient.invalidateQueries({ queryKey: analysisKeys.detail(doc.analysis_id) });
+    void queryClient.invalidateQueries({ queryKey: analysisKeys.list, exact: true });
+  };
+}
+
 export function useUploadDocument() {
   const queryClient = useQueryClient();
+  const onCreated = useDocumentCreated();
   return useMutation({
     /** Sem `analysisId`, o back cria uma análise só para o documento. */
     mutationFn: ({ file, analysisId }: { file: File; analysisId?: string | null }) =>
@@ -49,12 +70,41 @@ export function useUploadDocument() {
           },
         }),
       ),
-    onSuccess: (doc) => {
-      queryClient.setQueryData(keys.doc(doc.id), doc);
-      void queryClient.invalidateQueries({ queryKey: keys.list, exact: true });
-      void queryClient.invalidateQueries({ queryKey: analysisKeys.detail(doc.analysis_id) });
-      void queryClient.invalidateQueries({ queryKey: analysisKeys.list, exact: true });
+    onSuccess: (doc, { file }) => {
+      onCreated(doc);
+      // O PDF enviado é o mesmo que o back guardou: evita baixá-lo de volta.
+      if (isPdfFile(file)) queryClient.setQueryData(keys.file(doc.id), file);
     },
+  });
+}
+
+export function useCreateTextDocument() {
+  const onCreated = useDocumentCreated();
+  return useMutation({
+    mutationFn: (body: { analysis_id?: string | null; title?: string | null; content: string }) =>
+      unwrap(api.POST("/api/v1/documents/text", { body })),
+    onSuccess: onCreated,
+  });
+}
+
+/** O back baixa o link (PDF ou HTML) com proteção contra endereços internos. */
+export function useCreateUrlDocument() {
+  const onCreated = useDocumentCreated();
+  return useMutation({
+    mutationFn: (body: { analysis_id?: string | null; url: string }) =>
+      unwrap(api.POST("/api/v1/documents/url", { body })),
+    onSuccess: onCreated,
+  });
+}
+
+/** O PDF exibido de um documento (o original ou o diagramado a partir de texto/HTML). */
+export function useDocumentFile(doc: DocumentInfo | undefined) {
+  return useQuery({
+    queryKey: keys.file(doc?.id ?? ""),
+    queryFn: () => fetchDocumentFile(doc!),
+    enabled: !!doc,
+    staleTime: Infinity,
+    gcTime: 10 * 60 * 1000,
   });
 }
 
@@ -62,7 +112,8 @@ export function useUploadDocument() {
 export async function fetchDocumentFile(doc: DocumentInfo): Promise<File> {
   const response = await fetch(apiUrl(`/api/v1/documents/${doc.id}/file`), { credentials: "include" });
   if (!response.ok) throw await ApiError.fromResponse(response);
-  return new File([await response.blob()], doc.title, { type: "application/pdf" });
+  const name = doc.source_type === "pdf" ? doc.title : `${doc.title}.pdf`;
+  return new File([await response.blob()], name, { type: "application/pdf" });
 }
 
 export function useRules(documentId: string | null, enabled: boolean) {

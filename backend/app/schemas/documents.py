@@ -86,3 +86,26 @@ class MessageOut(BaseModel):
 
 class MessageIn(BaseModel):
     content: str = Field(min_length=1, max_length=4000)
+
+
+class TextDocumentIn(BaseModel):
+    analysis_id: uuid.UUID | None = None
+    title: str | None = Field(default=None, max_length=200)
+    content: str = Field(min_length=1, description="Texto do documento.")
+
+    @field_validator("title")
+    @classmethod
+    def _title(cls, value: str | None) -> str | None:
+        return (value or "").strip() or None
+
+    @field_validator("content")
+    @classmethod
+    def _content(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("cole o texto do documento")
+        return value
+
+
+class UrlDocumentIn(BaseModel):
+    analysis_id: uuid.UUID | None = None
+    url: str = Field(min_length=1, max_length=2000, description="Link http(s) do PDF ou da página.")

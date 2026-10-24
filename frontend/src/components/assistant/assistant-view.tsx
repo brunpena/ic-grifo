@@ -1,7 +1,7 @@
 "use client";
 
 import { useQueryClient } from "@tanstack/react-query";
-import { FileSearch, FileText, FileUp, Library, MousePointerClick, X } from "lucide-react";
+import { FilePlus, FileSearch, FileText, FileUp, Library, Link2, MousePointerClick, Type, X } from "lucide-react";
 import Link from "next/link";
 import { type DragEvent, type ReactNode, useRef, useState } from "react";
 import { Group, Panel, Separator } from "react-resizable-panels";
@@ -9,6 +9,7 @@ import { BrandLogo } from "@/components/brand-logo";
 import { AssistantMessage, type CitedRule, UserMessage } from "@/components/chat/chat-message";
 import { ProcessingSteps } from "@/components/chat/processing-steps";
 import { DatasetUploader } from "@/components/datasets/dataset-uploader";
+import { DocumentSourceDialog, type DocumentSourceMode } from "@/components/documents/document-source-dialog";
 import { CreateRulePopover } from "@/components/document/create-rule-popover";
 import { HighlightLayer, type PageRect } from "@/components/document/highlight-layer";
 import { PDF_TO_CSS, PdfDocumentPages, usePdfDocument } from "@/components/document/pdf-document";
@@ -20,20 +21,24 @@ import { RulesTable } from "@/components/rules/rules-table";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { IconButton } from "@/components/ui/icon-button";
+import { Select } from "@/components/ui/select";
 import { useToast } from "@/components/ui/toast";
 import { useAnalysis, useCreateAnalysis } from "@/lib/analyses";
 import { errorMessage } from "@/lib/api";
 import { firstName, useCurrentUser } from "@/lib/auth";
 import type { RuleStatus, RuleType } from "@/lib/design/tokens";
 import {
+  DOCUMENT_ACCEPT,
   type DocumentInfo,
-  fetchDocumentFile,
   invalidateMessages,
+  isDocumentFile,
+  isPdfFile,
   type Rule,
   streamMessage,
   stripCitations,
   useCreateRule,
   useDocument,
+  useDocumentFile,
   useDocuments,
   useMessages,
   useRules,
@@ -71,18 +76,25 @@ export function AssistantView() {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const [viewerWidth, setViewerWidth] = useState(0);
 
-  const [file, setFile] = useState<File | null>(null);
+  // Primeiro envio ainda sem resposta: o nome e, se for PDF, o arquivo para já exibir.
+  const [pendingUpload, setPendingUpload] = useState<{ name: string; file: File | null } | null>(null);
+  const [sourceMode, setSourceMode] = useState<DocumentSourceMode | null>(null);
   // Análise em montagem: as bases vão antes do documento.
   const [analysisId, setAnalysisId] = useState<string | null>(null);
   const { data: analysis } = useAnalysis(analysisId);
   const createAnalysis = useCreateAnalysis();
   const [documentId, setDocumentId] = useState<string | null>(null);
-  const [opening, setOpening] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
-  const pdf = usePdfDocument(file);
   const upload = useUploadDocument();
+  const uploadMore = useUploadDocument();
   const { data: recent } = useDocuments();
   const { data: doc } = useDocument(documentId);
+  // Texto, HTML e links viram PDF no back; o PDF exibido vem sempre de lá (ou do cache).
+  const documentFile = useDocumentFile(doc);
+  const file = documentId ? (documentFile.data ?? null) : (pendingUpload?.file ?? null);
+  const documentName = doc?.title ?? pendingUpload?.name ?? "";
+  const isOpen = !!documentId || !!pendingUpload;
+  const pdf = usePdfDocument(file);
   const ready = doc?.status === "ready";
   const { data: rules = [] } = useRules(documentId, ready);
   const { data: savedMessages = [] } = useMessages(documentId, ready);
@@ -115,27 +127,58 @@ export function AssistantView() {
     setNotes([]);
     setPage(1);
     setMobileTab("document");
+    upload.reset();
   };
 
-  const openFile = (picked: File | undefined) => {
-    if (!picked) return;
-    if (picked.type !== "application/pdf" && !picked.name.toLowerCase().endsWith(".pdf")) {
-      toast({ title: "Envie um arquivo PDF", description: `“${picked.name}” não é um PDF.`, variant: "error" });
+  /** Envia os arquivos para a análise atual e abre o primeiro. */
+  const openFiles = async (picked: File[]) => {
+    const invalid = picked.filter((f) => !isDocumentFile(f));
+    if (invalid.length) {
+      toast({
+        title: "Formato não suportado",
+        description: `${invalid.map((f) => `“${f.name}”`).join(", ")}: envie PDF, HTML ou TXT.`,
+        variant: "error",
+      });
+    }
+    const [first, ...rest] = picked.filter(isDocumentFile);
+    if (!first) return;
+    let target: string;
+    try {
+      target = await ensureAnalysis();
+    } catch (error) {
+      toast({ title: "Não foi possível criar a análise", description: errorMessage(error), variant: "error" });
       return;
     }
-    setFile(picked);
+    setPendingUpload({ name: first.name, file: isPdfFile(first) ? first : null });
     setDocumentId(null);
     resetView();
     upload.mutate(
-      { file: picked, analysisId },
+      { file: first, analysisId: target },
       {
         onSuccess: (created) => {
           setDocumentId(created.id);
-          setAnalysisId(created.analysis_id);
+          setPendingUpload(null);
         },
         onError: (error) => toast({ title: "Não foi possível enviar", description: errorMessage(error), variant: "error" }),
       },
     );
+    for (const extra of rest) {
+      uploadMore.mutate(
+        { file: extra, analysisId: target },
+        {
+          onError: (error) =>
+            toast({ title: `Não foi possível enviar “${extra.name}”`, description: errorMessage(error), variant: "error" }),
+        },
+      );
+    }
+  };
+
+  const openDocument = (target: DocumentInfo) => {
+    if (target.id === documentId) return;
+    setPendingUpload(null);
+    setDocumentId(target.id);
+    setAnalysisId(target.analysis_id);
+    resetView();
   };
 
   const ensureAnalysis = async () => {
@@ -145,23 +188,8 @@ export function AssistantView() {
     return created.id;
   };
 
-  const reopen = async (existing: DocumentInfo) => {
-    setOpening(existing.id);
-    try {
-      const pdfFile = await fetchDocumentFile(existing);
-      setFile(pdfFile);
-      setDocumentId(existing.id);
-      setAnalysisId(existing.analysis_id);
-      resetView();
-    } catch (error) {
-      toast({ title: "Não foi possível abrir", description: errorMessage(error), variant: "error" });
-    } finally {
-      setOpening(null);
-    }
-  };
-
   const closeDocument = () => {
-    setFile(null);
+    setPendingUpload(null);
     setDocumentId(null);
     setAnalysisId(null);
     resetView();
@@ -176,7 +204,7 @@ export function AssistantView() {
     if (!documentId || !doc) {
       setDraft("");
       setNotes((list) => [...list, { id: localId(), role: "user", content: text }]);
-      note("Envie um contrato, edital ou regulamento em PDF pelo botão + e eu respondo com base nele.");
+      note("Envie um contrato, edital ou regulamento (PDF, HTML, texto ou link) e eu respondo com base nele.");
       return;
     }
     if (!ready) {
@@ -288,12 +316,13 @@ export function AssistantView() {
     <input
       ref={fileInputRef}
       type="file"
-      accept="application/pdf,.pdf"
+      accept={DOCUMENT_ACCEPT}
+      multiple
       className="sr-only"
       tabIndex={-1}
       aria-hidden
       onChange={(e) => {
-        openFile(e.target.files?.[0]);
+        void openFiles(Array.from(e.target.files ?? []));
         e.target.value = "";
       }}
     />
@@ -315,7 +344,7 @@ export function AssistantView() {
     onDrop: (e: DragEvent) => {
       e.preventDefault();
       setDragging(false);
-      openFile(e.dataTransfer.files[0]);
+      void openFiles(Array.from(e.dataTransfer.files));
     },
   };
 
@@ -325,14 +354,23 @@ export function AssistantView() {
       onChange={setDraft}
       onSubmit={send}
       onAttach={attach}
-      documentName={file?.name}
+      documentName={documentName || null}
       // Com documento aberto, o nome dele já aparece no topo da conversa.
-      showDocument={!file}
+      showDocument={!isOpen}
     />
   );
 
   // ----- Sem documento: conversa centralizada, no estilo do lineFlow -----
-  if (!file) {
+  const sourceDialog = (
+    <DocumentSourceDialog
+      mode={sourceMode}
+      onModeChange={setSourceMode}
+      ensureAnalysis={ensureAnalysis}
+      onCreated={openDocument}
+    />
+  );
+
+  if (!isOpen) {
     const recentDocs = (recent ?? []).slice(0, 4);
     return (
       <div className="relative flex h-full flex-col" {...dropHandlers}>
@@ -373,7 +411,23 @@ export function AssistantView() {
                     onClick={attach}
                     className="rounded-full"
                   >
-                    Enviar um PDF
+                    Enviar arquivos
+                  </Button>
+                  <Button
+                    size="sm"
+                    icon={<Type size={16} strokeWidth={1.75} aria-hidden />}
+                    onClick={() => setSourceMode("text")}
+                    className="rounded-full"
+                  >
+                    Colar texto
+                  </Button>
+                  <Button
+                    size="sm"
+                    icon={<Link2 size={16} strokeWidth={1.75} aria-hidden />}
+                    onClick={() => setSourceMode("url")}
+                    className="rounded-full"
+                  >
+                    Usar um link
                   </Button>
                   <Link
                     href="/regras"
@@ -383,6 +437,9 @@ export function AssistantView() {
                     Ver base de regras
                   </Link>
                 </div>
+                <p className="text-xs text-foreground-subtle">
+                  PDF, HTML ou TXT, vários de uma vez. PDFs digitalizados (só imagem) precisam passar por OCR antes.
+                </p>
                 {!analysis?.datasets.length && (
                   <p className="text-xs text-foreground-subtle">
                     Sem bases, a IA só encontra as regras do documento, sem buscar registros.
@@ -399,9 +456,8 @@ export function AssistantView() {
                         <Button
                           size="sm"
                           variant="secondary"
-                          loading={opening === d.id}
                           icon={<FileText size={16} strokeWidth={1.75} aria-hidden />}
-                          onClick={() => reopen(d)}
+                          onClick={() => openDocument(d)}
                           className="max-w-64 rounded-full"
                         >
                           <span className="truncate">{d.title}</span>
@@ -421,6 +477,7 @@ export function AssistantView() {
           {composer}
           <AssistantDisclaimer className="mt-2" />
         </div>
+        {sourceDialog}
         {dragging && <DropOverlay />}
       </div>
     );
@@ -447,10 +504,10 @@ export function AssistantView() {
     id: "intro",
     role: "assistant",
     content: failed
-      ? `Não consegui analisar “${file.name}”. ${doc?.status_message ?? errorMessage(upload.error)}`
+      ? `Não consegui analisar “${documentName}”. ${doc?.status_message ?? errorMessage(upload.error)}`
       : ready
-        ? `Li “${file.name}” e encontrei ${rules.length} ${rules.length === 1 ? "regra" : "regras"}. Revise na tabela ao lado ou me pergunte sobre o documento.`
-        : `Estou lendo “${file.name}” e procurando as regras. ${doc?.status_message ?? ""}`,
+        ? `Li “${documentName}” e encontrei ${rules.length} ${rules.length === 1 ? "regra" : "regras"}. Revise na tabela ao lado ou me pergunte sobre o documento.`
+        : `Estou lendo “${documentName}” e procurando as regras. ${doc?.status_message ?? ""}`,
   };
   const thread: ThreadMessage[] = [
     intro,
@@ -459,15 +516,47 @@ export function AssistantView() {
     ...pending,
   ];
 
+  const analysisDocuments = analysis?.documents ?? [];
+
   const chatPanel = (
     <section aria-label="Conversa" className="flex h-full min-h-0 flex-col bg-background">
       <div className="flex h-11 shrink-0 items-center gap-2 border-b border-border px-3">
         <FileText size={16} strokeWidth={1.75} aria-hidden className="shrink-0 text-accent" />
-        <span className="min-w-0 flex-1 truncate text-[13px] font-medium">{file.name}</span>
+        {documentId && analysisDocuments.length > 1 ? (
+          <Select
+            aria-label="Documento da análise"
+            value={documentId}
+            onChange={(e) => {
+              const target = analysisDocuments.find((d) => d.id === e.target.value);
+              if (target) openDocument(target);
+            }}
+            className="min-w-0 flex-1 [&_select]:h-8 [&_select]:text-[13px]"
+          >
+            {analysisDocuments.map((d) => (
+              <option key={d.id} value={d.id}>
+                {d.title}
+              </option>
+            ))}
+          </Select>
+        ) : (
+          <span className="min-w-0 flex-1 truncate text-[13px] font-medium">{documentName}</span>
+        )}
         {pdf.status === "ready" && (
           <span className="shrink-0 font-mono text-xs text-foreground-subtle tabular-nums">{pdf.pages.length} p.</span>
         )}
-        <IconButton aria-label="Fechar documento" icon={<X size={16} strokeWidth={1.75} aria-hidden />} onClick={closeDocument} />
+        <IconButton
+          aria-label="Adicionar arquivos à análise"
+          icon={<FilePlus size={16} strokeWidth={1.75} aria-hidden />}
+          onClick={attach}
+          tooltipSide="bottom"
+        />
+        <IconButton
+          aria-label="Adicionar texto ou link à análise"
+          icon={<Link2 size={16} strokeWidth={1.75} aria-hidden />}
+          onClick={() => setSourceMode("url")}
+          tooltipSide="bottom"
+        />
+        <IconButton aria-label="Fechar análise" icon={<X size={16} strokeWidth={1.75} aria-hidden />} onClick={closeDocument} />
       </div>
       <ChatThread
         messages={thread}
@@ -500,7 +589,19 @@ export function AssistantView() {
         </>
       }
     >
-      {pdf.status === "error" ? (
+      {documentFile.isError ? (
+        <EmptyState
+          icon={FileText}
+          title="Não foi possível baixar o documento"
+          description={errorMessage(documentFile.error)}
+          action={
+            <Button size="sm" onClick={() => void documentFile.refetch()}>
+              Tentar de novo
+            </Button>
+          }
+          className="mt-16"
+        />
+      ) : pdf.status === "error" ? (
         <EmptyState icon={FileText} title="Não foi possível abrir" description={pdf.message} className="mt-16" />
       ) : pdf.status === "ready" ? (
         <PdfDocumentPages
@@ -611,6 +712,7 @@ export function AssistantView() {
         </div>
       )}
 
+      {sourceDialog}
       <CreateRulePopover
         open={createOpen}
         onOpenChange={setCreateOpen}
@@ -685,7 +787,8 @@ function DropOverlay() {
   return (
     <div className="pointer-events-none absolute inset-3 z-30 flex flex-col items-center justify-center gap-3 rounded-lg border-2 border-dashed border-accent bg-accent-soft/80 backdrop-blur-sm">
       <BrandLogo size={40} />
-      <p className="text-sm font-medium">Solte o PDF para analisar</p>
+      <p className="text-sm font-medium">Solte os arquivos para analisar</p>
+      <p className="text-xs text-foreground-muted">PDF, HTML ou TXT</p>
     </div>
   );
 }

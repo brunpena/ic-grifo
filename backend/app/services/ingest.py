@@ -14,7 +14,7 @@ from app.core.logging import log_step
 from app.db.models import Document, Page, Rule, Word
 from app.db.session import SessionLocal
 from app.services import llm
-from app.services.pdf_text import PdfReadError, extract_pdf
+from app.services.pdf_text import ExtractedDocument, PdfReadError, extract_pdf
 from app.services.storage import StorageError, read_pdf
 
 logger = logging.getLogger(__name__)
@@ -23,8 +23,8 @@ logger = logging.getLogger(__name__)
 _tasks: set[asyncio.Task] = set()
 
 
-def start_processing(document_id: uuid.UUID) -> None:
-    task = asyncio.create_task(process_document(document_id))
+def start_processing(document_id: uuid.UUID, extracted: ExtractedDocument | None = None) -> None:
+    task = asyncio.create_task(process_document(document_id, extracted))
     _tasks.add(task)
     task.add_done_callback(_tasks.discard)
 
@@ -39,13 +39,18 @@ async def _set_status(document_id: uuid.UUID, status: str, message: str | None =
         await db.commit()
 
 
-async def process_document(document_id: uuid.UUID) -> None:
+async def process_document(
+    document_id: uuid.UUID, extracted: ExtractedDocument | None = None
+) -> None:
+    """Grava as palavras e extrai as regras. `extracted` vem do conversor, que já leu o
+    texto no upload; sem ele, o PDF guardado é lido de novo."""
     try:
-        with log_step(logger, "read_pdf", document_id=str(document_id)) as info:
-            data = await read_pdf(document_id)
-            extracted = await asyncio.to_thread(extract_pdf, data)
-            info["pages"] = len(extracted.pages)
-            info["chars"] = len(extracted.full_text)
+        if extracted is None:
+            with log_step(logger, "read_pdf", document_id=str(document_id)) as info:
+                data = await read_pdf(document_id)
+                extracted = await asyncio.to_thread(extract_pdf, data)
+                info["pages"] = len(extracted.pages)
+                info["chars"] = len(extracted.full_text)
 
         async with SessionLocal() as db:
             await db.execute(

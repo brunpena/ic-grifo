@@ -7,7 +7,7 @@ import pymupdf
 import pytest
 
 from app.main import app
-from app.services import llm
+from app.services import llm, safe_fetch
 from app.services.ingest import dedupe_rules
 from app.services.llm import ExtractedRule, numbered, split_chunks, split_sentences
 from app.services.pdf_text import PdfReadError, extract_pdf
@@ -205,9 +205,16 @@ async def test_upload_extract_rules_and_chat(migrated_db, client, fake_llm):
 async def test_documents_are_private_and_validated(migrated_db, client, fake_llm):
     await _login(client)
     resp = await client.post(
-        "/api/v1/documents", files={"file": ("x.txt", b"nao sou pdf", "text/plain")}
+        "/api/v1/documents",
+        files={"file": ("x.docx", b"PK\x03\x04", "application/octet-stream")},
     )
-    assert resp.status_code == 422
+    assert resp.status_code == 422 and resp.json()["error"]["code"] == "unsupported_format"
+    blank = pymupdf.open()
+    blank.new_page()
+    resp = await client.post(
+        "/api/v1/documents", files={"file": ("scan.pdf", blank.tobytes(), "application/pdf")}
+    )
+    assert resp.status_code == 422 and "digitalizado" in resp.json()["error"]["message"]
     doc = (
         await client.post(
             "/api/v1/documents", files={"file": ("c.pdf", make_pdf(1), "application/pdf")}
@@ -223,3 +230,50 @@ async def test_documents_are_private_and_validated(migrated_db, client, fake_llm
         assert (await other.get("/api/v1/documents")).json() == []
     client.cookies.clear()
     assert (await client.get(f"/api/v1/documents/{doc['id']}")).status_code == 401
+
+
+@pytest.mark.db
+async def test_text_and_link_documents_share_an_analysis(
+    migrated_db, client, fake_llm, monkeypatch
+):
+    await _login(client)
+    analysis = (await client.post("/api/v1/analyses", json={})).json()
+
+    text = "\n\n".join(PARAGRAPHS)
+    resp = await client.post(
+        "/api/v1/documents/text", json={"analysis_id": analysis["id"], "content": text}
+    )
+    assert resp.status_code == 202
+    pasted = resp.json()
+    assert pasted["source_type"] == "text" and pasted["title"] == PARAGRAPHS[0]
+    assert (await _wait_ready(client, pasted["id"]))["status"] == "ready"
+    rules = (await client.get(f"/api/v1/documents/{pasted['id']}/rules")).json()
+    assert rules and rules[0]["boxes"]  # o grifo funciona no PDF diagramado
+    pdf = await client.get(f"/api/v1/documents/{pasted['id']}/file")
+    assert pdf.content.startswith(b"%PDF-")
+
+    async def fake_fetch(url, **kwargs):
+        if "interno" in url:
+            raise safe_fetch.FetchError("Este link aponta para um endereço interno.")
+        page = "<html><head><title>Página do edital</title></head><body>"
+        page += "".join(f"<p>{p}</p>" for p in PARAGRAPHS) + "</body></html>"
+        return safe_fetch.FetchedFile(page.encode(), "text/html", "utf-8", "edital", url)
+
+    monkeypatch.setattr(safe_fetch, "fetch_url", fake_fetch)
+    resp = await client.post(
+        "/api/v1/documents/url",
+        json={"analysis_id": analysis["id"], "url": "https://exemplo.com/edital"},
+    )
+    assert resp.status_code == 202
+    linked = resp.json()
+    assert linked["source_type"] == "html" and linked["title"] == "Página do edital"
+    assert linked["source_url"] == "https://exemplo.com/edital"
+
+    resp = await client.post("/api/v1/documents/url", json={"url": "http://interno/"})
+    assert resp.status_code == 422 and resp.json()["error"]["code"] == "fetch_error"
+    resp = await client.post("/api/v1/documents/text", json={"content": "   "})
+    assert resp.status_code == 422
+
+    detail = (await client.get(f"/api/v1/analyses/{analysis['id']}")).json()
+    assert [d["id"] for d in detail["documents"]] == [pasted["id"], linked["id"]]
+    assert detail["title"] == PARAGRAPHS[0]  # a análise ganha o nome do primeiro documento

@@ -46,6 +46,10 @@ class Settings(BaseSettings):
     max_dataset_mb: int = 20
     max_dataset_rows: int = 200_000
     max_dataset_columns: int = 200
+    # Documentos por link: tempo total do download (o tamanho segue MAX_UPLOAD_MB).
+    url_fetch_timeout_seconds: float = 20
+    # Texto colado na tela, em caracteres.
+    max_pasted_chars: int = 1_000_000
     llm_rate_limit_per_minute: int = 20
 
     # LLM (Gemini; chave gratuita em aistudio.google.com/apikey)
