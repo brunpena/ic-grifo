@@ -103,7 +103,7 @@ export function AnalysisWorkspace({ layout, chat, document, rules, table }: Anal
       {side && (
         <>
           <ResizeHandle />
-          <Panel id="side" defaultSize="36" minSize={320} maxSize="70">
+          <Panel id="side" defaultSize="40" minSize={320} maxSize="70">
             {layout.rules && layout.table ? (
               <Group id="grifo-analysis-side" orientation="vertical" className="h-full" {...sideLayout}>
                 <Panel id="side-rules" defaultSize="50" minSize={160}>

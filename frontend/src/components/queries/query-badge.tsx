@@ -31,7 +31,7 @@ export function QueryBadge({
         className={cn(BADGE, "text-foreground-subtle hover:bg-surface-hover hover:text-foreground", className)}
       >
         <Plus size={14} strokeWidth={1.75} aria-hidden />
-        Criar busca
+        Criar<span className="hidden @2xl:inline"> busca</span>
       </button>
     );
   }
@@ -40,7 +40,7 @@ export function QueryBadge({
       <Tooltip content={query.error ?? "Erro na busca"}>
         <button type="button" onClick={handle} className={cn(BADGE, "bg-danger-soft text-danger", className)}>
           <AlertTriangle size={14} strokeWidth={1.75} aria-hidden />
-          Corrigir busca
+          Corrigir<span className="hidden @2xl:inline"> busca</span>
           <span className="sr-only">: {query.error}</span>
         </button>
       </Tooltip>
@@ -55,9 +55,16 @@ export function QueryBadge({
         className={cn(BADGE, "bg-accent-soft text-accent hover:bg-accent-soft/70", className)}
       >
         <Database size={14} strokeWidth={1.75} aria-hidden />
-        <span className="tabular-nums">
-          {query.state === "pendente" ? "Pendente" : `${count.toLocaleString("pt-BR")} ${count === 1 ? "registro" : "registros"}`}
-        </span>
+        {query.state === "pendente" ? (
+          "Pendente"
+        ) : (
+          <span className="tabular-nums">
+            {count.toLocaleString("pt-BR")}
+            {/* Em painel estreito fica só o número (o leitor de tela ouve o texto completo). */}
+            <span className="hidden @2xl:inline"> {count === 1 ? "registro" : "registros"}</span>
+            <span className="sr-only @2xl:hidden"> {count === 1 ? "registro" : "registros"}</span>
+          </span>
+        )}
         <span className="sr-only">. {query.description}. Editar busca</span>
       </button>
     </Tooltip>

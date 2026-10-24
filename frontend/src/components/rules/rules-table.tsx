@@ -60,15 +60,15 @@ export function RulesTable({
   return (
     <div className={cn("@container min-h-0 overflow-auto", className)} aria-busy={loading || undefined}>
       {/* Em painéis estreitos, as colunas Trecho e Página saem (o trecho fica no grifo). */}
-      <table className={cn("w-full min-w-[400px] table-fixed border-separate border-spacing-0 text-sm @2xl:min-w-[640px]", showQuery && "min-w-[540px] @2xl:min-w-[780px]")}>
+      <table className={cn("w-full min-w-[400px] table-fixed border-separate border-spacing-0 text-sm @2xl:min-w-[640px]", showQuery && "min-w-[480px] @2xl:min-w-[760px]")}>
         <colgroup>
           <col className="w-32" />
           <col className="hidden @2xl:table-column" />
           <col />
           <col className="hidden w-16 @xl:table-column" />
           <col className="w-32" />
-          {showQuery && <col className="w-36" />}
-          <col className="w-24" />
+          {showQuery && <col className="w-24 @2xl:w-36" />}
+          <col className={showQuery ? "w-20" : "w-24"} />
         </colgroup>
         <thead className="sticky top-0 z-10 bg-surface-muted">
           <tr>
@@ -166,8 +166,9 @@ function RuleRow({
           <span className="truncate font-mono text-xs text-foreground-muted">{rule.excerpt}</span>
         </Tooltip>
       </td>
-      <td className={cn(CELL, "truncate")} title={rule.summary}>
-        {rule.summary}
+      <td className={CELL} title={rule.summary}>
+        {/* Em painel estreito, o resumo usa até duas linhas em vez de virar "Gar…". */}
+        <span className="line-clamp-2 leading-snug">{rule.summary}</span>
       </td>
       <td className={cn(CELL, PAGINA, "font-mono text-xs text-foreground-muted tabular-nums")}>{rule.page ?? "—"}</td>
       <td className={CELL}>
