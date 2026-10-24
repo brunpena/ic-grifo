@@ -551,12 +551,16 @@ export function AssistantView() {
   const failed = upload.isError || doc?.status === "error";
   const failedStep = upload.isError ? 0 : doc?.page_count ? 2 : 1;
 
+  // Regerando as buscas: as regras continuam na tela, com um aviso.
+  const generating = doc?.status === "extracting_rules" && rules.length > 0;
+  const showRules = ready || generating;
+
   const intro: ThreadMessage = {
     id: "intro",
     role: "assistant",
     content: failed
       ? `Não consegui analisar “${documentName}”. ${doc?.status_message ?? errorMessage(upload.error)}`
-      : ready
+      : showRules
         ? `Li “${documentName}” e encontrei ${rules.length} ${rules.length === 1 ? "regra" : "regras"}. Revise na tabela ao lado ou me pergunte sobre o documento.`
         : `Estou lendo “${documentName}” e procurando as regras. ${doc?.status_message ?? ""}`,
   };
@@ -731,7 +735,7 @@ export function AssistantView() {
 
   const rulesPanel = (
     <section aria-label="Regras" className="flex h-full min-h-0 flex-col bg-surface">
-      {ready ? (
+      {showRules ? (
         <>
           <RulesHeader
             validated={rules.filter((r) => r.status === "validada").length}
@@ -740,14 +744,14 @@ export function AssistantView() {
             onTypeFilterChange={setTypeFilter}
             statusFilter={statusFilter}
             onStatusFilterChange={setStatusFilter}
-            notice={doc?.status_message}
+            notice={generating ? "Gerando as buscas nas bases de dados…" : doc?.status_message}
             actions={
               <>
                 {datasets.length > 0 && rules.length > 0 && (
                   <Button
                     size="sm"
                     icon={<Sparkles size={16} strokeWidth={1.75} aria-hidden />}
-                    loading={generateQueries.isPending}
+                    loading={generateQueries.isPending || generating}
                     onClick={() =>
                       generateQueries.mutate(false, {
                         onError: (error) =>
