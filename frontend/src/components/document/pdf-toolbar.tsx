@@ -3,6 +3,7 @@
 import { Download, Minus, Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { IconButton } from "@/components/ui/icon-button";
+import type { ReactNode } from "react";
 import { cn } from "@/lib/utils";
 
 type PdfToolbarProps = {
@@ -17,6 +18,8 @@ type PdfToolbarProps = {
   pageCount: number;
   onExport?: () => void;
   exporting?: boolean;
+  /** Botões extras à direita (busca, painéis). */
+  actions?: ReactNode;
   className?: string;
 };
 
@@ -31,6 +34,7 @@ export function PdfToolbar({
   pageCount,
   onExport,
   exporting,
+  actions,
   className,
 }: PdfToolbarProps) {
   const percent = `${Math.round(zoom * 100)}%`;
@@ -82,6 +86,7 @@ export function PdfToolbar({
           Exportar
         </Button>
       )}
+      {actions && <div className="flex items-center gap-1">{actions}</div>}
     </div>
   );
 }

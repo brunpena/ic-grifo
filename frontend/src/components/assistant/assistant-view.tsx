@@ -1,10 +1,23 @@
 "use client";
 
 import { useQueryClient } from "@tanstack/react-query";
-import { FilePlus, FileSearch, FileText, FileUp, Library, Link2, MousePointerClick, Sparkles, Type, X } from "lucide-react";
+import {
+  FilePlus,
+  FileSearch,
+  FileText,
+  FileUp,
+  Library,
+  Link2,
+  MousePointerClick,
+  PanelLeftClose,
+  Search,
+  Sparkles,
+  Type,
+  X,
+} from "lucide-react";
 import Link from "next/link";
-import { type DragEvent, type ReactNode, useRef, useState } from "react";
-import { Group, Panel, Separator } from "react-resizable-panels";
+import { type DragEvent, type ReactNode, useEffect, useRef, useState } from "react";
+import { AnalysisWorkspace, PanelToggles, useAnalysisLayout } from "@/components/analysis/analysis-workspace";
 import { BrandLogo } from "@/components/brand-logo";
 import { AssistantMessage, type CitedRule, UserMessage } from "@/components/chat/chat-message";
 import { ProcessingSteps } from "@/components/chat/processing-steps";
@@ -16,7 +29,10 @@ import { PDF_TO_CSS, PdfDocumentPages, usePdfDocument } from "@/components/docum
 import { PdfPage, PdfViewer } from "@/components/document/pdf-viewer";
 import { PdfToolbar } from "@/components/document/pdf-toolbar";
 import { QueryEditorDialog } from "@/components/queries/query-editor-dialog";
+import { RecordsPanel } from "@/components/records/records-panel";
 import { RuleLegend } from "@/components/document/rule-legend";
+import { SearchBar } from "@/components/document/search-bar";
+import { usePdfSearch } from "@/components/document/use-pdf-search";
 import { RulesHeader } from "@/components/rules/rules-header";
 import { RulesTable } from "@/components/rules/rules-table";
 import { Button } from "@/components/ui/button";
@@ -60,7 +76,7 @@ type ThreadMessage = {
   streaming?: boolean;
 };
 
-type MobileTab = "chat" | "document" | "rules";
+type MobileTab = "chat" | "document" | "rules" | "table";
 
 let nextId = 0;
 const localId = () => `local-${++nextId}`;
@@ -97,6 +113,12 @@ export function AssistantView() {
   const documentName = doc?.title ?? pendingUpload?.name ?? "";
   const isOpen = !!documentId || !!pendingUpload;
   const pdf = usePdfDocument(file);
+  const [layout, setLayout] = useAnalysisLayout();
+  // Busca no documento (Ctrl+F).
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchIndex, setSearchIndex] = useState(0);
+  const search = usePdfSearch(pdf.status === "ready" ? pdf.doc : null, searchOpen ? searchQuery : "");
   const ready = doc?.status === "ready";
   const { data: rules = [] } = useRules(documentId, ready);
   const { data: savedMessages = [] } = useMessages(documentId, ready);
@@ -125,6 +147,19 @@ export function AssistantView() {
   const selectionRef = useRef<FloatingAnchor | null>(null);
   const selectionInfo = useRef<{ page: number; text: string } | null>(null);
 
+  // Ctrl+F (ou ⌘F) abre a busca no documento em vez da busca do navegador.
+  useEffect(() => {
+    if (!isOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "f") {
+        e.preventDefault();
+        setSearchOpen(true);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [isOpen]);
+
   const resetView = () => {
     setZoomOverride(null);
     setSelectedId(null);
@@ -132,6 +167,7 @@ export function AssistantView() {
     setNotes([]);
     setPage(1);
     setMobileTab("document");
+    setSearchIndex(0);
     upload.reset();
   };
 
@@ -278,6 +314,16 @@ export function AssistantView() {
     const box = rule.boxes[0];
     // Na troca de aba, espera a página aparecer antes de rolar.
     if (box) requestAnimationFrame(() => scrollToPage(box.page, box));
+  };
+
+  const goToMatch = (index: number) => {
+    const total = search.matches.length;
+    if (!total) return;
+    const next = ((index % total) + total) % total;
+    setSearchIndex(next);
+    if (!isDesktop) setMobileTab("document");
+    const match = search.matches[next];
+    requestAnimationFrame(() => scrollToPage(match.page, match.rect));
   };
 
   const onPageMouseUp = (pageNumber: number, pageEl: HTMLElement) => {
@@ -561,6 +607,14 @@ export function AssistantView() {
           onClick={() => setSourceMode("url")}
           tooltipSide="bottom"
         />
+        {isDesktop && (
+          <IconButton
+            aria-label="Esconder conversa"
+            icon={<PanelLeftClose size={16} strokeWidth={1.75} aria-hidden />}
+            onClick={() => setLayout({ ...layout, chat: false })}
+            tooltipSide="bottom"
+          />
+        )}
         <IconButton aria-label="Fechar análise" icon={<X size={16} strokeWidth={1.75} aria-hidden />} onClick={closeDocument} />
       </div>
       <ChatThread
@@ -589,9 +643,44 @@ export function AssistantView() {
             onZoomReset={() => setZoomOverride(1)}
             page={page}
             pageCount={pdf.status === "ready" ? pdf.pages.length : 0}
+            actions={
+              <>
+                <IconButton
+                  aria-label="Buscar no documento (Ctrl+F)"
+                  icon={<Search size={16} strokeWidth={1.75} aria-hidden />}
+                  onClick={() => setSearchOpen(true)}
+                  disabled={pdf.status !== "ready"}
+                  tooltipSide="bottom"
+                />
+                {isDesktop && (
+                  <PanelToggles
+                    layout={layout}
+                    onChange={setLayout}
+                    counts={{ rules: rules.length, table: rules.filter((r) => r.query?.state === "ok").length }}
+                  />
+                )}
+              </>
+            }
           />
           <RuleLegend active={typeFilter} onChange={setTypeFilter} />
         </>
+      }
+      overlay={
+        searchOpen && (
+          <SearchBar
+            query={searchQuery}
+            onQueryChange={(q) => {
+              setSearchQuery(q);
+              setSearchIndex(0);
+            }}
+            current={search.matches.length ? Math.min(searchIndex, search.matches.length - 1) : 0}
+            total={search.matches.length}
+            onPrevious={() => goToMatch(searchIndex - 1)}
+            onNext={() => goToMatch(searchIndex + 1)}
+            onClose={() => setSearchOpen(false)}
+            className="absolute top-3 right-3 z-20"
+          />
+        )
       }
     >
       {documentFile.isError ? (
@@ -622,6 +711,12 @@ export function AssistantView() {
                 .map((r) => ({ ruleId: r.id, type: r.type, status: r.status, rects: rectsOn(r, n) }))}
               activeRuleId={activeRuleId}
               pulse={pulse}
+              searchRects={search.matches.filter((m) => m.page === n).map((m) => m.rect)}
+              currentSearchIndex={
+                search.matches[searchIndex]?.page === n
+                  ? search.matches.slice(0, searchIndex).filter((m) => m.page === n).length
+                  : undefined
+              }
             />
           )}
         />
@@ -647,21 +742,30 @@ export function AssistantView() {
             onStatusFilterChange={setStatusFilter}
             notice={doc?.status_message}
             actions={
-              datasets.length > 0 && rules.length > 0 ? (
-                <Button
-                  size="sm"
-                  icon={<Sparkles size={16} strokeWidth={1.75} aria-hidden />}
-                  loading={generateQueries.isPending}
-                  onClick={() =>
-                    generateQueries.mutate(false, {
-                      onError: (error) =>
-                        toast({ title: "Não foi possível gerar as buscas", description: errorMessage(error), variant: "error" }),
-                    })
-                  }
-                >
-                  Gerar buscas com IA
-                </Button>
-              ) : undefined
+              <>
+                {datasets.length > 0 && rules.length > 0 && (
+                  <Button
+                    size="sm"
+                    icon={<Sparkles size={16} strokeWidth={1.75} aria-hidden />}
+                    loading={generateQueries.isPending}
+                    onClick={() =>
+                      generateQueries.mutate(false, {
+                        onError: (error) =>
+                          toast({ title: "Não foi possível gerar as buscas", description: errorMessage(error), variant: "error" }),
+                      })
+                    }
+                  >
+                    Gerar buscas com IA
+                  </Button>
+                )}
+                {isDesktop && (
+                  <IconButton
+                    aria-label="Esconder regras"
+                    icon={<X size={16} strokeWidth={1.75} aria-hidden />}
+                    onClick={() => setLayout({ ...layout, rules: false })}
+                  />
+                )}
+              </>
             }
           />
           <RulesTable
@@ -714,28 +818,39 @@ export function AssistantView() {
     </section>
   );
 
+  const tablePanel = (onClose?: () => void) => (
+    <RecordsPanel
+      rules={rules}
+      selectedRuleId={selectedId}
+      onSelectRule={(id) => (id ? goToRule(id) : setSelectedId(null))}
+      hasDatasets={datasets.length > 0}
+      onEditQuery={(rule) => setEditingQueryId(rule.id)}
+      onClose={onClose}
+    />
+  );
+
   return (
     <div className="relative h-full" {...dropHandlers}>
       {fileInput}
       {isDesktop ? (
-        <Group orientation="horizontal" className="h-full">
-          <Panel defaultSize="26" minSize={300}>
-            {chatPanel}
-          </Panel>
-          <ResizeHandle />
-          <Panel defaultSize="40" minSize={360}>
-            {documentPanel}
-          </Panel>
-          <ResizeHandle />
-          <Panel defaultSize="34" minSize={340}>
-            {rulesPanel}
-          </Panel>
-        </Group>
+        <AnalysisWorkspace
+          layout={layout}
+          chat={chatPanel}
+          document={documentPanel}
+          rules={rulesPanel}
+          table={tablePanel(() => setLayout({ ...layout, table: false }))}
+        />
       ) : (
         <div className="flex h-full flex-col">
           <MobileTabs value={mobileTab} onChange={setMobileTab} ruleCount={rules.length} />
           <div className="min-h-0 flex-1">
-            {mobileTab === "chat" ? chatPanel : mobileTab === "document" ? documentPanel : rulesPanel}
+            {mobileTab === "chat"
+              ? chatPanel
+              : mobileTab === "document"
+                ? documentPanel
+                : mobileTab === "rules"
+                  ? rulesPanel
+                  : tablePanel()}
           </div>
         </div>
       )}
@@ -827,23 +942,11 @@ function DropOverlay() {
   );
 }
 
-/** Divisória de 1 px com área de clique de 8 px; fica em `accent` no hover e ao arrastar. */
-function ResizeHandle() {
-  return (
-    <Separator
-      className={cn(
-        "relative w-px bg-border outline-none transition-colors duration-150 ease-out",
-        "after:absolute after:inset-y-0 after:-left-1 after:w-2 after:content-['']",
-        "data-[separator=active]:bg-accent data-[separator=hover]:bg-accent focus-visible:bg-accent",
-      )}
-    />
-  );
-}
-
 const TABS: { value: MobileTab; label: string }[] = [
   { value: "chat", label: "Conversa" },
   { value: "document", label: "Documento" },
   { value: "rules", label: "Regras" },
+  { value: "table", label: "Tabela" },
 ];
 
 function MobileTabs({
