@@ -195,6 +195,10 @@ class Rule(Base):
     status: Mapped[str] = mapped_column(Text, default="pendente")
     comment: Mapped[str | None] = mapped_column(Text)
     origin: Mapped[str] = mapped_column(Text)
+    # Bases da análise que a IA relacionou à regra (a busca é gerada só para essas).
+    dataset_ids: Mapped[list[uuid.UUID]] = mapped_column(
+        ARRAY(UUID(as_uuid=True)), default=list, server_default="{}"
+    )
     embedding: Mapped[list[float] | None] = mapped_column(Vector(EMBEDDING_DIM))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(

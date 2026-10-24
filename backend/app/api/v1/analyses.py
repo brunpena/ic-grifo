@@ -5,13 +5,13 @@ import uuid
 from typing import Annotated
 
 from fastapi import APIRouter, File, Response, UploadFile, status
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import selectinload
 
 from app.api.deps import SessionDep, UserDep
 from app.core.config import get_settings
 from app.core.errors import AppError, NotFoundError, PayloadTooLargeError
-from app.db.models import Analysis, Dataset, Document, User
+from app.db.models import Analysis, Dataset, Document, RuleQuery, User
 from app.schemas.analyses import (
     AnalysisCreateIn,
     AnalysisDetailOut,
@@ -235,6 +235,16 @@ async def get_dataset(dataset_id: uuid.UUID, user: UserDep, db: SessionDep) -> D
 )
 async def delete_dataset(dataset_id: uuid.UUID, user: UserDep, db: SessionDep) -> Response:
     dataset = await _owned_dataset(db, dataset_id, user)
+    await db.execute(
+        update(RuleQuery)
+        .where(RuleQuery.dataset_id == dataset_id)
+        .values(
+            state="erro",
+            error=f"A base “{dataset.name}” foi removida. Envie de novo e rode a busca.",
+            match_count=None,
+            matched_rows=[],
+        )
+    )
     await db.delete(dataset)
     await db.commit()
     await storage.delete_files([storage.dataset_name(dataset_id)])

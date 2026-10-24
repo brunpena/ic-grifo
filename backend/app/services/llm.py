@@ -6,7 +6,7 @@ import logging
 import random
 import re
 from collections.abc import AsyncIterator, Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import httpx
 
@@ -216,6 +216,47 @@ class ExtractedRule:
     start: int
     end: int
     summary: str
+    # Nomes das bases de dados que têm relação com a regra (só quando há bases).
+    datasets: list[str] = field(default_factory=list)
+
+
+@dataclass
+class DatasetPrompt:
+    """O que a IA sabe de uma base: nome, tamanho e colunas (dicts de `ColumnInfo`)."""
+
+    name: str
+    row_count: int
+    columns: list[dict]
+
+
+TYPE_NAMES = {
+    "integer": "inteiro",
+    "decimal": "decimal",
+    "date": "data",
+    "datetime": "data e hora",
+    "boolean": "sim/não",
+    "text": "texto",
+}
+
+
+def describe_datasets(datasets: list[DatasetPrompt]) -> str:
+    """Schema das bases em texto compacto, para o prompt."""
+    blocks = []
+    for dataset in datasets:
+        lines = [f'<base nome="{dataset.name}" linhas="{dataset.row_count}">']
+        for column in dataset.columns:
+            kind = TYPE_NAMES.get(column["type"], column["type"])
+            examples = column.get("examples") or []
+            if column.get("values"):
+                detail = "valores: " + " | ".join(column["values"])
+            elif examples:
+                detail = "ex.: " + ", ".join(examples)
+            else:
+                detail = "(sempre vazia)"
+            lines.append(f"- {column['name']} ({kind}) {detail}")
+        lines.append("</base>")
+        blocks.append("\n".join(lines))
+    return "\n".join(blocks)
 
 
 @dataclass
@@ -270,21 +311,55 @@ def numbered(text: str, sentences: list[Sentence], ids: range) -> str:
     )
 
 
+def _extraction_schema(dataset_names: list[str]) -> dict:
+    """Com bases na análise, cada regra diz também com quais bases ela tem relação."""
+    if not dataset_names:
+        return EXTRACTION_SCHEMA
+    item = EXTRACTION_SCHEMA["properties"]["rules"]["items"]
+    with_datasets = {
+        **item,
+        "properties": {
+            **item["properties"],
+            "datasets": {"type": "ARRAY", "items": {"type": "STRING", "enum": dataset_names}},
+        },
+        "required": [*item["required"], "datasets"],
+        "propertyOrdering": [*item["propertyOrdering"], "datasets"],
+    }
+    return {**EXTRACTION_SCHEMA, "properties": {"rules": {"type": "ARRAY", "items": with_datasets}}}
+
+
+def _extraction_system(datasets: list[DatasetPrompt]) -> str:
+    if not datasets:
+        return EXTRACTION_SYSTEM
+    return f"""{EXTRACTION_SYSTEM}
+
+As regras serão verificadas contra as bases de dados abaixo. Em `datasets`, liste as \
+bases cujos registros a regra pode avaliar: a regra fala de algo que aparece nas colunas \
+(valores, datas, prazos, categorias, situação). Use lista vazia quando a regra não tem \
+relação com nenhuma base. Isso não muda quais regras você extrai.
+
+<bases>
+{describe_datasets(datasets)}
+</bases>"""
+
+
 async def extract_rules_from_chunk(
-    text: str, sentences: list[Sentence], ids: range
+    text: str, sentences: list[Sentence], ids: range, datasets: list[DatasetPrompt] | None = None
 ) -> list[ExtractedRule]:
     settings = get_settings()
+    datasets = datasets or []
+    dataset_names = [d.name for d in datasets]
     config: dict = {
         "temperature": 0,
         "maxOutputTokens": 16000,
         "responseMimeType": "application/json",
-        "responseSchema": EXTRACTION_SCHEMA,
+        "responseSchema": _extraction_schema(dataset_names),
     }
     if settings.gemini_thinking_level:
         config["thinkingConfig"] = {"thinkingLevel": settings.gemini_thinking_level}
     data = await _generate(
         {
-            "systemInstruction": {"parts": [{"text": EXTRACTION_SYSTEM}]},
+            "systemInstruction": {"parts": [{"text": _extraction_system(datasets)}]},
             "contents": [
                 {
                     "role": "user",
@@ -313,9 +388,14 @@ async def extract_rules_from_chunk(
         if first not in ids or last not in ids or last - first >= MAX_RULE_SENTENCES:
             logger.info("rule_out_of_range", extra={"first": first + 1, "last": last + 1})
             continue
+        related = [n for n in r.get("datasets") or [] if n in dataset_names]
         result.append(
             ExtractedRule(
-                r["type"], sentences[first].start, sentences[last].end, r["summary"].strip()
+                r["type"],
+                sentences[first].start,
+                sentences[last].end,
+                r["summary"].strip(),
+                list(dict.fromkeys(related)),
             )
         )
     return result
@@ -324,6 +404,7 @@ async def extract_rules_from_chunk(
 async def extract_rules(
     text: str,
     on_progress: Callable[[int, int], Awaitable[None]] | None = None,
+    datasets: list[DatasetPrompt] | None = None,
 ) -> list[ExtractedRule]:
     """Extrai regras de todos os blocos, em paralelo (até LLM_MAX_CONCURRENCY ao mesmo tempo)."""
     ensure_configured()
@@ -337,7 +418,7 @@ async def extract_rules(
     async def run(ids: range) -> list[ExtractedRule]:
         nonlocal done
         async with semaphore:
-            rules = await extract_rules_from_chunk(text, sentences, ids)
+            rules = await extract_rules_from_chunk(text, sentences, ids, datasets)
         async with lock:
             done += 1
             if on_progress:
@@ -354,6 +435,198 @@ async def extract_rules(
             task.cancel()
         raise
     return [item for batch in results for item in batch]
+
+
+# ---------------------------------------------------------------------------
+# Regra → busca estruturada
+# ---------------------------------------------------------------------------
+
+QUERY_OPERATORS = (
+    "eq", "ne", "gt", "gte", "lt", "lte", "between", "in", "not_in", "contains",
+    "not_contains", "starts_with", "ends_with", "is_null", "not_null",
+)  # fmt: skip
+# Regras por chamada: cabe folgado na resposta e poupa a cota diária.
+QUERY_BATCH = 25
+
+QUERY_SYSTEM = """Você transforma regras de documentos normativos em buscas sobre \
+bases de dados em CSV. As buscas nunca são SQL: são condições sobre colunas.
+
+Para cada regra, monte a busca que encontra os registros AOS QUAIS A REGRA SE APLICA \
+(o escopo da regra), não os que a violam. Exemplo: "contratos acima de R$ 50 mil exigem \
+garantia" → registros com Valor > 50000. Quem verifica se cada registro cumpre a regra \
+é outra etapa.
+
+Formato de cada busca:
+- dataset: nome exato de uma das bases, ou null quando nenhuma base tem colunas para \
+avaliar a regra (nesse caso, conditions vazio).
+- logic: "and" (todas as condições) ou "or" (qualquer uma).
+- conditions: lista de {column, op, value, values}. column é o nome exato da coluna.
+- Operadores: eq (igual), ne (diferente), gt, gte, lt, lte (comparações), between \
+(values = [mínimo, máximo]), in e not_in (values = lista), contains, not_contains, \
+starts_with, ends_with (texto), is_null e not_null (sem valor).
+- Comparações gt/gte/lt/lte/between só em colunas de número, data ou data e hora. \
+Colunas sim/não aceitam só eq e ne.
+- value sempre como texto: números com ponto decimal e sem milhar ("50000.00"), datas \
+em AAAA-MM-DD, sim/não como "true" ou "false". Em colunas com lista de valores, use \
+exatamente um dos valores listados.
+- Uma regra que se aplica a todos os registros da base fica com conditions vazio.
+- reason: uma frase curta explicando a busca ou por que nenhuma base serve.
+
+Não invente colunas nem valores que não estão nas bases."""
+
+QUERY_SCHEMA = {
+    "type": "OBJECT",
+    "properties": {
+        "queries": {
+            "type": "ARRAY",
+            "items": {
+                "type": "OBJECT",
+                "properties": {
+                    "rule": {"type": "INTEGER"},
+                    "dataset": {"type": "STRING", "nullable": True},
+                    "logic": {"type": "STRING", "enum": ["and", "or"]},
+                    "conditions": {
+                        "type": "ARRAY",
+                        "items": {
+                            "type": "OBJECT",
+                            "properties": {
+                                "column": {"type": "STRING"},
+                                "op": {"type": "STRING", "enum": list(QUERY_OPERATORS)},
+                                "value": {"type": "STRING", "nullable": True},
+                                "values": {"type": "ARRAY", "items": {"type": "STRING"}},
+                            },
+                            "required": ["column", "op"],
+                            "propertyOrdering": ["column", "op", "value", "values"],
+                        },
+                    },
+                    "reason": {"type": "STRING"},
+                },
+                "required": ["rule", "dataset", "logic", "conditions", "reason"],
+                "propertyOrdering": ["rule", "dataset", "logic", "conditions", "reason"],
+            },
+        }
+    },
+    "required": ["queries"],
+}
+
+
+@dataclass
+class RulePrompt:
+    """Uma regra enviada para virar busca. `ref` é o número usado na resposta."""
+
+    ref: int
+    type: str
+    summary: str
+    excerpt: str
+
+
+@dataclass
+class GeneratedQuery:
+    """A busca como a IA devolveu; ainda precisa passar pela validação do schema."""
+
+    dataset: str | None
+    query: dict
+    reason: str
+
+
+def _query_from_answer(item: dict) -> GeneratedQuery:
+    conditions = []
+    for c in item.get("conditions") or []:
+        op = c.get("op")
+        if op not in QUERY_OPERATORS or not str(c.get("column") or "").strip():
+            continue
+        if op in ("between", "in", "not_in"):
+            value: object = [str(v) for v in c.get("values") or []]
+        elif op in ("is_null", "not_null"):
+            value = None
+        else:
+            value = None if c.get("value") is None else str(c.get("value"))
+        column = str(c.get("column")).strip()[:200]
+        conditions.append({"column": column, "op": op, "value": value})
+    dataset = item.get("dataset") or None
+    return GeneratedQuery(
+        dataset=dataset,
+        query={
+            "dataset": str(dataset or "?"),
+            "logic": "or" if item.get("logic") == "or" else "and",
+            "conditions": conditions,
+        },
+        reason=str(item.get("reason") or "").strip(),
+    )
+
+
+async def generate_queries_batch(
+    rules: list[RulePrompt], datasets: list[DatasetPrompt]
+) -> dict[int, GeneratedQuery]:
+    settings = get_settings()
+    config: dict = {
+        "temperature": 0,
+        "maxOutputTokens": 16000,
+        "responseMimeType": "application/json",
+        "responseSchema": QUERY_SCHEMA,
+    }
+    if settings.gemini_thinking_level:
+        config["thinkingConfig"] = {"thinkingLevel": settings.gemini_thinking_level}
+    listing = "\n".join(
+        f"[{r.ref}] ({r.type}) {r.summary} — “{' '.join(r.excerpt.split())}”" for r in rules
+    )
+    data = await _generate(
+        {
+            "systemInstruction": {"parts": [{"text": QUERY_SYSTEM}]},
+            "contents": [
+                {
+                    "role": "user",
+                    "parts": [
+                        {
+                            "text": f"<bases>\n{describe_datasets(datasets)}\n</bases>\n\n"
+                            f"<regras>\n{listing}\n</regras>"
+                        }
+                    ],
+                }
+            ],
+            "generationConfig": config,
+        }
+    )
+    answer, finish = _text(data)
+    if finish != "STOP":
+        logger.warning("llm_finish", extra={"step": "queries", "reason": finish})
+    try:
+        items = json.loads(answer)["queries"]
+    except (json.JSONDecodeError, KeyError, TypeError):
+        logger.warning("llm_invalid_json", extra={"step": "queries"})
+        return {}
+    refs = {r.ref for r in rules}
+    result: dict[int, GeneratedQuery] = {}
+    for item in items:
+        try:
+            ref = int(item["rule"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if ref in refs and ref not in result:
+            result[ref] = _query_from_answer(item)
+    return result
+
+
+async def generate_queries(
+    rules: list[RulePrompt], datasets: list[DatasetPrompt]
+) -> dict[int, GeneratedQuery]:
+    """Buscas para todas as regras, em lotes paralelos (até LLM_MAX_CONCURRENCY)."""
+    ensure_configured()
+    semaphore = asyncio.Semaphore(get_settings().llm_max_concurrency)
+    batches = [rules[i : i + QUERY_BATCH] for i in range(0, len(rules), QUERY_BATCH)]
+
+    async def run(batch: list[RulePrompt]) -> dict[int, GeneratedQuery]:
+        async with semaphore:
+            return await generate_queries_batch(batch, datasets)
+
+    tasks = [asyncio.ensure_future(run(b)) for b in batches]
+    try:
+        results = await asyncio.gather(*tasks)
+    except BaseException:
+        for task in tasks:
+            task.cancel()
+        raise
+    return {ref: query for batch in results for ref, query in batch.items()}
 
 
 # ---------------------------------------------------------------------------

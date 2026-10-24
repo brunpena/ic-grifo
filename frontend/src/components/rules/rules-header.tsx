@@ -1,6 +1,7 @@
 "use client";
 
-import { Info } from "lucide-react";
+import { AlertTriangle, Info } from "lucide-react";
+import type { ReactNode } from "react";
 import { ProgressBar } from "@/components/ui/progress-bar";
 import { RuleTypeSelect } from "@/components/ui/rule-type-select";
 import { Select } from "@/components/ui/select";
@@ -16,6 +17,10 @@ type RulesHeaderProps = {
   onTypeFilterChange: (type: RuleType | null) => void;
   statusFilter: RuleStatus | null;
   onStatusFilterChange: (status: RuleStatus | null) => void;
+  /** Botões à direita dos filtros (ex.: gerar buscas). */
+  actions?: ReactNode;
+  /** Aviso do processamento (ex.: buscas que a IA não conseguiu gerar). */
+  notice?: string | null;
   className?: string;
 };
 
@@ -27,6 +32,8 @@ export function RulesHeader({
   onTypeFilterChange,
   statusFilter,
   onStatusFilterChange,
+  actions,
+  notice,
   className,
 }: RulesHeaderProps) {
   return (
@@ -58,7 +65,14 @@ export function RulesHeader({
             </option>
           ))}
         </Select>
+        {actions && <div className="ml-auto flex items-center gap-2">{actions}</div>}
       </div>
+      {notice && (
+        <p role="status" className="flex items-start gap-2 rounded-md bg-pending-soft px-2.5 py-2 text-xs text-foreground-muted">
+          <AlertTriangle size={14} strokeWidth={1.75} aria-hidden className="mt-px shrink-0 text-rule-prazo" />
+          {notice}
+        </p>
+      )}
     </div>
   );
 }

@@ -1,7 +1,7 @@
 "use client";
 
 import { useQueryClient } from "@tanstack/react-query";
-import { FilePlus, FileSearch, FileText, FileUp, Library, Link2, MousePointerClick, Type, X } from "lucide-react";
+import { FilePlus, FileSearch, FileText, FileUp, Library, Link2, MousePointerClick, Sparkles, Type, X } from "lucide-react";
 import Link from "next/link";
 import { type DragEvent, type ReactNode, useRef, useState } from "react";
 import { Group, Panel, Separator } from "react-resizable-panels";
@@ -15,6 +15,7 @@ import { HighlightLayer, type PageRect } from "@/components/document/highlight-l
 import { PDF_TO_CSS, PdfDocumentPages, usePdfDocument } from "@/components/document/pdf-document";
 import { PdfPage, PdfViewer } from "@/components/document/pdf-viewer";
 import { PdfToolbar } from "@/components/document/pdf-toolbar";
+import { QueryEditorDialog } from "@/components/queries/query-editor-dialog";
 import { RuleLegend } from "@/components/document/rule-legend";
 import { RulesHeader } from "@/components/rules/rules-header";
 import { RulesTable } from "@/components/rules/rules-table";
@@ -46,6 +47,7 @@ import {
   useUploadDocument,
 } from "@/lib/documents";
 import type { FloatingAnchor } from "@/lib/floating";
+import { describeQuery, useGenerateQueries } from "@/lib/queries";
 import { DESKTOP_QUERY, useMediaQuery } from "@/lib/use-media-query";
 import { cn } from "@/lib/utils";
 import { AssistantComposer, AssistantDisclaimer } from "./assistant-composer";
@@ -100,6 +102,9 @@ export function AssistantView() {
   const { data: savedMessages = [] } = useMessages(documentId, ready);
   const updateRule = useUpdateRule(documentId ?? "");
   const createRule = useCreateRule(documentId ?? "");
+  const generateQueries = useGenerateQueries(documentId ?? "");
+  const [editingQueryId, setEditingQueryId] = useState<string | null>(null);
+  const datasets = analysis?.datasets ?? [];
 
   // Mensagens que ainda não estão no servidor (pergunta enviada e resposta chegando).
   const [pending, setPending] = useState<ThreadMessage[]>([]);
@@ -640,10 +645,33 @@ export function AssistantView() {
             onTypeFilterChange={setTypeFilter}
             statusFilter={statusFilter}
             onStatusFilterChange={setStatusFilter}
+            notice={doc?.status_message}
+            actions={
+              datasets.length > 0 && rules.length > 0 ? (
+                <Button
+                  size="sm"
+                  icon={<Sparkles size={16} strokeWidth={1.75} aria-hidden />}
+                  loading={generateQueries.isPending}
+                  onClick={() =>
+                    generateQueries.mutate(false, {
+                      onError: (error) =>
+                        toast({ title: "Não foi possível gerar as buscas", description: errorMessage(error), variant: "error" }),
+                    })
+                  }
+                >
+                  Gerar buscas com IA
+                </Button>
+              ) : undefined
+            }
           />
           <RulesTable
             className="flex-1"
-            rules={visibleRules.map((r) => ({ ...r, page: r.page ?? undefined }))}
+            rules={visibleRules.map((r) => ({
+              ...r,
+              page: r.page ?? undefined,
+              query: r.query ? { ...r.query, description: describeQuery(r.query.query) } : null,
+            }))}
+            onEditQuery={datasets.length ? (r) => setEditingQueryId(r.id) : undefined}
             selectedId={selectedId}
             onSelect={(r) => goToRule(r.id)}
             onHover={(r) => setHoverId(r?.id ?? null)}
@@ -713,6 +741,12 @@ export function AssistantView() {
       )}
 
       {sourceDialog}
+      <QueryEditorDialog
+        rule={rules.find((r) => r.id === editingQueryId) ?? null}
+        datasets={datasets}
+        documentId={documentId ?? ""}
+        onClose={() => setEditingQueryId(null)}
+      />
       <CreateRulePopover
         open={createOpen}
         onOpenChange={setCreateOpen}

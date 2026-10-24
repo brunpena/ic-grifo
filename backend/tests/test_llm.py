@@ -128,7 +128,7 @@ async def test_failed_chunk_cancels_the_others(monkeypatch):
     monkeypatch.setattr(get_settings(), "llm_max_concurrency", 4)
     pending: list[asyncio.Task] = []
 
-    async def extract(text, sentences, ids):
+    async def extract(text, sentences, ids, datasets=None):
         if ids.start == 0:
             await asyncio.sleep(0)
             raise llm.LlmApiError("cota")

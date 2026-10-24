@@ -8,12 +8,12 @@ import asyncio
 import logging
 import uuid
 
-from sqlalchemy import insert, update
+from sqlalchemy import exists, insert, select, update
 
 from app.core.logging import log_step
 from app.db.models import Document, Page, Rule, Word
 from app.db.session import SessionLocal
-from app.services import llm
+from app.services import llm, rule_queries
 from app.services.pdf_text import ExtractedDocument, PdfReadError, extract_pdf
 from app.services.storage import StorageError, read_pdf
 
@@ -23,10 +23,53 @@ logger = logging.getLogger(__name__)
 _tasks: set[asyncio.Task] = set()
 
 
-def start_processing(document_id: uuid.UUID, extracted: ExtractedDocument | None = None) -> None:
-    task = asyncio.create_task(process_document(document_id, extracted))
+QUERIES_MESSAGE = "Gerando as buscas nas bases de dados"
+QUERIES_INTERRUPTED = (
+    "As regras foram encontradas, mas a geração das buscas foi interrompida. "
+    "Use “Gerar buscas” para tentar de novo."
+)
+
+
+def _start(coro) -> None:
+    task = asyncio.create_task(coro)
     _tasks.add(task)
     task.add_done_callback(_tasks.discard)
+
+
+def start_processing(document_id: uuid.UUID, extracted: ExtractedDocument | None = None) -> None:
+    _start(process_document(document_id, extracted))
+
+
+def start_query_generation(document_id: uuid.UUID, *, overwrite: bool) -> None:
+    """Gera de novo as buscas (pedido da pessoa), com o documento em `extracting_rules`."""
+    _start(_generate_queries(document_id, overwrite=overwrite, only_related=False))
+
+
+async def _generate_queries(document_id: uuid.UUID, *, overwrite: bool, only_related: bool) -> None:
+    """Etapa das buscas. Uma falha aqui não perde as regras: o documento fica pronto, com
+    o motivo em `status_message`."""
+    await _set_status(document_id, "extracting_rules", QUERIES_MESSAGE)
+    message: str | None = None
+    try:
+        with log_step(logger, "generate_queries", document_id=str(document_id)) as info:
+            async with SessionLocal() as db:
+                result = await rule_queries.generate_for_document(
+                    db, document_id, overwrite=overwrite, only_related=only_related
+                )
+            info.update(vars(result))
+        if result.failed == 1:
+            message = "1 busca gerada pela IA não passou na validação. Corrija na regra."
+        elif result.failed:
+            message = (
+                f"{result.failed} buscas geradas pela IA não passaram na validação. "
+                "Corrija nas regras."
+            )
+    except (llm.LlmUnavailableError, llm.LlmApiError) as exc:
+        message = f"As regras foram encontradas, mas a IA não gerou as buscas: {exc}"
+    except Exception:
+        logger.exception("generate_queries_failed", extra={"document_id": str(document_id)})
+        message = "As regras foram encontradas, mas não foi possível gerar as buscas."
+    await _set_status(document_id, "ready", message)
 
 
 async def _set_status(document_id: uuid.UUID, status: str, message: str | None = None) -> None:
@@ -93,8 +136,19 @@ async def process_document(
                 document_id, "extracting_rules", f"Analisando trecho {done} de {total}"
             )
 
+        async with SessionLocal() as db:
+            analysis_id = await db.scalar(
+                select(Document.analysis_id).where(Document.id == document_id)
+            )
+            datasets = await rule_queries.analysis_datasets(db, analysis_id) if analysis_id else []
+        dataset_ids = {d.name: d.id for d in datasets}
+
         with log_step(logger, "extract_rules", document_id=str(document_id)) as info:
-            found = await llm.extract_rules(extracted.full_text, on_progress=progress)
+            found = await llm.extract_rules(
+                extracted.full_text,
+                on_progress=progress,
+                datasets=rule_queries.dataset_prompts(datasets),
+            )
             rules = dedupe_rules(found)
             info["found"] = len(found)
             info["kept"] = len(rules)
@@ -109,15 +163,16 @@ async def process_document(
                     char_start=r.start,
                     char_end=r.end,
                     origin="ia",
+                    dataset_ids=[dataset_ids[n] for n in r.datasets if n in dataset_ids],
                 )
                 for r in rules
             )
-            await db.execute(
-                update(Document)
-                .where(Document.id == document_id)
-                .values(status="ready", status_message=None)
-            )
             await db.commit()
+
+        if any(r.datasets for r in rules):
+            await _generate_queries(document_id, overwrite=False, only_related=True)
+        else:
+            await _set_status(document_id, "ready")
     except (PdfReadError, StorageError) as exc:
         await _set_status(document_id, "error", str(exc))
     except llm.LlmUnavailableError as exc:
@@ -144,12 +199,27 @@ def dedupe_rules(found: list[llm.ExtractedRule]) -> list[llm.ExtractedRule]:
         )
         if not duplicate:
             kept.append(rule)
+            continue
+        # A mesma regra vista em dois blocos: junta as bases que cada um marcou.
+        for other in kept:
+            if other.type == rule.type and other.start <= rule.end and rule.start <= other.end:
+                other.datasets = list(dict.fromkeys([*other.datasets, *rule.datasets]))
+                break
     return kept
 
 
 async def recover_interrupted() -> None:
-    """Na subida da API, documentos que estavam sendo processados viram erro."""
+    """Na subida da API, documentos que estavam sendo processados viram erro. Os que já
+    tinham regras (paravam na geração das buscas) ficam prontos, com um aviso."""
     async with SessionLocal() as db:
+        await db.execute(
+            update(Document)
+            .where(
+                Document.status == "extracting_rules",
+                exists().where(Rule.document_id == Document.id),
+            )
+            .values(status="ready", status_message=QUERIES_INTERRUPTED)
+        )
         await db.execute(
             update(Document)
             .where(Document.status.in_(("processing", "extracting_rules")))

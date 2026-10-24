@@ -328,6 +328,81 @@ export interface paths {
         patch: operations["update_rule_api_v1_rules__rule_id__patch"];
         trace?: never;
     };
+    "/api/v1/documents/{document_id}/queries": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Gera com a IA as buscas das regras nas bases da análise (em segundo plano)
+         * @description Considera todas as regras não rejeitadas, inclusive as que a extração não ligou a nenhuma base (útil quando as bases chegaram depois do documento). O documento fica em `extracting_rules` até terminar.
+         */
+        post: operations["generate_document_queries_api_v1_documents__document_id__queries_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/rules/{rule_id}/query": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Define (ou corrige) a busca da regra e roda de novo
+         * @description A busca é validada contra o schema da base antes de ser gravada; uma busca inválida volta com 422 (`invalid_query`) e a mensagem do problema, sem alterar a atual.
+         */
+        put: operations["set_rule_query_api_v1_rules__rule_id__query_put"];
+        post?: never;
+        /** Remove a busca da regra */
+        delete: operations["delete_rule_query_api_v1_rules__rule_id__query_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/rules/{rule_id}/query/run": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Roda de novo a busca da regra (ex.: depois de reenviar a base) */
+        post: operations["run_rule_query_api_v1_rules__rule_id__query_run_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/rules/{rule_id}/records": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Registros da base encontrados pela busca da regra, paginados */
+        get: operations["list_rule_records_api_v1_rules__rule_id__records_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/documents/{document_id}/messages": {
         parameters: {
             query?: never;
@@ -439,6 +514,45 @@ export interface components {
             type: "obrigacao" | "proibicao" | "prazo" | "condicao" | "outro";
             /** Summary */
             summary: string;
+        };
+        /** Condition */
+        Condition: {
+            /** Column */
+            column: string;
+            /**
+             * Op
+             * @enum {string}
+             */
+            op: "eq" | "ne" | "gt" | "gte" | "lt" | "lte" | "between" | "in" | "not_in" | "contains" | "not_contains" | "starts_with" | "ends_with" | "is_null" | "not_null";
+            /**
+             * Value
+             * @description Valor comparado; lista em between (2 itens), in e not_in; vazio em is_null e not_null. Datas em AAAA-MM-DD.
+             */
+            value?: string | number | boolean | (string | number | boolean)[] | null;
+        };
+        /** ConditionGroup */
+        "ConditionGroup-Input": {
+            /**
+             * Logic
+             * @description and = todas; or = qualquer
+             * @default and
+             * @enum {string}
+             */
+            logic: "and" | "or";
+            /** Conditions */
+            conditions?: (components["schemas"]["Condition"] | components["schemas"]["ConditionGroup-Input"])[];
+        };
+        /** ConditionGroup */
+        "ConditionGroup-Output": {
+            /**
+             * Logic
+             * @description and = todas; or = qualquer
+             * @default and
+             * @enum {string}
+             */
+            logic: "and" | "or";
+            /** Conditions */
+            conditions?: (components["schemas"]["Condition"] | components["schemas"]["ConditionGroup-Output"])[];
         };
         /** DatasetColumn */
         DatasetColumn: {
@@ -577,6 +691,15 @@ export interface components {
         ErrorResponse: {
             error: components["schemas"]["ErrorDetail"];
         };
+        /** GenerateQueriesIn */
+        GenerateQueriesIn: {
+            /**
+             * Overwrite
+             * @description Refaz também as buscas já geradas pela IA. Buscas editadas à mão ficam.
+             * @default false
+             */
+            overwrite: boolean;
+        };
         /** HTTPValidationError */
         HTTPValidationError: {
             /** Detail */
@@ -666,6 +789,37 @@ export interface components {
             /** Organization */
             organization?: string | null;
         };
+        /** RecordRow */
+        RecordRow: {
+            /**
+             * Index
+             * @description Linha no CSV (0 = primeira linha depois do cabeçalho).
+             */
+            index: number;
+            /** Values */
+            values: (string | null)[];
+        };
+        /** RecordsOut */
+        RecordsOut: {
+            /**
+             * Dataset Id
+             * Format: uuid
+             */
+            dataset_id: string;
+            /** Dataset Name */
+            dataset_name: string;
+            /** Columns */
+            columns: string[];
+            /**
+             * Total
+             * @description Total de registros encontrados pela busca.
+             */
+            total: number;
+            /** Offset */
+            offset: number;
+            /** Rows */
+            rows: components["schemas"]["RecordRow"][];
+        };
         /** RegisterIn */
         RegisterIn: {
             /** Name */
@@ -727,6 +881,58 @@ export interface components {
             page: number | null;
             /** Boxes */
             boxes: components["schemas"]["HighlightBox"][];
+            /**
+             * Dataset Ids
+             * @description Bases da análise que a IA relacionou à regra na extração.
+             */
+            dataset_ids: string[];
+            /** @description Busca da regra nas bases, se houver. */
+            query: components["schemas"]["RuleQueryOut"] | null;
+        };
+        /** RuleQueryOut */
+        RuleQueryOut: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /**
+             * Dataset Id
+             * @description Nulo se a base foi removida.
+             */
+            dataset_id: string | null;
+            /** Dataset Name */
+            dataset_name: string | null;
+            query: components["schemas"]["StructuredQuery-Output"];
+            /**
+             * Origin
+             * @enum {string}
+             */
+            origin: "ia" | "manual";
+            /**
+             * State
+             * @description pendente (não rodou), ok ou erro (ver `error`).
+             * @enum {string}
+             */
+            state: "pendente" | "ok" | "erro";
+            /** Error */
+            error: string | null;
+            /**
+             * Match Count
+             * @description Registros encontrados na última execução.
+             */
+            match_count: number | null;
+            /** Executed At */
+            executed_at: string | null;
+            /**
+             * Verdict
+             * @description Reservado para a verificação (segue/viola).
+             */
+            verdict: ("segue" | "viola") | null;
+            /** Verdict Details */
+            verdict_details: {
+                [key: string]: unknown;
+            } | null;
         };
         /** RuleUpdateIn */
         RuleUpdateIn: {
@@ -738,6 +944,46 @@ export interface components {
             summary?: string | null;
             /** Comment */
             comment?: string | null;
+        };
+        /**
+         * StructuredQuery
+         * @description Sem condições, a busca devolve todos os registros da base.
+         */
+        "StructuredQuery-Input": {
+            /**
+             * Logic
+             * @description and = todas; or = qualquer
+             * @default and
+             * @enum {string}
+             */
+            logic: "and" | "or";
+            /** Conditions */
+            conditions?: (components["schemas"]["Condition"] | components["schemas"]["ConditionGroup-Input"])[];
+            /**
+             * Dataset
+             * @description Nome da base na análise.
+             */
+            dataset: string;
+        };
+        /**
+         * StructuredQuery
+         * @description Sem condições, a busca devolve todos os registros da base.
+         */
+        "StructuredQuery-Output": {
+            /**
+             * Logic
+             * @description and = todas; or = qualquer
+             * @default and
+             * @enum {string}
+             */
+            logic: "and" | "or";
+            /** Conditions */
+            conditions?: (components["schemas"]["Condition"] | components["schemas"]["ConditionGroup-Output"])[];
+            /**
+             * Dataset
+             * @description Nome da base na análise.
+             */
+            dataset: string;
         };
         /** TextDocumentIn */
         TextDocumentIn: {
@@ -1794,6 +2040,251 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RuleOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    generate_document_queries_api_v1_documents__document_id__queries_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                document_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GenerateQueriesIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DocumentOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    set_rule_query_api_v1_rules__rule_id__query_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                rule_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StructuredQuery-Input"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RuleOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    delete_rule_query_api_v1_rules__rule_id__query_delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                rule_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    run_rule_query_api_v1_rules__rule_id__query_run_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                rule_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RuleOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_rule_records_api_v1_rules__rule_id__records_get: {
+        parameters: {
+            query?: {
+                offset?: number;
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                rule_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RecordsOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
             /** @description Validation Error */

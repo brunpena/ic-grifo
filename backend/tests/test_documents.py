@@ -97,7 +97,7 @@ def test_dedupe_rules_drops_duplicates_from_overlapping_chunks():
 
 @pytest.fixture
 def fake_llm(monkeypatch):
-    async def extract(text, on_progress=None):
+    async def extract(text, on_progress=None, datasets=None):
         if on_progress:
             await on_progress(1, 1)
 

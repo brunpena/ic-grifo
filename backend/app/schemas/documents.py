@@ -4,6 +4,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from app.schemas.queries import RuleQueryOut
+
 RuleType = Literal["obrigacao", "proibicao", "prazo", "condicao", "outro"]
 RuleStatus = Literal["pendente", "validada", "rejeitada"]
 DocumentStatus = Literal["processing", "extracting_rules", "ready", "error"]
@@ -46,6 +48,10 @@ class RuleOut(BaseModel):
     origin: Literal["ia", "manual"]
     page: int | None = Field(description="Página onde o trecho começa.")
     boxes: list[HighlightBox]
+    dataset_ids: list[uuid.UUID] = Field(
+        description="Bases da análise que a IA relacionou à regra na extração."
+    )
+    query: RuleQueryOut | None = Field(description="Busca da regra nas bases, se houver.")
 
 
 class RuleCreateIn(BaseModel):
@@ -109,3 +115,10 @@ class TextDocumentIn(BaseModel):
 class UrlDocumentIn(BaseModel):
     analysis_id: uuid.UUID | None = None
     url: str = Field(min_length=1, max_length=2000, description="Link http(s) do PDF ou da página.")
+
+
+class GenerateQueriesIn(BaseModel):
+    overwrite: bool = Field(
+        default=False,
+        description="Refaz também as buscas já geradas pela IA. Buscas editadas à mão ficam.",
+    )

@@ -9,6 +9,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Tooltip } from "@/components/ui/tooltip";
 import { RULE_TYPES, type RuleStatus } from "@/lib/design/tokens";
 import { cn } from "@/lib/utils";
+import { QueryBadge } from "@/components/queries/query-badge";
 import type { RuleView } from "./types";
 
 type RulesTableProps = {
@@ -18,6 +19,8 @@ type RulesTableProps = {
   /** Hover na linha destaca o grifo no documento. */
   onHover?: (rule: RuleView | null) => void;
   onSetStatus?: (rule: RuleView, status: RuleStatus) => void;
+  /** Mostra a coluna da busca nas bases (análises com CSV) e abre o editor. */
+  onEditQuery?: (rule: RuleView) => void;
   /** Regras com uma mudança de situação em andamento. */
   pendingIds?: ReadonlySet<string>;
   loading?: boolean;
@@ -47,21 +50,24 @@ export function RulesTable({
   onSelect,
   onHover,
   onSetStatus,
+  onEditQuery,
   pendingIds,
   loading,
   empty,
   className,
 }: RulesTableProps) {
+  const showQuery = !!onEditQuery;
   return (
     <div className={cn("@container min-h-0 overflow-auto", className)} aria-busy={loading || undefined}>
       {/* Em painéis estreitos, as colunas Trecho e Página saem (o trecho fica no grifo). */}
-      <table className="w-full min-w-[400px] table-fixed border-separate border-spacing-0 text-sm @2xl:min-w-[640px]">
+      <table className={cn("w-full min-w-[400px] table-fixed border-separate border-spacing-0 text-sm @2xl:min-w-[640px]", showQuery && "min-w-[540px] @2xl:min-w-[780px]")}>
         <colgroup>
           <col className="w-32" />
           <col className="hidden @2xl:table-column" />
           <col />
           <col className="hidden w-16 @xl:table-column" />
           <col className="w-32" />
+          {showQuery && <col className="w-36" />}
           <col className="w-24" />
         </colgroup>
         <thead className="sticky top-0 z-10 bg-surface-muted">
@@ -71,6 +77,7 @@ export function RulesTable({
             <th scope="col" className={HEAD}>Resumo</th>
             <th scope="col" className={cn(HEAD, PAGINA)}>Página</th>
             <th scope="col" className={HEAD}>Situação</th>
+            {showQuery && <th scope="col" className={HEAD}>Busca na base</th>}
             <th scope="col" className={HEAD}>
               <span className="sr-only">Ações</span>
             </th>
@@ -85,6 +92,7 @@ export function RulesTable({
                   <td className={CELL}><Skeleton className="h-3 w-4/5" /></td>
                   <td className={cn(CELL, PAGINA)}><Skeleton className="h-3 w-6" /></td>
                   <td className={CELL}><Skeleton className="h-6 w-24" /></td>
+                  {showQuery && <td className={CELL}><Skeleton className="h-6 w-24" /></td>}
                   <td className={CELL} />
                 </tr>
               ))
@@ -97,6 +105,7 @@ export function RulesTable({
                   onSelect={onSelect}
                   onHover={onHover}
                   onSetStatus={onSetStatus}
+                  onEditQuery={onEditQuery}
                 />
               ))}
         </tbody>
@@ -121,11 +130,12 @@ function RuleRow({
   onSelect,
   onHover,
   onSetStatus,
+  onEditQuery,
 }: {
   rule: RuleView;
   selected: boolean;
   busy: boolean;
-} & Pick<RulesTableProps, "onSelect" | "onHover" | "onSetStatus">) {
+} & Pick<RulesTableProps, "onSelect" | "onHover" | "onSetStatus" | "onEditQuery">) {
   return (
     <tr
       tabIndex={0}
@@ -163,6 +173,11 @@ function RuleRow({
       <td className={CELL}>
         <RuleStatusBadge status={rule.status} />
       </td>
+      {onEditQuery && (
+        <td className={CELL}>
+          <QueryBadge query={rule.query} onClick={() => onEditQuery(rule)} />
+        </td>
+      )}
       <td className={CELL}>
         {/* Aparecem no hover e no foco; em telas de toque ficam sempre visíveis. */}
         <div
