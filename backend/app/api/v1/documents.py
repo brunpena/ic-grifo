@@ -9,7 +9,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, File, Form, Query, Response, UploadFile, status
 from pydantic import ValidationError
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, update
 from sse_starlette.sse import EventSourceResponse
 
 from app.api.deps import SessionDep, UserDep
@@ -42,7 +42,8 @@ from app.schemas.documents import (
     UrlDocumentIn,
 )
 from app.schemas.queries import RecordRow, RecordsOut, RuleQueryOut, StructuredQuery
-from app.services import ingest, llm, rule_queries, safe_fetch, storage
+from app.schemas.validation import RecordVerdict, ValidationRecordsOut
+from app.services import ingest, llm, rule_queries, rule_validation, safe_fetch, storage
 from app.services.converters import (
     ConversionError,
     SourceFile,
@@ -129,6 +130,7 @@ async def _rules_out(db: SessionDep, document_id: uuid.UUID, rules: list[Rule]) 
             page=boxes[r.id][0]["page"] if boxes.get(r.id) else None,
             boxes=boxes.get(r.id, []),
             dataset_ids=r.dataset_ids or [],
+            validation=r.validation,
             query=_query_out(queries[r.id], dataset_names) if r.id in queries else None,
         )
         for r in rules
@@ -375,6 +377,19 @@ async def update_rule(
     rule_id: uuid.UUID, body: RuleUpdateIn, user: UserDep, db: SessionDep
 ) -> RuleOut:
     rule = await _owned_rule(db, rule_id, user)
+    doc = await _owned_document(db, rule.document_id, user)
+    if doc.status != "ready":
+        raise ConflictError("Aguarde a verificação terminar antes de editar a regra.")
+    changes = body.model_dump(exclude_unset=True)
+    if any(
+        changes.get(key) is not None and changes[key] != getattr(rule, key)
+        for key in ("type", "summary")
+    ):
+        rule.validation = None
+    if rule.status == "rejeitada" and changes.get("status") not in (None, "rejeitada"):
+        rule.validation = None
+    if changes.get("status") == "rejeitada":
+        rule.validation = rule_validation.result("ignorada", "Regra rejeitada na revisão humana.")
     for field, value in body.model_dump(exclude_unset=True).items():
         if value is not None or field == "comment":
             setattr(rule, field, value)
@@ -386,6 +401,9 @@ async def update_rule(
 @router.delete("/rules/{rule_id}", status_code=status.HTTP_204_NO_CONTENT, summary="Exclui a regra")
 async def delete_rule(rule_id: uuid.UUID, user: UserDep, db: SessionDep) -> Response:
     rule = await _owned_rule(db, rule_id, user)
+    doc = await _owned_document(db, rule.document_id, user)
+    if doc.status != "ready":
+        raise ConflictError("Aguarde a verificação terminar antes de excluir a regra.")
     await db.execute(delete(Rule).where(Rule.id == rule.id))
     await db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
@@ -538,6 +556,76 @@ async def list_rule_records(
         offset=offset,
         rows=[RecordRow(index=i, values=loaded.raw_rows[i]) for i in page],
     )
+
+
+# ---------------------------------------------------------------------------
+# Verificação de cumprimento (independente da revisão humana e das buscas manuais)
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/documents/{document_id}/validation",
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Interpreta as colunas e verifica todas as regras do documento nas bases",
+    responses=error_responses(404, 409, 503),
+)
+async def validate_document(
+    document_id: uuid.UUID,
+    user: UserDep,
+    db: SessionDep,
+    refresh_columns: bool = False,
+) -> DocumentOut:
+    doc = await _owned_document(db, document_id, user)
+    if doc.status != "ready":
+        raise ConflictError("Aguarde o documento terminar de ser analisado.", code="not_ready")
+    if await rule_queries.analysis_datasets(db, doc.analysis_id):
+        try:
+            llm.ensure_configured()
+        except llm.LlmUnavailableError as exc:
+            raise AppError(str(exc), code="llm_unavailable", status_code=503) from exc
+    reserved = await db.scalar(
+        update(Document)
+        .where(Document.id == document_id, Document.status == "ready")
+        .values(status="extracting_rules", status_message="Validando todas as regras nas bases")
+        .returning(Document.id)
+    )
+    if reserved is None:
+        raise ConflictError("Uma verificação deste documento já está em andamento.")
+    await db.commit()
+    await db.refresh(doc)
+    ingest.start_validation(document_id, refresh_columns=refresh_columns, reserved=True)
+    return DocumentOut.model_validate(doc)
+
+
+@router.get(
+    "/rules/{rule_id}/validation/records",
+    summary="Registros verificados, com resultado e evidência de cada linha",
+    responses=error_responses(404, 409),
+)
+async def validation_records(
+    rule_id: uuid.UUID,
+    dataset_id: uuid.UUID,
+    user: UserDep,
+    db: SessionDep,
+    offset: Annotated[int, Query(ge=0)] = 0,
+    limit: Annotated[int, Query(ge=1, le=500)] = 100,
+    verdict: RecordVerdict | None = None,
+) -> ValidationRecordsOut:
+    rule = await _owned_rule(db, rule_id, user)
+    try:
+        return await rule_validation.records(
+            rule,
+            await _rule_datasets(db, rule),
+            dataset_id,
+            offset=offset,
+            limit=limit,
+            verdict=verdict,
+        )
+    except (QueryError, ValidationError) as exc:
+        message = (
+            str(exc) if isinstance(exc, QueryError) else "O plano precisa ser gerado novamente."
+        )
+        raise ConflictError(message, code="no_validation") from exc
 
 
 # ---------------------------------------------------------------------------

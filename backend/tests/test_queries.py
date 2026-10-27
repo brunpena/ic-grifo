@@ -197,6 +197,20 @@ def fake_ai(monkeypatch):
                 result[r.ref] = GeneratedQuery(None, {}, "Nenhuma base tem sigilo")
         return result
 
+    from app.schemas.validation import ValidationPlan
+    from app.services import validation_llm
+
+    async def meanings(name, columns):
+        return [{**c, "semantic": {"meaning": c["name"], "confidence": "high"}} for c in columns]
+
+    async def plans(rules, datasets, reference_date):
+        return {
+            r.ref: ValidationPlan(explanation="Sem evidência suficiente", missing_data=["Critério"])
+            for r in rules
+        }
+
+    monkeypatch.setattr(validation_llm, "interpret_columns", meanings)
+    monkeypatch.setattr(validation_llm, "plan_rules", plans)
     monkeypatch.setattr(llm, "extract_rules", extract)
     monkeypatch.setattr(llm, "generate_queries", generate)
     monkeypatch.setattr(llm, "ensure_configured", lambda: "chave")

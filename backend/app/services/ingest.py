@@ -1,4 +1,4 @@
-"""Processamento de um documento enviado: texto, palavras e regras.
+"""Processamento de um documento enviado (texto, palavras e regras) e leitura das bases.
 
 Roda como tarefa assíncrona dentro do processo da API (um único worker, ver
 docker-entrypoint.sh). O status do documento mostra a etapa atual para o front.
@@ -13,7 +13,7 @@ from sqlalchemy import exists, insert, select, update
 from app.core.logging import log_step
 from app.db.models import Dataset, Document, Page, Rule, Word
 from app.db.session import SessionLocal
-from app.services import llm, rule_queries, storage
+from app.services import llm, rule_queries, rule_validation, storage
 from app.services.datasets import DatasetError, parse_csv
 from app.services.pdf_text import ExtractedDocument, PdfReadError, extract_pdf
 from app.services.storage import StorageError, read_pdf
@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 
 # Referências às tarefas em andamento (sem isso o asyncio pode descartá-las).
 _tasks: set[asyncio.Task] = set()
+_validation_requested: set[uuid.UUID] = set()
 
 
 QUERIES_MESSAGE = "Gerando as buscas nas bases de dados"
@@ -46,19 +47,31 @@ def start_dataset_processing(dataset_id: uuid.UUID) -> None:
 
 
 async def process_dataset(dataset_id: uuid.UUID) -> None:
-    """Le o CSV guardado e grava o schema sem persistir as linhas no banco."""
+    """Lê a base guardada no storage e grava o schema. As linhas não são guardadas: as
+    buscas das regras leem o arquivo quando precisam (ver query_engine.load_dataset)."""
     values: dict = {"status": "error"}
     try:
         with log_step(logger, "process_dataset", dataset_id=str(dataset_id)) as info:
             data = await storage.read_file(storage.dataset_name(dataset_id))
             parsed = await asyncio.to_thread(parse_csv, data)
+            async with SessionLocal() as db:
+                dataset = await db.get(Dataset, dataset_id)
+                if dataset is None:
+                    return
+                name = dataset.name
+                analysis_id = dataset.analysis_id
+                dataset.status_message = "Interpretando o significado das colunas com IA"
+                await db.commit()
+            columns, warning = await rule_validation.interpret(
+                name, [c.to_dict() for c in parsed.columns]
+            )
             values = {
                 "status": "ready",
-                "status_message": None,
+                "status_message": warning,
                 "encoding": parsed.encoding,
                 "delimiter": parsed.delimiter,
                 "row_count": len(parsed.rows),
-                "columns": [c.to_dict() for c in parsed.columns],
+                "columns": columns,
             }
             info.update(rows=len(parsed.rows), columns=len(parsed.columns))
     except DatasetError as exc:
@@ -71,6 +84,74 @@ async def process_dataset(dataset_id: uuid.UUID) -> None:
     async with SessionLocal() as db:
         await db.execute(update(Dataset).where(Dataset.id == dataset_id).values(**values))
         await db.commit()
+    if values["status"] == "ready":
+        async with SessionLocal() as db:
+            await rule_validation.invalidate_analysis(db, analysis_id)
+            await db.commit()
+            ready_ids = list(
+                await db.scalars(
+                    select(Document.id).where(
+                        Document.analysis_id == analysis_id,
+                        Document.status.in_(("ready", "processing", "extracting_rules")),
+                    )
+                )
+            )
+        for document_id in ready_ids:
+            start_validation(document_id)
+
+
+def start_validation(
+    document_id: uuid.UUID, *, refresh_columns: bool = False, reserved: bool = False
+) -> None:
+    _validation_requested.add(document_id)
+    _start(_validate(document_id, refresh_columns=refresh_columns, reserved=reserved))
+
+
+async def _validate(document_id: uuid.UUID, *, refresh_columns: bool, reserved: bool) -> None:
+    # A reserva é atômica: uploads concorrentes de bases não iniciam duas avaliações.
+    if not reserved:
+        async with SessionLocal() as db:
+            reservation = await db.scalar(
+                update(Document)
+                .where(Document.id == document_id, Document.status == "ready")
+                .values(
+                    status="extracting_rules", status_message="Validando todas as regras nas bases"
+                )
+                .returning(Document.id)
+            )
+            await db.commit()
+        if reservation is None:
+            async with SessionLocal() as db:
+                current = await db.scalar(select(Document.status).where(Document.id == document_id))
+            if current is None or current == "error":
+                _validation_requested.discard(document_id)
+            return
+    _validation_requested.discard(document_id)
+    await _run_validation(document_id, refresh_columns=refresh_columns)
+    await _set_status(document_id, "ready")
+
+
+async def _run_validation(document_id: uuid.UUID, *, refresh_columns: bool = False) -> None:
+    _validation_requested.discard(document_id)
+    await _set_status(document_id, "extracting_rules", "Validando todas as regras nas bases")
+    try:
+        async with SessionLocal() as db:
+            await rule_validation.validate_document(
+                db, document_id, refresh_columns=refresh_columns
+            )
+    except Exception:
+        logger.exception("document_validation_failed", extra={"document_id": str(document_id)})
+        async with SessionLocal() as db:
+            await db.execute(
+                update(Rule)
+                .where(Rule.document_id == document_id)
+                .values(
+                    validation=rule_validation.result(
+                        "erro", "A verificação foi interrompida. Valide novamente."
+                    )
+                )
+            )
+            await db.commit()
 
 
 def start_query_generation(document_id: uuid.UUID, *, overwrite: bool) -> None:
@@ -102,6 +183,7 @@ async def _generate_queries(document_id: uuid.UUID, *, overwrite: bool, only_rel
     except Exception:
         logger.exception("generate_queries_failed", extra={"document_id": str(document_id)})
         message = "As regras foram encontradas, mas não foi possível gerar as buscas."
+    await _run_validation(document_id)
     await _set_status(document_id, "ready", message)
 
 
@@ -113,6 +195,10 @@ async def _set_status(document_id: uuid.UUID, status: str, message: str | None =
             .values(status=status, status_message=message)
         )
         await db.commit()
+    if status == "ready" and document_id in _validation_requested:
+        start_validation(document_id)
+    elif status == "error":
+        _validation_requested.discard(document_id)
 
 
 async def process_document(
@@ -202,9 +288,10 @@ async def process_document(
             )
             await db.commit()
 
-        if any(r.datasets for r in rules):
+        if datasets:
             await _generate_queries(document_id, overwrite=False, only_related=True)
         else:
+            await _run_validation(document_id)
             await _set_status(document_id, "ready")
     except (PdfReadError, StorageError) as exc:
         await _set_status(document_id, "error", str(exc))
@@ -243,11 +330,21 @@ def dedupe_rules(found: list[llm.ExtractedRule]) -> list[llm.ExtractedRule]:
 
 async def recover_interrupted() -> None:
     """Na subida da API, documentos que estavam sendo processados viram erro. Os que já
-    tinham regras (paravam na geração das buscas) ficam prontos, com um aviso."""
+    tinham regras (paravam na geração das buscas) ficam prontos, com um aviso. Bases que
+    estavam sendo lidas voltam a ser lidas: o arquivo já está no storage."""
     async with SessionLocal() as db:
         pending = (await db.scalars(select(Dataset.id).where(Dataset.status == "processing"))).all()
         for dataset_id in pending:
             start_dataset_processing(dataset_id)
+        await db.execute(
+            update(Rule)
+            .where(
+                Rule.document_id.in_(
+                    select(Document.id).where(Document.status == "extracting_rules")
+                )
+            )
+            .values(validation=None)
+        )
         await db.execute(
             update(Document)
             .where(

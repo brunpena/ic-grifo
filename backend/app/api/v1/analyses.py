@@ -20,7 +20,7 @@ from app.schemas.analyses import (
 )
 from app.schemas.common import error_responses
 from app.schemas.documents import DocumentOut
-from app.services import ingest, storage
+from app.services import ingest, rule_validation, storage
 from app.services.datasets import dataset_display_name, fit_to_size
 
 router = APIRouter(tags=["análises"])
@@ -220,6 +220,8 @@ async def upload_dataset(
         raise AppError(str(exc), code="storage_error", status_code=502) from exc
     await db.commit()
     await db.refresh(dataset)
+    await rule_validation.invalidate_analysis(db, analysis_id)
+    await db.commit()
     ingest.start_dataset_processing(dataset.id)
     return DatasetOut.model_validate(dataset)
 
@@ -252,6 +254,7 @@ async def delete_dataset(dataset_id: uuid.UUID, user: UserDep, db: SessionDep) -
             matched_rows=[],
         )
     )
+    await rule_validation.invalidate_analysis(db, dataset.analysis_id)
     await db.delete(dataset)
     await db.commit()
     await storage.delete_files([storage.dataset_name(dataset_id)])
