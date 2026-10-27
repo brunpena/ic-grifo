@@ -1,5 +1,7 @@
 # Verificação das regras nas bases
 
+Para estudar a implementação com diagramas e exemplos completos, leia o [guia de validação](../docs/validacao.md), os [fluxogramas](../docs/fluxos.md) e o [mapa do backend](../docs/backend.md).
+
 Cada análise reúne documentos normativos e bases CSV. O processamento agora interpreta
 com IA o significado das colunas e verifica todas as regras extraídas, inclusive as que
 não receberam uma associação com bases durante a extração.

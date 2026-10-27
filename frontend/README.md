@@ -1,36 +1,62 @@
-# IC Grifo: front-end
+# IC Grifo — frontend
 
-Interface (Next.js + TypeScript) do sistema de validação de regras em documentos.
-A documentação completa entra na etapa final. Por enquanto:
+Interface Next.js, React e TypeScript do Grifo. O Assistente se conecta à API FastAPI
+para documentos, CSVs, revisão, buscas, validação e conversa.
 
-## Rodando localmente
+## Documentação para estudar o código
 
-Pré-requisitos: Node.js 20+ e o back-end rodando (ver `../backend/README.md`).
+- [Roteiro de leitura](../docs/roteiro-de-leitura.md)
+- [Arquitetura](../docs/arquitetura.md)
+- [Fluxogramas](../docs/fluxos.md)
+- [Mapa de cada arquivo do frontend](../docs/frontend.md)
+- [API e hooks consumidores](../docs/api.md)
+- [Validação com exemplos](../docs/validacao.md)
 
-```bash
-cd frontend
-cp .env.example .env.local   # NEXT_PUBLIC_API_URL=http://localhost:8000
-npm install
-npm run dev                  # http://localhost:3000
+Comece em [layout.tsx](src/app/layout.tsx),
+[providers.tsx](src/app/providers.tsx) e
+[assistant-view.tsx](src/components/assistant/assistant-view.tsx).
+
+A tela /regras e a galeria /dev/ui ainda usam demonstrações locais.
+O fluxo real de processamento está no Assistente.
+
+## Executar localmente
+
+Prepare Node/npm e mantenha a API em execução. Os comandos começam nesta pasta:
+
+```powershell
+if (-not (Test-Path -LiteralPath .env.local)) {
+    Copy-Item -LiteralPath .env.example -Destination .env.local
+}
+npm ci
+npm run dev
 ```
+
+A interface abre em http://localhost:3000.
+NEXT_PUBLIC_API_URL aponta para a base da API, por exemplo http://localhost:8000,
+sem /api/v1 no final. Confira o [guia completo](../docs/desenvolvimento.md).
 
 ## Tipos da API
 
-Os tipos em `src/lib/api/schema.d.ts` são gerados a partir do OpenAPI do back-end.
-Rode de novo sempre que o contrato mudar:
+[Schema TypeScript](src/lib/api/schema.d.ts) é gerado do OpenAPI do backend.
+Não edite esse arquivo manualmente.
 
-```bash
-npm run gen:api                          # usa NEXT_PUBLIC_API_URL (ou http://localhost:8000)
-npm run gen:api -- https://api.exemplo   # outra URL base
-npm run gen:api -- ./openapi.json        # arquivo local
+```powershell
+npm run gen:api
+npm run gen:api -- http://localhost:8000
+npm run gen:api -- ./openapi.json
 ```
 
-O cliente tipado fica em `src/lib/api`: `api.GET("/api/v1/...")` com `unwrap(...)` devolve
-os dados ou lança um `ApiError` com a mensagem em português vinda do back.
+A última forma exige um arquivo OpenAPI local existente. O cliente em src/lib/api usa
+openapi-fetch e unwrap para devolver dados ou lançar ApiError. Os hooks em src/lib
+coordenam consultas, cache e atualizações de cada família de recursos.
 
 ## Scripts
 
-- `npm run dev`: servidor de desenvolvimento
-- `npm run build`: build de produção
-- `npm run typecheck`: checagem de tipos (TypeScript strict)
-- `npm run lint`: ESLint
+| Comando | Função |
+| --- | --- |
+| npm run dev | Servidor de desenvolvimento. |
+| npm run build | Build de produção. |
+| npm run start | Executa um build de produção já criado. |
+| npm run typecheck | Verifica tipos com TypeScript. |
+| npm run lint | Executa ESLint. |
+| npm run gen:api | Atualiza o contrato TypeScript pelo OpenAPI. |
