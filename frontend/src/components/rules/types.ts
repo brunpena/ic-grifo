@@ -1,3 +1,4 @@
+import type { Schemas } from "@/lib/api";
 import type { RuleStatus, RuleType } from "@/lib/design/tokens";
 
 /** Resumo da busca da regra nas bases, para a tabela. */
@@ -12,6 +13,7 @@ export type RuleQuerySummary = {
 
 /** O que a interface precisa de uma regra para exibi-la (campos do modelo `Rule`). */
 export type RuleView = {
+  validation?: Schemas["RuleValidationOut"] | null;
   id: string;
   type: RuleType;
   status: RuleStatus;

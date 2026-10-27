@@ -12,6 +12,8 @@ import { errorMessage } from "@/lib/api";
 import type { Rule } from "@/lib/documents";
 import { describeQuery, useRuleRecords } from "@/lib/queries";
 import { cn } from "@/lib/utils";
+import { ValidationBadge } from "@/components/validation/validation-badge";
+import { ValidationDetails } from "@/components/validation/validation-details";
 
 const PAGE_SIZE = 100;
 const number = (n: number) => n.toLocaleString("pt-BR");
@@ -39,6 +41,7 @@ export function RecordsPanel({
   onClose,
   className,
 }: RecordsPanelProps) {
+  const [searchFor, setSearchFor] = useState<string | null>(null);
   const selected = rules.find((r) => r.id === selectedRuleId) ?? null;
   const withQuery = rules.filter((r) => r.query);
 
@@ -47,7 +50,7 @@ export function RecordsPanel({
       <div className="flex h-11 shrink-0 items-center gap-2 border-b border-border px-3">
         <FileSpreadsheet size={16} strokeWidth={1.75} aria-hidden className="shrink-0 text-accent" />
         <span className="text-[13px] font-medium">Registros</span>
-        {hasDatasets && withQuery.length > 0 && (
+        {rules.length > 0 && (
           <Select
             aria-label="Filtrar registros por regra"
             value={selected?.id ?? ""}
@@ -55,13 +58,18 @@ export function RecordsPanel({
             className="ml-auto w-56 max-w-[60%] [&_select]:h-8 [&_select]:text-[13px]"
           >
             <option value="">Todas as regras</option>
-            {selected && !selected.query && <option value={selected.id}>{selected.summary}</option>}
-            {withQuery.map((r) => (
+
+            {rules.map((r) => (
               <option key={r.id} value={r.id}>
                 {r.summary}
               </option>
             ))}
           </Select>
+        )}
+        {selected?.validation && selected.query && (
+          <Button size="sm" variant="ghost" onClick={() => setSearchFor(searchFor === selected.id ? null : selected.id)}>
+            {searchFor === selected.id ? "Ver validação" : "Ver busca"}
+          </Button>
         )}
         {onClose && (
           <IconButton
@@ -74,7 +82,9 @@ export function RecordsPanel({
         )}
       </div>
 
-      {!hasDatasets ? (
+      {selected?.validation && searchFor !== selected.id ? (
+        <ValidationDetails key={selected.id + selected.validation.checked_at} rule={selected} onBack={() => onSelectRule(null)} />
+      ) : !hasDatasets && !rules.some((r) => r.validation) ? (
         <EmptyState
           icon={Database}
           title="Nenhuma base de dados"
@@ -90,58 +100,27 @@ export function RecordsPanel({
   );
 }
 
-/** Sem regra escolhida: as regras com busca e quantos registros cada uma encontrou. */
+/** Visão geral de todas as regras, inclusive as inconclusivas e ainda não avaliadas. */
 function RulesOverview({ rules, onSelectRule }: { rules: Rule[]; onSelectRule: (id: string) => void }) {
-  const withQuery = rules.filter((r) => r.query);
-  if (!withQuery.length) {
-    return (
-      <EmptyState
-        icon={SearchX}
-        title="Nenhuma regra com busca"
-        description="Use “Gerar buscas com IA” na lista de regras ou crie a busca de uma regra pela coluna “Busca na base”."
-        className="flex-1"
-      />
-    );
+  if (!rules.length) {
+    return <EmptyState icon={SearchX} title="Nenhuma regra encontrada" description="As regras aparecem aqui quando o documento termina de ser analisado." className="flex-1" />;
   }
-  const without = rules.length - withQuery.length;
   return (
     <div className="min-h-0 flex-1 overflow-auto">
       <ul className="divide-y divide-border">
-        {withQuery.map((r) => {
-          const query = r.query!;
-          return (
-            <li key={r.id}>
-              <button
-                type="button"
-                onClick={() => onSelectRule(r.id)}
-                className="flex w-full items-center gap-3 px-3 py-2.5 text-left transition-colors duration-150 ease-out hover:bg-surface-hover"
-              >
-                <RuleTypeBadge type={r.type} className="shrink-0" />
-                <span className="flex min-w-0 flex-1 flex-col">
-                  <span className="truncate text-[13px] font-medium">{r.summary}</span>
-                  <span className="truncate text-xs text-foreground-subtle">
-                    {query.dataset_name ?? "base removida"} · {describeQuery(query.query)}
-                  </span>
-                </span>
-                {query.state === "ok" ? (
-                  <span className="shrink-0 rounded-sm bg-accent-soft px-2 py-0.5 font-mono text-xs text-accent tabular-nums">
-                    {number(query.match_count ?? 0)}
-                  </span>
-                ) : (
-                  <span className="shrink-0 rounded-sm bg-danger-soft px-2 py-0.5 text-xs text-danger">
-                    {query.state === "erro" ? "erro" : "pendente"}
-                  </span>
-                )}
-              </button>
-            </li>
-          );
-        })}
+        {rules.map((rule) => (
+          <li key={rule.id}>
+            <button type="button" onClick={() => onSelectRule(rule.id)} className="flex w-full items-center gap-3 px-3 py-2.5 text-left transition-colors duration-150 ease-out hover:bg-surface-hover">
+              <RuleTypeBadge type={rule.type} className="shrink-0" />
+              <span className="flex min-w-0 flex-1 flex-col">
+                <span className="truncate text-[13px] font-medium">{rule.summary}</span>
+                <span className="truncate text-xs text-foreground-subtle">{rule.validation?.explanation ?? "Ainda não avaliada nas bases"}</span>
+              </span>
+              <ValidationBadge validation={rule.validation} />
+            </button>
+          </li>
+        ))}
       </ul>
-      {without > 0 && (
-        <p className="px-3 py-3 text-xs text-foreground-subtle">
-          {without} {without === 1 ? "regra não tem busca" : "regras não têm busca"} (sem relação com as bases ou ainda não geradas).
-        </p>
-      )}
     </div>
   );
 }

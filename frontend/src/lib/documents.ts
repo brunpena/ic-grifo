@@ -1,6 +1,7 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useRef } from "react";
 import { analysisKeys } from "@/lib/analyses";
 import { api, ApiError, apiUrl, type Schemas, unwrap } from "@/lib/api";
 
@@ -18,7 +19,6 @@ const keys = {
   messages: (id: string) => ["documents", id, "messages"] as const,
 };
 
-const DONE = new Set<DocumentInfo["status"]>(["ready", "error"]);
 
 export function useDocuments() {
   return useQuery({ queryKey: keys.list, queryFn: () => unwrap(api.GET("/api/v1/documents")) });
@@ -26,12 +26,26 @@ export function useDocuments() {
 
 /** Status do documento; consulta de novo a cada 1,5 s enquanto ele é processado. */
 export function useDocument(id: string | null) {
-  return useQuery({
+  const client = useQueryClient();
+  const previous = useRef<string | null>(null);
+  const query = useQuery({
     queryKey: keys.doc(id ?? ""),
     queryFn: () => unwrap(api.GET("/api/v1/documents/{document_id}", { params: { path: { document_id: id! } } })),
     enabled: !!id,
-    refetchInterval: (query) => (query.state.data && DONE.has(query.state.data.status) ? false : 1500),
+    refetchInterval: (query) => query.state.data?.status === "error" ? false : query.state.data?.status === "ready" ? 5000 : 1500,
   });
+  const status = query.data?.status;
+  const analysisId = query.data?.analysis_id;
+  useEffect(() => {
+    const current = `${id}:${status}`;
+    if (status === "ready" && previous.current !== current) {
+      void client.invalidateQueries({ queryKey: keys.rules(id!) });
+      void client.invalidateQueries({ queryKey: ["validation-records"] });
+      if (analysisId) void client.invalidateQueries({ queryKey: analysisKeys.detail(analysisId) });
+    }
+    previous.current = current;
+  }, [id, status, analysisId, client]);
+  return query;
 }
 
 /** Formatos aceitos no envio de arquivo (o back escolhe o conversor). */
@@ -122,6 +136,8 @@ export function useRules(documentId: string | null, enabled: boolean) {
     queryFn: () =>
       unwrap(api.GET("/api/v1/documents/{document_id}/rules", { params: { path: { document_id: documentId! } } })),
     enabled: !!documentId && enabled,
+    staleTime: 0,
+    refetchInterval: enabled ? 5000 : false,
   });
 }
 

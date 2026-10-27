@@ -11,9 +11,11 @@ import { RULE_TYPES, type RuleStatus } from "@/lib/design/tokens";
 import { cn } from "@/lib/utils";
 import { QueryBadge } from "@/components/queries/query-badge";
 import type { RuleView } from "./types";
+import { ValidationBadge } from "@/components/validation/validation-badge";
 
 type RulesTableProps = {
   rules: RuleView[];
+  showValidation?: boolean;
   selectedId?: string | null;
   onSelect?: (rule: RuleView) => void;
   /** Hover na linha destaca o grifo no documento. */
@@ -46,6 +48,7 @@ const PAGINA = "hidden @xl:table-cell";
 
 export function RulesTable({
   rules,
+  showValidation = false,
   selectedId,
   onSelect,
   onHover,
@@ -60,13 +63,14 @@ export function RulesTable({
   return (
     <div className={cn("@container min-h-0 overflow-auto", className)} aria-busy={loading || undefined}>
       {/* Em painéis estreitos, as colunas Trecho e Página saem (o trecho fica no grifo). */}
-      <table className={cn("w-full min-w-[400px] table-fixed border-separate border-spacing-0 text-sm @2xl:min-w-[640px]", showQuery && "min-w-[480px] @2xl:min-w-[760px]")}>
+      <table className={cn("w-full min-w-[400px] table-fixed border-separate border-spacing-0 text-sm @2xl:min-w-[640px]", showQuery && "min-w-[480px] @2xl:min-w-[760px]", showValidation && "min-w-[760px] @2xl:min-w-[1040px]")}>
         <colgroup>
           <col className="w-32" />
           <col className="hidden @2xl:table-column" />
           <col />
           <col className="hidden w-16 @xl:table-column" />
           <col className="w-32" />
+          {showValidation && <col className="w-36" />}
           {showQuery && <col className="w-24 @2xl:w-36" />}
           <col className={showQuery ? "w-20" : "w-24"} />
         </colgroup>
@@ -76,7 +80,8 @@ export function RulesTable({
             <th scope="col" className={cn(HEAD, TRECHO)}>Trecho</th>
             <th scope="col" className={HEAD}>Resumo</th>
             <th scope="col" className={cn(HEAD, PAGINA)}>Página</th>
-            <th scope="col" className={HEAD}>Situação</th>
+            <th scope="col" className={HEAD}>{showValidation ? "Revisão humana" : "Situação"}</th>
+            {showValidation && <th scope="col" className={HEAD}>Validação nas bases</th>}
             {showQuery && <th scope="col" className={HEAD}>Busca na base</th>}
             <th scope="col" className={HEAD}>
               <span className="sr-only">Ações</span>
@@ -92,6 +97,7 @@ export function RulesTable({
                   <td className={CELL}><Skeleton className="h-3 w-4/5" /></td>
                   <td className={cn(CELL, PAGINA)}><Skeleton className="h-3 w-6" /></td>
                   <td className={CELL}><Skeleton className="h-6 w-24" /></td>
+                  {showValidation && <td className={CELL}><Skeleton className="h-6 w-24" /></td>}
                   {showQuery && <td className={CELL}><Skeleton className="h-6 w-24" /></td>}
                   <td className={CELL} />
                 </tr>
@@ -100,6 +106,7 @@ export function RulesTable({
                 <RuleRow
                   key={rule.id}
                   rule={rule}
+                  showValidation={showValidation}
                   selected={rule.id === selectedId}
                   busy={pendingIds?.has(rule.id) ?? false}
                   onSelect={onSelect}
@@ -125,6 +132,7 @@ export function RulesTable({
 
 function RuleRow({
   rule,
+  showValidation,
   selected,
   busy,
   onSelect,
@@ -133,6 +141,7 @@ function RuleRow({
   onEditQuery,
 }: {
   rule: RuleView;
+  showValidation: boolean;
   selected: boolean;
   busy: boolean;
 } & Pick<RulesTableProps, "onSelect" | "onHover" | "onSetStatus" | "onEditQuery">) {
@@ -174,6 +183,7 @@ function RuleRow({
       <td className={CELL}>
         <RuleStatusBadge status={rule.status} />
       </td>
+      {showValidation && <td className={CELL}><ValidationBadge validation={rule.validation} /></td>}
       {onEditQuery && (
         <td className={CELL}>
           <QueryBadge query={rule.query} onClick={() => onEditQuery(rule)} />
