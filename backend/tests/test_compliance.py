@@ -273,8 +273,49 @@ async def test_ai_plan_batch_failure_is_not_a_silent_approval(monkeypatch):
     assert result == {}
 
 
+def test_source_signature_changes_when_column_meaning_changes():
+    from types import SimpleNamespace
+
+    from app.services.rule_validation import source_signature
+
+    ref, _, _ = data()
+    source = SimpleNamespace(
+        status="ready", size_bytes=100, original_size_bytes=100, columns=ref.columns
+    )
+    previous = source_signature(source)
+    source.columns[1]["semantic"]["meaning"] = "Outro evento"
+    assert source_signature(source) != previous
 
 
+def test_measured_business_days_can_be_checked_without_calendar_arithmetic():
+    from types import SimpleNamespace
+
+    from app.services.rule_validation import measured_business_days
+
+    plan = ValidationPlan.model_validate(
+        {
+            "explanation": "Prazo em dias úteis",
+            "datasets": [
+                {
+                    "scope": {"dataset": "base"},
+                    "checks": [check("column", "Duração", None, "lte", 5)],
+                }
+            ],
+        }
+    )
+    dataset = SimpleNamespace(
+        name="base",
+        columns=[
+            {
+                "name": "Duração",
+                "type": "integer",
+                "semantic": {"confidence": "high", "unit": "dias úteis"},
+            }
+        ],
+    )
+    assert measured_business_days(plan, [dataset])
+    dataset.columns[0]["semantic"]["unit"] = "dias corridos"
+    assert not measured_business_days(plan, [dataset])
 
 
 def test_deadline_date_cannot_precede_its_start():
