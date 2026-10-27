@@ -11,9 +11,10 @@ import uuid
 from sqlalchemy import exists, insert, select, update
 
 from app.core.logging import log_step
-from app.db.models import Document, Page, Rule, Word
+from app.db.models import Dataset, Document, Page, Rule, Word
 from app.db.session import SessionLocal
-from app.services import llm, rule_queries
+from app.services import llm, rule_queries, storage
+from app.services.datasets import DatasetError, parse_csv
 from app.services.pdf_text import ExtractedDocument, PdfReadError, extract_pdf
 from app.services.storage import StorageError, read_pdf
 
@@ -38,6 +39,38 @@ def _start(coro) -> None:
 
 def start_processing(document_id: uuid.UUID, extracted: ExtractedDocument | None = None) -> None:
     _start(process_document(document_id, extracted))
+
+
+def start_dataset_processing(dataset_id: uuid.UUID) -> None:
+    _start(process_dataset(dataset_id))
+
+
+async def process_dataset(dataset_id: uuid.UUID) -> None:
+    """Le o CSV guardado e grava o schema sem persistir as linhas no banco."""
+    values: dict = {"status": "error"}
+    try:
+        with log_step(logger, "process_dataset", dataset_id=str(dataset_id)) as info:
+            data = await storage.read_file(storage.dataset_name(dataset_id))
+            parsed = await asyncio.to_thread(parse_csv, data)
+            values = {
+                "status": "ready",
+                "status_message": None,
+                "encoding": parsed.encoding,
+                "delimiter": parsed.delimiter,
+                "row_count": len(parsed.rows),
+                "columns": [c.to_dict() for c in parsed.columns],
+            }
+            info.update(rows=len(parsed.rows), columns=len(parsed.columns))
+    except DatasetError as exc:
+        values["status_message"] = str(exc)
+    except StorageError:
+        values["status_message"] = "O arquivo da base não foi encontrado. Envie a base de novo."
+    except Exception:
+        logger.exception("process_dataset_failed", extra={"dataset_id": str(dataset_id)})
+        values["status_message"] = "Não foi possível ler a base. Envie de novo."
+    async with SessionLocal() as db:
+        await db.execute(update(Dataset).where(Dataset.id == dataset_id).values(**values))
+        await db.commit()
 
 
 def start_query_generation(document_id: uuid.UUID, *, overwrite: bool) -> None:
@@ -212,6 +245,9 @@ async def recover_interrupted() -> None:
     """Na subida da API, documentos que estavam sendo processados viram erro. Os que já
     tinham regras (paravam na geração das buscas) ficam prontos, com um aviso."""
     async with SessionLocal() as db:
+        pending = (await db.scalars(select(Dataset.id).where(Dataset.status == "processing"))).all()
+        for dataset_id in pending:
+            start_dataset_processing(dataset_id)
         await db.execute(
             update(Document)
             .where(

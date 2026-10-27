@@ -31,13 +31,14 @@ class DatasetOut(BaseModel):
     name: str = Field(description="Nome único na análise, usado pela IA para citar a base.")
     filename: str
     size_bytes: int
+    status: Literal["processing", "ready", "error"] = Field(
+        description="processing: lendo a base no servidor; só bases `ready` entram nas buscas."
+    )
+    status_message: str | None = Field(description="Motivo, quando `error`.")
     encoding: str
     delimiter: str
     row_count: int
     columns: list[DatasetColumn]
-    sample_rows: list[list[str | None]] = Field(
-        description="Primeiras linhas, como texto, na ordem de `columns` (None = célula vazia)."
-    )
     created_at: datetime
 
 

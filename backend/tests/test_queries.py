@@ -234,6 +234,12 @@ async def test_rules_become_queries_over_the_datasets(migrated_db, client, fake_
             files={"file": ("contratos.csv", CSV, "text/csv")},
         )
     ).json()
+    for _ in range(100):
+        if dataset["status"] != "processing":
+            break
+        await asyncio.sleep(0.05)
+        dataset = (await client.get(f"/api/v1/datasets/{dataset['id']}")).json()
+    assert dataset["status"] == "ready"
     doc = (
         await client.post(
             "/api/v1/documents/text", json={"analysis_id": analysis["id"], "content": TEXT}

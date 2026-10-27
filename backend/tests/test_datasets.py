@@ -1,3 +1,4 @@
+import asyncio
 import uuid
 from datetime import date
 
@@ -34,7 +35,6 @@ def test_fit_to_size_keeps_only_whole_lines_that_fit():
     assert fit_to_size(data, len(data) - 1) == b"a;b\n1;2\n"
     assert fit_to_size(data, 5) == b"a;b\n"
     assert fit_to_size(data, 3) == b""
-
 
 
 def test_parse_csv_detects_schema_of_brazilian_spreadsheet():
@@ -129,6 +129,15 @@ async def _login(client: httpx.AsyncClient) -> None:
     assert resp.status_code == 201
 
 
+async def _wait_dataset(client: httpx.AsyncClient, dataset_id: str) -> dict:
+    for _ in range(100):
+        body = (await client.get(f"/api/v1/datasets/{dataset_id}")).json()
+        if body["status"] != "processing":
+            return body
+        await asyncio.sleep(0.05)
+    raise AssertionError("base não terminou de ser lida")
+
+
 @pytest.mark.db
 async def test_analysis_with_datasets(migrated_db, client):
     await _login(client)
@@ -137,27 +146,34 @@ async def test_analysis_with_datasets(migrated_db, client):
 
     url = f"/api/v1/analyses/{analysis['id']}/datasets"
     resp = await client.post(url, files={"file": ("contratos.csv", CONTRATOS_BR, "text/csv")})
-    assert resp.status_code == 201
-    dataset = resp.json()
-    assert dataset["name"] == "contratos" and dataset["row_count"] == 3
-    assert dataset["columns"][2]["type"] == "decimal"
-    assert dataset["sample_rows"][0][1] == "Alfa Ltda"
+    assert resp.status_code == 202
+    assert resp.json()["status"] == "processing" and resp.json()["columns"] == []
+    dataset = await _wait_dataset(client, resp.json()["id"])
+    assert dataset["status"] == "ready" and dataset["name"] == "contratos"
+    assert dataset["row_count"] == 3 and dataset["columns"][2]["type"] == "decimal"
+    # As linhas ficam só no servidor.
+    assert "sample_rows" not in dataset
 
     again = await client.post(url, files={"file": ("contratos.csv", CONTRATOS_BR, "text/csv")})
     assert again.json()["name"] == "contratos (2)"
+    await _wait_dataset(client, again.json()["id"])
 
     bad = await client.post(url, files={"file": ("ruim.csv", b"a,b\n1,2,3\n", "text/csv")})
-    assert bad.status_code == 422 and "ruim.csv" in bad.json()["error"]["message"]
+    assert bad.status_code == 202
+    bad = await _wait_dataset(client, bad.json()["id"])
+    assert bad["status"] == "error" and "cabeçalho" in bad["status_message"]
+    empty = await client.post(url, files={"file": ("vazio.csv", b" \n", "text/csv")})
+    assert empty.json()["error"]["code"] == "invalid_csv"
     pdf = await client.post(url, files={"file": ("x.pdf", b"%PDF-", "application/pdf")})
     assert pdf.json()["error"]["code"] == "not_a_csv"
 
     listed = (await client.get("/api/v1/analyses")).json()
-    assert listed[0]["id"] == analysis["id"] and listed[0]["dataset_count"] == 2
+    assert listed[0]["id"] == analysis["id"] and listed[0]["dataset_count"] == 3
 
     resp = await client.delete(f"/api/v1/datasets/{dataset['id']}")
     assert resp.status_code == 204
     detail = (await client.get(f"/api/v1/analyses/{analysis['id']}")).json()
-    assert [d["name"] for d in detail["datasets"]] == ["contratos (2)"]
+    assert [d["name"] for d in detail["datasets"]] == ["contratos (2)", "ruim"]
 
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as other:

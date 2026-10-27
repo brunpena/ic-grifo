@@ -31,11 +31,12 @@ logger = logging.getLogger(__name__)
 
 
 async def analysis_datasets(db: AsyncSession, analysis_id: uuid.UUID) -> list[Dataset]:
+    """Bases prontas da análise; as que ainda estão sendo lidas (ou falharam) ficam de fora."""
     return list(
         (
             await db.scalars(
                 select(Dataset)
-                .where(Dataset.analysis_id == analysis_id)
+                .where(Dataset.analysis_id == analysis_id, Dataset.status == "ready")
                 .order_by(Dataset.created_at)
             )
         ).all()

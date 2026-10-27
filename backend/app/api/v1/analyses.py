@@ -1,6 +1,5 @@
 """Análises e as bases de dados (CSV) que elas verificam."""
 
-import asyncio
 import uuid
 from typing import Annotated
 
@@ -21,11 +20,12 @@ from app.schemas.analyses import (
 )
 from app.schemas.common import error_responses
 from app.schemas.documents import DocumentOut
-from app.services import storage
-from app.services.datasets import DatasetError, dataset_display_name, fit_to_size, parse_csv
+from app.services import ingest, storage
+from app.services.datasets import dataset_display_name, fit_to_size
 
 router = APIRouter(tags=["análises"])
 
+# .crdownload: download do Chrome salvo antes de ser renomeado; o conteúdo é o próprio CSV.
 CSV_EXTENSIONS = (".csv", ".tsv", ".txt", ".crdownload")
 
 
@@ -152,11 +152,12 @@ async def delete_analysis(analysis_id: uuid.UUID, user: UserDep, db: SessionDep)
 
 @router.post(
     "/analyses/{analysis_id}/datasets",
-    status_code=status.HTTP_201_CREATED,
-    summary="Envia uma base de dados em CSV; devolve o schema detectado",
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Envia uma base de dados em CSV; o servidor lê em segundo plano",
     description=(
-        "Um arquivo por requisição. O separador (vírgula, ponto e vírgula, tab ou barra), "
-        "a codificação e o tipo de cada coluna são detectados automaticamente."
+        "Um arquivo por requisição. A base volta em `processing` e passa a `ready` (ou "
+        "`error`, com o motivo) depois que o servidor detecta separador, codificação e o tipo "
+        "de cada coluna. As linhas ficam só no servidor e são lidas pelas buscas das regras."
     ),
     responses=error_responses(404, 413, 422),
 )
@@ -197,16 +198,6 @@ async def upload_dataset(
                 status_code=422,
             )
 
-    try:
-        parsed = await asyncio.to_thread(
-            parse_csv,
-            data,
-            max_rows=settings.max_dataset_rows,
-            max_columns=settings.max_dataset_columns,
-        )
-    except DatasetError as exc:
-        raise AppError(f"“{filename}”: {exc}", code="invalid_csv", status_code=422) from exc
-
     taken = set(
         (await db.scalars(select(Dataset.name).where(Dataset.analysis_id == analysis_id))).all()
     )
@@ -215,11 +206,7 @@ async def upload_dataset(
         name=dataset_display_name(filename, taken),
         filename=filename,
         size_bytes=len(data),
-        encoding=parsed.encoding,
-        delimiter=parsed.delimiter,
-        row_count=len(parsed.rows),
-        columns=[c.to_dict() for c in parsed.columns],
-        sample_rows=parsed.sample_rows,
+        status="processing",
     )
     db.add(dataset)
     await db.flush()
@@ -231,12 +218,13 @@ async def upload_dataset(
         raise AppError(str(exc), code="storage_error", status_code=502) from exc
     await db.commit()
     await db.refresh(dataset)
+    ingest.start_dataset_processing(dataset.id)
     return DatasetOut.model_validate(dataset)
 
 
 @router.get(
     "/datasets/{dataset_id}",
-    summary="Schema e linhas de amostra de uma base",
+    summary="Schema e situação da leitura de uma base",
     responses=error_responses(404),
 )
 async def get_dataset(dataset_id: uuid.UUID, user: UserDep, db: SessionDep) -> DatasetOut:

@@ -27,6 +27,7 @@ EMBEDDING_DIM = get_settings().embedding_dim
 SOURCE_TYPES = ("pdf", "text", "html", "url")
 MODES = ("assistant", "knowledge_base")
 DOCUMENT_STATUSES = ("processing", "extracting_rules", "ready", "error")
+DATASET_STATUSES = ("processing", "ready", "error")
 RULE_TYPES = ("obrigacao", "proibicao", "prazo", "condicao", "outro")
 RULE_STATUSES = ("pendente", "validada", "rejeitada")
 RULE_ORIGINS = ("ia", "manual")
@@ -73,10 +74,14 @@ class Analysis(Base):
 
 
 class Dataset(Base):
-    """Base de dados enviada em CSV. O arquivo fica no storage; aqui só o schema e a amostra."""
+    """Base de dados enviada em CSV. O arquivo fica no storage e só é lido no back, pelas
+    buscas das regras; aqui ficam o schema e a situação da leitura."""
 
     __tablename__ = "datasets"
-    __table_args__ = (Index("ix_datasets_analysis_id", "analysis_id"),)
+    __table_args__ = (
+        Index("ix_datasets_analysis_id", "analysis_id"),
+        CheckConstraint(_in("status", DATASET_STATUSES), name="ck_datasets_status"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     analysis_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("analyses.id", ondelete="CASCADE"))
@@ -85,13 +90,15 @@ class Dataset(Base):
     filename: Mapped[str] = mapped_column(Text)
     storage_path: Mapped[str | None] = mapped_column(Text)
     size_bytes: Mapped[int] = mapped_column(Integer)
-    encoding: Mapped[str] = mapped_column(Text)
-    delimiter: Mapped[str] = mapped_column(Text)
-    row_count: Mapped[int] = mapped_column(Integer)
+    # processing: arquivo guardado, schema sendo detectado em segundo plano.
+    status: Mapped[str] = mapped_column(Text, default="processing")
+    status_message: Mapped[str | None] = mapped_column(Text)
+    # Detectados na leitura; vazios enquanto `processing`.
+    encoding: Mapped[str] = mapped_column(Text, default="")
+    delimiter: Mapped[str] = mapped_column(Text, default="")
+    row_count: Mapped[int] = mapped_column(Integer, default=0)
     # [{name, type, format, null_count, distinct_count, examples, values}] (ver services.datasets)
-    columns: Mapped[list[dict]] = mapped_column(JSONB)
-    # Primeiras linhas, como texto, na ordem de `columns`.
-    sample_rows: Mapped[list[list[str | None]]] = mapped_column(JSONB)
+    columns: Mapped[list[dict]] = mapped_column(JSONB, default=list)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     analysis: Mapped[Analysis] = relationship(back_populates="datasets")
