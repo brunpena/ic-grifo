@@ -2,6 +2,7 @@
 
 import { useQueryClient } from "@tanstack/react-query";
 import {
+  Database,
   FilePlus,
   FileSearch,
   FileText,
@@ -36,6 +37,7 @@ import { usePdfSearch } from "@/components/document/use-pdf-search";
 import { RulesHeader } from "@/components/rules/rules-header";
 import { RulesTable } from "@/components/rules/rules-table";
 import { Button } from "@/components/ui/button";
+import { Dialog } from "@/components/ui/dialog";
 import { EmptyState } from "@/components/ui/empty-state";
 import { IconButton } from "@/components/ui/icon-button";
 import { Select } from "@/components/ui/select";
@@ -66,6 +68,8 @@ import type { FloatingAnchor } from "@/lib/floating";
 import { describeQuery, useGenerateQueries } from "@/lib/queries";
 import { DESKTOP_QUERY, useMediaQuery } from "@/lib/use-media-query";
 import { cn } from "@/lib/utils";
+import { useValidateDocument } from "@/lib/validation";
+import { ValidationSummary } from "@/components/validation/validation-badge";
 import { AssistantComposer, AssistantDisclaimer } from "./assistant-composer";
 
 type ThreadMessage = {
@@ -96,6 +100,7 @@ export function AssistantView() {
 
   // Primeiro envio ainda sem resposta: o nome e, se for PDF, o arquivo para já exibir.
   const [pendingUpload, setPendingUpload] = useState<{ name: string; file: File | null } | null>(null);
+  const [datasetsOpen, setDatasetsOpen] = useState(false);
   const [sourceMode, setSourceMode] = useState<DocumentSourceMode | null>(null);
   // Análise em montagem: as bases vão antes do documento.
   const [analysisId, setAnalysisId] = useState<string | null>(null);
@@ -125,6 +130,7 @@ export function AssistantView() {
   const updateRule = useUpdateRule(documentId ?? "");
   const createRule = useCreateRule(documentId ?? "");
   const generateQueries = useGenerateQueries(documentId ?? "");
+  const validateDocument = useValidateDocument(documentId ?? "");
   const [editingQueryId, setEditingQueryId] = useState<string | null>(null);
   // Só as bases já lidas no servidor entram nas buscas das regras.
   const datasets = (analysis?.datasets ?? []).filter((d) => d.status === "ready");
@@ -162,6 +168,7 @@ export function AssistantView() {
   }, [isOpen]);
 
   const resetView = () => {
+    setDatasetsOpen(false);
     setZoomOverride(null);
     setSelectedId(null);
     setPending([]);
@@ -601,6 +608,12 @@ export function AssistantView() {
           <span className="shrink-0 font-mono text-xs text-foreground-subtle tabular-nums">{pdf.pages.length} p.</span>
         )}
         <IconButton
+          aria-label="Bases de dados e significado das colunas"
+          icon={<Database size={16} strokeWidth={1.75} aria-hidden />}
+          onClick={() => setDatasetsOpen(true)}
+          tooltipSide="bottom"
+        />
+        <IconButton
           aria-label="Adicionar arquivos à análise"
           icon={<FilePlus size={16} strokeWidth={1.75} aria-hidden />}
           onClick={attach}
@@ -745,9 +758,21 @@ export function AssistantView() {
             onTypeFilterChange={setTypeFilter}
             statusFilter={statusFilter}
             onStatusFilterChange={setStatusFilter}
-            notice={generating ? "Gerando as buscas nas bases de dados…" : doc?.status_message}
+            notice={generating ? (doc?.status_message ?? "Verificando as regras nas bases…") : doc?.status_message}
             actions={
               <>
+                {rules.length > 0 && (
+                  <Button
+                    size="sm"
+                    variant="primary"
+                    loading={validateDocument.isPending || generating}
+                    onClick={() => validateDocument.mutate(true, {
+                      onError: (error) => toast({ title: "Não foi possível validar", description: errorMessage(error), variant: "error" }),
+                    })}
+                  >
+                    Validar todas as regras
+                  </Button>
+                )}
                 {datasets.length > 0 && rules.length > 0 && (
                   <Button
                     size="sm"
@@ -773,7 +798,9 @@ export function AssistantView() {
               </>
             }
           />
+          <ValidationSummary rules={rules} />
           <RulesTable
+            showValidation
             className="flex-1"
             rules={visibleRules.map((r) => ({
               ...r,
@@ -782,7 +809,7 @@ export function AssistantView() {
             }))}
             onEditQuery={datasets.length ? (r) => setEditingQueryId(r.id) : undefined}
             selectedId={selectedId}
-            onSelect={(r) => goToRule(r.id)}
+            onSelect={(r) => { goToRule(r.id); if (isDesktop) setLayout({ ...layout, table: true }); }}
             onHover={(r) => setHoverId(r?.id ?? null)}
             onSetStatus={(rule, status) =>
               updateRule.mutate(
@@ -861,6 +888,15 @@ export function AssistantView() {
       )}
 
       {sourceDialog}
+      <Dialog
+        open={datasetsOpen}
+        onOpenChange={setDatasetsOpen}
+        title="Bases da análise"
+        description="Confira o significado das colunas e os dados usados na validação."
+        className="max-h-[85dvh] w-[760px] overflow-y-auto"
+      >
+        <DatasetUploader datasets={analysis?.datasets ?? []} ensureAnalysis={ensureAnalysis} />
+      </Dialog>
       <QueryEditorDialog
         rule={rules.find((r) => r.id === editingQueryId) ?? null}
         datasets={datasets}

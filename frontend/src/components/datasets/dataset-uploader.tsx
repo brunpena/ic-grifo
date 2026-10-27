@@ -189,6 +189,24 @@ export function DatasetUploader({ datasets, ensureAnalysis, className }: Dataset
                       ? (d.status_message ?? "Não foi possível ler a base.")
                       : `${plural(d.row_count, "linha", "linhas")} · ${plural(d.columns.length, "coluna", "colunas")}`}
                 </span>
+                {d.original_size_bytes != null && d.original_size_bytes > d.size_bytes && (
+                  <p className="mt-1 text-xs text-danger">Base parcial: o limite do armazenamento cortou o arquivo. A validação cobre somente as linhas guardadas.</p>
+                )}
+                {d.status === "ready" && (
+                  <details className="mt-1 text-xs">
+                    <summary className="cursor-pointer text-accent">Significado das colunas (IA)</summary>
+                    {d.status_message && <p className="mt-2 text-foreground-muted">{d.status_message}</p>}
+                    <dl className="mt-2 space-y-3">
+                      {d.columns.map((column) => (
+                        <div key={column.name}>
+                          <dt className="font-medium">{column.name}</dt>
+                          <dd className="text-foreground-muted">{column.semantic?.meaning ?? "Interpretação pendente"}</dd>
+                          {column.semantic && <dd className="text-foreground-subtle">Confiança {column.semantic.confidence === "high" ? "alta" : column.semantic.confidence === "medium" ? "média" : "baixa"}{column.semantic.unit ? ` · ${column.semantic.unit}` : ""}{column.semantic.event ? ` · ${column.semantic.event}` : ""}. {column.semantic.reason}</dd>}
+                        </div>
+                      ))}
+                    </dl>
+                  </details>
+                )}
               </div>
               <IconButton
                 aria-label={`Remover ${d.name}`}
