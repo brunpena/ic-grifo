@@ -5,11 +5,15 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.schemas.documents import DocumentOut
+from app.schemas.validation import ColumnMeaning
 
 ColumnType = Literal["integer", "decimal", "date", "datetime", "boolean", "text"]
 
 
 class DatasetColumn(BaseModel):
+    semantic: ColumnMeaning | None = Field(
+        default=None, description="Significado interpretado pela IA."
+    )
     name: str
     type: ColumnType = Field(description="Tipo inferido a partir de todos os valores da coluna.")
     format: str | None = Field(
@@ -31,6 +35,7 @@ class DatasetOut(BaseModel):
     name: str = Field(description="Nome único na análise, usado pela IA para citar a base.")
     filename: str
     size_bytes: int
+    original_size_bytes: int | None = None
     status: Literal["processing", "ready", "error"] = Field(
         description="processing: lendo a base no servidor; só bases `ready` entram nas buscas."
     )

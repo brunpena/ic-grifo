@@ -90,6 +90,7 @@ class Dataset(Base):
     filename: Mapped[str] = mapped_column(Text)
     storage_path: Mapped[str | None] = mapped_column(Text)
     size_bytes: Mapped[int] = mapped_column(Integer)
+    original_size_bytes: Mapped[int | None] = mapped_column(BigInteger)
     # processing: arquivo guardado, schema sendo detectado em segundo plano.
     status: Mapped[str] = mapped_column(Text, default="processing")
     status_message: Mapped[str | None] = mapped_column(Text)
@@ -206,6 +207,8 @@ class Rule(Base):
     dataset_ids: Mapped[list[uuid.UUID]] = mapped_column(
         ARRAY(UUID(as_uuid=True)), default=list, server_default="{}"
     )
+    # Plano gerado pela IA e resultado calculado sobre todas as linhas aplicáveis.
+    validation: Mapped[dict | None] = mapped_column(JSONB)
     embedding: Mapped[list[float] | None] = mapped_column(Vector(EMBEDDING_DIM))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(

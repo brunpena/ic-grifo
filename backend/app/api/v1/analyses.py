@@ -184,6 +184,7 @@ async def upload_dataset(
         )
     if not data.strip():
         raise AppError(f"“{filename}”: o arquivo está vazio.", code="invalid_csv", status_code=422)
+    original_size_bytes = len(data)
     # O que passa do limite do armazenamento fica de fora (corte em fim de linha).
     try:
         storage_limit = await storage.max_file_bytes()
@@ -206,6 +207,7 @@ async def upload_dataset(
         name=dataset_display_name(filename, taken),
         filename=filename,
         size_bytes=len(data),
+        original_size_bytes=original_size_bytes,
         status="processing",
     )
     db.add(dataset)

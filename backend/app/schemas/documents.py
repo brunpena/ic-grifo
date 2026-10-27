@@ -5,6 +5,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.schemas.queries import RuleQueryOut
+from app.schemas.validation import RuleValidationOut
 
 RuleType = Literal["obrigacao", "proibicao", "prazo", "condicao", "outro"]
 RuleStatus = Literal["pendente", "validada", "rejeitada"]
@@ -39,6 +40,7 @@ class HighlightBox(BaseModel):
 
 
 class RuleOut(BaseModel):
+    validation: RuleValidationOut | None = None
     id: uuid.UUID
     type: RuleType
     status: RuleStatus

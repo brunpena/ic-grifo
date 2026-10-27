@@ -515,6 +515,32 @@ export interface components {
             /** Summary */
             summary: string;
         };
+        /** ColumnMeaning */
+        ColumnMeaning: {
+            /** Meaning */
+            meaning: string;
+            /**
+             * Semantic Type
+             * @default unknown
+             * @enum {string}
+             */
+            semantic_type: "identifier" | "amount" | "date" | "duration" | "status" | "category" | "boolean" | "text" | "unknown";
+            /** Event */
+            event?: string | null;
+            /** Unit */
+            unit?: string | null;
+            /**
+             * Confidence
+             * @default low
+             * @enum {string}
+             */
+            confidence: "high" | "medium" | "low";
+            /**
+             * Reason
+             * @default
+             */
+            reason: string;
+        };
         /** Condition */
         Condition: {
             /** Column */
@@ -556,6 +582,8 @@ export interface components {
         };
         /** DatasetColumn */
         DatasetColumn: {
+            /** @description Significado interpretado pela IA. */
+            semantic?: components["schemas"]["ColumnMeaning"] | null;
             /** Name */
             name: string;
             /**
@@ -608,6 +636,8 @@ export interface components {
             filename: string;
             /** Size Bytes */
             size_bytes: number;
+            /** Original Size Bytes */
+            original_size_bytes?: number | null;
             /**
              * Status
              * @description processing: lendo a base no servidor; só bases `ready` entram nas buscas.
@@ -632,6 +662,41 @@ export interface components {
              * Format: date-time
              */
             created_at: string;
+        };
+        /** DatasetValidation */
+        DatasetValidation: {
+            /**
+             * Applicable Count
+             * @default 0
+             */
+            applicable_count: number;
+            /**
+             * Passed Count
+             * @default 0
+             */
+            passed_count: number;
+            /**
+             * Failed Count
+             * @default 0
+             */
+            failed_count: number;
+            /**
+             * Unknown Count
+             * @default 0
+             */
+            unknown_count: number;
+            /**
+             * Dataset Id
+             * Format: uuid
+             */
+            dataset_id: string;
+            /** Dataset Name */
+            dataset_name: string;
+            /**
+             * Explanation
+             * @default
+             */
+            explanation: string;
         };
         /** DocumentOut */
         DocumentOut: {
@@ -854,6 +919,7 @@ export interface components {
         };
         /** RuleOut */
         RuleOut: {
+            validation?: components["schemas"]["RuleValidationOut"] | null;
             /**
              * Id
              * Format: uuid
@@ -950,6 +1016,45 @@ export interface components {
             summary?: string | null;
             /** Comment */
             comment?: string | null;
+        };
+        /** RuleValidationOut */
+        RuleValidationOut: {
+            /**
+             * Applicable Count
+             * @default 0
+             */
+            applicable_count: number;
+            /**
+             * Passed Count
+             * @default 0
+             */
+            passed_count: number;
+            /**
+             * Failed Count
+             * @default 0
+             */
+            failed_count: number;
+            /**
+             * Unknown Count
+             * @default 0
+             */
+            unknown_count: number;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "conforme" | "violacao" | "inconclusiva" | "nao_aplicavel" | "erro" | "desatualizada" | "ignorada";
+            /** Explanation */
+            explanation: string;
+            /**
+             * Checked At
+             * Format: date-time
+             */
+            checked_at: string;
+            /** Missing Data */
+            missing_data?: string[];
+            /** Datasets */
+            datasets?: components["schemas"]["DatasetValidation"][];
         };
         /**
          * StructuredQuery
