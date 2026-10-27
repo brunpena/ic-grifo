@@ -168,8 +168,8 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Envia uma base de dados em CSV; devolve o schema detectado
-         * @description Um arquivo por requisição. O separador (vírgula, ponto e vírgula, tab ou barra), a codificação e o tipo de cada coluna são detectados automaticamente.
+         * Envia uma base de dados em CSV; o servidor lê em segundo plano
+         * @description Um arquivo por requisição. A base volta em `processing` e passa a `ready` (ou `error`, com o motivo) depois que o servidor detecta separador, codificação e o tipo de cada coluna. As linhas ficam só no servidor e são lidas pelas buscas das regras.
          */
         post: operations["upload_dataset_api_v1_analyses__analysis_id__datasets_post"];
         delete?: never;
@@ -185,7 +185,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Schema e linhas de amostra de uma base */
+        /** Schema e situação da leitura de uma base */
         get: operations["get_dataset_api_v1_datasets__dataset_id__get"];
         put?: never;
         post?: never;
@@ -608,6 +608,17 @@ export interface components {
             filename: string;
             /** Size Bytes */
             size_bytes: number;
+            /**
+             * Status
+             * @description processing: lendo a base no servidor; só bases `ready` entram nas buscas.
+             * @enum {string}
+             */
+            status: "processing" | "ready" | "error";
+            /**
+             * Status Message
+             * @description Motivo, quando `error`.
+             */
+            status_message: string | null;
             /** Encoding */
             encoding: string;
             /** Delimiter */
@@ -616,11 +627,6 @@ export interface components {
             row_count: number;
             /** Columns */
             columns: components["schemas"]["DatasetColumn"][];
-            /**
-             * Sample Rows
-             * @description Primeiras linhas, como texto, na ordem de `columns` (None = célula vazia).
-             */
-            sample_rows: (string | null)[][];
             /**
              * Created At
              * Format: date-time
@@ -1492,7 +1498,7 @@ export interface operations {
         };
         responses: {
             /** @description Successful Response */
-            201: {
+            202: {
                 headers: {
                     [name: string]: unknown;
                 };

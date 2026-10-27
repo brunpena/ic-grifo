@@ -1,4 +1,5 @@
-export { api, apiUrl, API_URL, unwrap } from "./client";
+export { api, apiUrl, API_URL, postFormWithProgress, unwrap } from "./client";
+export type { UploadProgress } from "./client";
 export { ApiError, errorMessage } from "./errors";
 export type { components, paths } from "./schema";
 

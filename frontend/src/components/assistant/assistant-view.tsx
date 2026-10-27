@@ -126,7 +126,8 @@ export function AssistantView() {
   const createRule = useCreateRule(documentId ?? "");
   const generateQueries = useGenerateQueries(documentId ?? "");
   const [editingQueryId, setEditingQueryId] = useState<string | null>(null);
-  const datasets = analysis?.datasets ?? [];
+  // Só as bases já lidas no servidor entram nas buscas das regras.
+  const datasets = (analysis?.datasets ?? []).filter((d) => d.status === "ready");
 
   // Mensagens que ainda não estão no servidor (pergunta enviada e resposta chegando).
   const [pending, setPending] = useState<ThreadMessage[]>([]);

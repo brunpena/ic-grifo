@@ -1,7 +1,7 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, type Schemas, unwrap } from "@/lib/api";
+import { api, postFormWithProgress, type Schemas, type UploadProgress, unwrap } from "@/lib/api";
 
 export type Analysis = Schemas["AnalysisDetailOut"];
 export type AnalysisSummary = Schemas["AnalysisOut"];
@@ -32,6 +32,8 @@ export function useAnalysis(id: string | null) {
     queryKey: analysisKeys.detail(id ?? ""),
     queryFn: () => unwrap(api.GET("/api/v1/analyses/{analysis_id}", { params: { path: { analysis_id: id! } } })),
     enabled: !!id,
+    // Acompanha as bases que o servidor ainda está lendo.
+    refetchInterval: (query) => (query.state.data?.datasets.some((d) => d.status === "processing") ? 1500 : false),
   });
 }
 
@@ -46,22 +48,25 @@ export function useCreateAnalysis() {
   });
 }
 
-/** Envia um CSV. Use uma chamada por arquivo: cada um tem seu próprio erro. */
+/** Envia um CSV. Use uma chamada por arquivo: cada um tem seu próprio erro. A base volta
+ * em `processing` e o servidor a lê em segundo plano (ver `useAnalysis`). */
 export function useUploadDataset() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: ({ analysisId, file }: { analysisId: string; file: File }) =>
-      unwrap(
-        api.POST("/api/v1/analyses/{analysis_id}/datasets", {
-          params: { path: { analysis_id: analysisId } },
-          body: { file: file as unknown as string },
-          bodySerializer: () => {
-            const form = new FormData();
-            form.append("file", file);
-            return form;
-          },
-        }),
-      ),
+    mutationFn: ({
+      analysisId,
+      file,
+      onProgress,
+    }: {
+      analysisId: string;
+      file: File;
+      /** Bytes já enviados; depois do envio, o servidor ainda lê a base. */
+      onProgress: (progress: UploadProgress) => void;
+    }) => {
+      const form = new FormData();
+      form.append("file", file);
+      return postFormWithProgress<Dataset>(`/api/v1/analyses/${analysisId}/datasets`, form, onProgress);
+    },
     onSuccess: (dataset) => {
       queryClient.setQueryData<Analysis>(analysisKeys.detail(dataset.analysis_id), (analysis) =>
         analysis ? { ...analysis, datasets: [...analysis.datasets, dataset] } : analysis,
@@ -86,5 +91,5 @@ export function useDeleteDataset() {
 }
 
 export function isCsvFile(file: File) {
-  return /\.(csv|tsv|txt)$/i.test(file.name) || file.type === "text/csv";
+  return /\.(csv|tsv|txt|crdownload)$/i.test(file.name) || file.type === "text/csv";
 }
