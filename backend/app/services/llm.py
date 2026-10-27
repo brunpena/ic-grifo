@@ -253,6 +253,11 @@ def describe_datasets(datasets: list[DatasetPrompt]) -> str:
                 detail = "ex.: " + ", ".join(examples)
             else:
                 detail = "(sempre vazia)"
+            semantic = column.get("semantic")
+            if semantic:
+                detail += (f"; significado: {semantic['meaning']}"
+                           f"; confiança: {semantic['confidence']}"
+                           f"; evento: {semantic.get('event')}; unidade: {semantic.get('unit')}")
             lines.append(f"- {column['name']} ({kind}) {detail}")
         lines.append("</base>")
         blocks.append("\n".join(lines))
