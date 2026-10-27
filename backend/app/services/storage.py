@@ -36,6 +36,18 @@ def _local_path(name: str) -> Path:
 # ----- Supabase Storage -----
 
 _bucket_ready = False
+# Limite do próprio bucket (file_size_limit), quando definido; pode ser menor que o do projeto.
+_bucket_limit: int | None = None
+
+# O corpo vai em pedaços: o timeout de escrita do httpx vale para cada envio ao socket, e um
+# CSV grande mandado de uma vez só estourava esse limite numa conexão de upload comum.
+_UPLOAD_CHUNK = 1024 * 1024
+_UPLOAD_TIMEOUT = httpx.Timeout(60, write=120)
+
+
+async def _chunks(data: bytes):
+    for start in range(0, len(data), _UPLOAD_CHUNK):
+        yield data[start : start + _UPLOAD_CHUNK]
 
 
 def _supabase() -> tuple[str, dict[str, str], str]:
@@ -48,12 +60,15 @@ def _supabase() -> tuple[str, dict[str, str], str]:
 
 
 async def _ensure_bucket(client: httpx.AsyncClient) -> None:
-    global _bucket_ready
+    global _bucket_ready, _bucket_limit
     if _bucket_ready:
         return
     base, headers, bucket = _supabase()
     response = await client.get(f"{base}/bucket/{bucket}", headers=headers)
-    if response.status_code != 200:
+    if response.status_code == 200:
+        limit = response.json().get("file_size_limit")
+        _bucket_limit = int(limit) if limit else None
+    else:
         created = await client.post(
             f"{base}/bucket",
             headers=headers,
@@ -62,6 +77,20 @@ async def _ensure_bucket(client: httpx.AsyncClient) -> None:
         if created.status_code not in (200, 201, 409):
             raise StorageError(f"Não foi possível criar o bucket “{bucket}” no Supabase.")
     _bucket_ready = True
+
+
+async def max_file_bytes() -> int | None:
+    """Maior arquivo que o armazenamento aceita (None = sem limite, no disco local)."""
+    settings = get_settings()
+    if settings.storage_backend == "local":
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            await _ensure_bucket(client)
+    except httpx.HTTPError as exc:
+        raise StorageError("Não foi possível falar com o Supabase Storage.") from exc
+    limits = [settings.supabase_max_file_bytes, _bucket_limit]
+    return min(limit for limit in limits if limit)
 
 
 async def save_file(name: str, data: bytes, content_type: str) -> str:
@@ -77,12 +106,27 @@ async def save_file(name: str, data: bytes, content_type: str) -> str:
         return f"local:{name}"
 
     base, headers, bucket = _supabase()
-    async with httpx.AsyncClient(timeout=60) as client:
-        await _ensure_bucket(client)
-        response = await client.post(
-            f"{base}/object/{bucket}/{name}",
-            headers={**headers, "Content-Type": content_type, "x-upsert": "true"},
-            content=data,
+    try:
+        async with httpx.AsyncClient(timeout=_UPLOAD_TIMEOUT) as client:
+            await _ensure_bucket(client)
+            response = await client.post(
+                f"{base}/object/{bucket}/{name}",
+                headers={
+                    **headers,
+                    "Content-Type": content_type,
+                    "Content-Length": str(len(data)),
+                    "x-upsert": "true",
+                },
+                content=_chunks(data),
+            )
+    except httpx.HTTPError as exc:
+        raise StorageError(
+            "O envio do arquivo ao Supabase Storage não terminou a tempo. Tente de novo."
+        ) from exc
+    if response.status_code == 413:
+        raise StorageError(
+            "O arquivo passa do tamanho máximo aceito pelo Supabase Storage "
+            "(ajuste o limite do bucket ou do projeto)."
         )
     if response.status_code not in (200, 201):
         raise StorageError("Não foi possível salvar o arquivo no Supabase Storage.")
@@ -97,8 +141,11 @@ async def read_file(name: str) -> bytes:
         return await asyncio.to_thread(path.read_bytes)
 
     base, headers, bucket = _supabase()
-    async with httpx.AsyncClient(timeout=60) as client:
-        response = await client.get(f"{base}/object/{bucket}/{name}", headers=headers)
+    try:
+        async with httpx.AsyncClient(timeout=_UPLOAD_TIMEOUT) as client:
+            response = await client.get(f"{base}/object/{bucket}/{name}", headers=headers)
+    except httpx.HTTPError as exc:
+        raise StorageError("Não foi possível ler o arquivo no Supabase Storage.") from exc
     if response.status_code != 200:
         raise StorageError("Arquivo não encontrado.")
     return response.content

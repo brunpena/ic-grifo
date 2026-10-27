@@ -22,11 +22,11 @@ from app.schemas.analyses import (
 from app.schemas.common import error_responses
 from app.schemas.documents import DocumentOut
 from app.services import storage
-from app.services.datasets import DatasetError, dataset_display_name, parse_csv
+from app.services.datasets import DatasetError, dataset_display_name, fit_to_size, parse_csv
 
 router = APIRouter(tags=["análises"])
 
-CSV_EXTENSIONS = (".csv", ".tsv", ".txt")
+CSV_EXTENSIONS = (".csv", ".tsv", ".txt", ".crdownload")
 
 
 async def owned_analysis(db: SessionDep, analysis_id: uuid.UUID, user: User) -> Analysis:
@@ -175,11 +175,28 @@ async def upload_dataset(
             code="not_a_csv",
             status_code=422,
         )
-    data = await file.read(settings.max_dataset_bytes + 1)
-    if len(data) > settings.max_dataset_bytes:
+    limit = settings.max_dataset_bytes
+    data = await file.read() if limit is None else await file.read(limit + 1)
+    if limit is not None and len(data) > limit:
         raise PayloadTooLargeError(
             f"“{filename}” passa do limite de {settings.max_dataset_mb} MB por base."
         )
+    if not data.strip():
+        raise AppError(f"“{filename}”: o arquivo está vazio.", code="invalid_csv", status_code=422)
+    # O que passa do limite do armazenamento fica de fora (corte em fim de linha).
+    try:
+        storage_limit = await storage.max_file_bytes()
+    except storage.StorageError as exc:
+        raise AppError(str(exc), code="storage_error", status_code=502) from exc
+    if storage_limit is not None:
+        data = fit_to_size(data, storage_limit)
+        if not data.strip():
+            raise AppError(
+                f"“{filename}”: a primeira linha já passa do limite do armazenamento.",
+                code="invalid_csv",
+                status_code=422,
+            )
+
     try:
         parsed = await asyncio.to_thread(
             parse_csv,

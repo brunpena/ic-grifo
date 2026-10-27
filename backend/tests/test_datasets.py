@@ -9,6 +9,7 @@ from app.services.datasets import (
     DatasetError,
     dataset_display_name,
     detect_delimiter,
+    fit_to_size,
     infer_column,
     parse_csv,
     parse_value,
@@ -25,6 +26,15 @@ CONTRATOS_BR = (
 
 
 # ----- unidades -----
+
+
+def test_fit_to_size_keeps_only_whole_lines_that_fit():
+    data = b"a;b\n1;2\n3;4\n"
+    assert fit_to_size(data, len(data)) == data
+    assert fit_to_size(data, len(data) - 1) == b"a;b\n1;2\n"
+    assert fit_to_size(data, 5) == b"a;b\n"
+    assert fit_to_size(data, 3) == b""
+
 
 
 def test_parse_csv_detects_schema_of_brazilian_spreadsheet():
@@ -100,6 +110,8 @@ def test_parse_csv_rejects_invalid_files(data, message):
 def test_dataset_display_name_is_unique():
     assert dataset_display_name("contratos 2026.csv", set()) == "contratos 2026"
     assert dataset_display_name("c.csv", {"c", "c (2)"}) == "c (3)"
+    assert dataset_display_name("contratos.csv.crdownload", set()) == "contratos"
+    assert dataset_display_name("Unconfirmed 123.crdownload", set()) == "Unconfirmed 123"
 
 
 # ----- API -----

@@ -130,7 +130,9 @@ def _header(raw: list[str]) -> list[str]:
     return names
 
 
-def parse_csv(data: bytes, *, max_rows: int, max_columns: int) -> ParsedCsv:
+def parse_csv(
+    data: bytes, *, max_rows: int | None = None, max_columns: int | None = None
+) -> ParsedCsv:
     text, encoding = decode(data)
     if not text.strip():
         raise DatasetError("O arquivo está vazio.")
@@ -146,7 +148,7 @@ def parse_csv(data: bytes, *, max_rows: int, max_columns: int) -> ParsedCsv:
                 continue
             if header is None:
                 header = _header(raw)
-                if len(header) > max_columns:
+                if max_columns is not None and len(header) > max_columns:
                     raise DatasetError(
                         f"A base tem {len(header)} colunas; o limite é {max_columns}."
                     )
@@ -160,7 +162,7 @@ def parse_csv(data: bytes, *, max_rows: int, max_columns: int) -> ParsedCsv:
                         f"tem {len(header)}. Confira o separador e as aspas do arquivo."
                     )
                 raw = raw[: len(header)]
-            if len(rows) >= max_rows:
+            if max_rows is not None and len(rows) >= max_rows:
                 raise DatasetError(f"A base passa do limite de {_thousands(max_rows)} linhas.")
             cells: list[str | None] = [(cell.strip() or None) for cell in raw]
             cells.extend([None] * (len(header) - len(cells)))
@@ -290,9 +292,20 @@ def parse_value(column: dict, raw: str | None) -> Value:
     return raw
 
 
+def fit_to_size(data: bytes, limit: int) -> bytes:
+    """Corta o CSV no fim da última linha que cabe em `limit` bytes; o resto é descartado."""
+    if len(data) <= limit:
+        return data
+    end = data.rfind(b"\n", 0, limit)
+    return data[: end + 1] if end >= 0 else b""
+
+
 def dataset_display_name(filename: str, taken: set[str]) -> str:
     """Nome da base a partir do arquivo, único dentro da análise."""
-    base = " ".join(PurePath(filename).stem.split())[:80] or "base"
+    path = PurePath(filename)
+    if path.suffix.lower() == ".crdownload":
+        path = PurePath(path.stem)
+    base = " ".join(path.stem.split())[:80] or "base"
     name, n = base, 2
     while name in taken:
         name, n = f"{base} ({n})", n + 1

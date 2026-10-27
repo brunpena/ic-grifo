@@ -38,14 +38,17 @@ class Settings(BaseSettings):
     supabase_url: str = ""
     supabase_service_key: SecretStr = SecretStr("")
     supabase_bucket: str = "documents"
+    # Tamanho máximo de arquivo do projeto no Supabase Storage (plano Free: 50 MB; Pro: até
+    # 500 GB, conforme Storage > Settings). Bases maiores são cortadas na última linha que cabe.
+    supabase_max_file_mb: int = 50
     local_storage_dir: Path = Path("./data/storage")
 
     # Limites
     max_upload_mb: int = 50
-    # Bases de dados (CSV): tamanho do arquivo, linhas e colunas por base.
-    max_dataset_mb: int = 20
-    max_dataset_rows: int = 200_000
-    max_dataset_columns: int = 200
+    # Bases de dados (CSV): tamanho do arquivo, linhas e colunas por base. Vazio = sem limite.
+    max_dataset_mb: int | None = None
+    max_dataset_rows: int | None = None
+    max_dataset_columns: int | None = None
     # Documentos por link: tempo total do download (o tamanho segue MAX_UPLOAD_MB).
     url_fetch_timeout_seconds: float = 20
     # Texto colado na tela, em caracteres.
@@ -83,6 +86,11 @@ class Settings(BaseSettings):
             return [o.strip() for o in value.split(",") if o.strip()]
         return value
 
+    @field_validator("max_dataset_mb", "max_dataset_rows", "max_dataset_columns", mode="before")
+    @classmethod
+    def _blank_is_unlimited(cls, value: object) -> object:
+        return None if isinstance(value, str) and not value.strip() else value
+
     @field_validator("database_url", mode="after")
     @classmethod
     def _use_asyncpg(cls, value: str) -> str:
@@ -103,8 +111,12 @@ class Settings(BaseSettings):
         return self.max_upload_mb * 1024 * 1024
 
     @property
-    def max_dataset_bytes(self) -> int:
-        return self.max_dataset_mb * 1024 * 1024
+    def supabase_max_file_bytes(self) -> int:
+        return self.supabase_max_file_mb * 1024 * 1024
+
+    @property
+    def max_dataset_bytes(self) -> int | None:
+        return None if self.max_dataset_mb is None else self.max_dataset_mb * 1024 * 1024
 
 
 @lru_cache

@@ -321,7 +321,7 @@ _cache_lock = asyncio.Lock()
 
 
 def _load(data: bytes, columns: list[dict]) -> LoadedDataset:
-    parsed = parse_csv(data, max_rows=10**9, max_columns=10**6)
+    parsed = parse_csv(data)
     typed = [[parse_value(c, row[i]) for i, c in enumerate(columns)] for row in parsed.rows]
     return LoadedDataset(raw_rows=parsed.rows, typed_rows=typed)
 
