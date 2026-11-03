@@ -12,6 +12,9 @@ das rotas em `backend/app/api/v1`; não incluem as rotas internas de documentaç
 - Autenticação usa cookie de sessão. O cliente chama a API com `credentials: "include"`.
 - O backend verifica o proprietário do recurso, não apenas a existência de uma sessão.
 - HTTP 202 indica processamento assíncrono; acompanhe o campo `status` depois.
+  Nos documentos, conversão e leitura também ocorrem após a resposta. O PDF fica
+  disponível quando `page_count` é preenchido; falhas de conteúdo aparecem em
+  `status=error` e `status_message`.
 - HTTP 204 não devolve conteúdo para a interface consumir.
 - IDs de análise, documento, base e regra são UUIDs.
 - A URL em `NEXT_PUBLIC_API_URL` é a base do servidor, sem repetir `/api/v1`.
@@ -192,3 +195,14 @@ consultar esses objetos pode devolver HTTP 200. O mesmo vale para um resultado
 
 A documentação gerada pelo FastAPI fornece os detalhes de todos os campos; os mapas
 explicam por que cada endpoint existe e qual parte do produto o utiliza.
+
+
+## Retomar a extracao por pacotes
+
+`POST /api/v1/documents/{document_id}/resume` retoma um documento em `error`,
+sem novo upload. Exige o dono autenticado; retorna 202 com `DocumentOut` ou 409
+se o documento nao estiver interrompido. Cada pacote concluido fica persistido
+no banco (migration 0008), incluindo pacotes sem regras. Reinicios reutilizam os
+pacotes salvos; mudancas no texto, modelo, prompt, divisao ou bases invalidam o
+checkpoint. Respostas incompletas ficam pendentes. A interface oferece
+"Continuar processamento" tambem quando o PDF ja esta aberto.

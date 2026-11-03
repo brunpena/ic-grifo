@@ -141,7 +141,7 @@ Os valores efetivos estão em
 | Documentos | `MAX_UPLOAD_MB`, `MAX_PASTED_CHARS`, `URL_FETCH_TIMEOUT_SECONDS` | Limites de entrada e download. |
 | CSV | `MAX_DATASET_MB` | Limite de upload; vazio significa sem esse limite de aplicação. O Storage pode impor outro. |
 | Gemini | `GEMINI_API_KEY`, `GEMINI_MODEL`, `GEMINI_THINKING_LEVEL` | Provedor e geração de respostas. |
-| Paralelismo | `LLM_MAX_CONCURRENCY`, `LLM_HEDGE_SECONDS` | Concorrência por operação/lote e reforço de requisição lenta. |
+| Paralelismo | `LLM_MAX_CONCURRENCY`, `LLM_HEDGE_SECONDS` | Concorrência global por processo; reforço de chamada lenta somente com capacidade disponível. |
 | Blocos de texto | `LLM_CHUNK_CHARS`, `LLM_CHUNK_OVERLAP` | Tamanho e sobreposição da extração. |
 
 A chave do Storage fica no backend. Variáveis `NEXT_PUBLIC_*` fazem parte do
@@ -153,8 +153,15 @@ cliente público; não devem conter chaves privadas.
 limites por argumento. Porém o leitor atual de ingestão chama `parse_csv(data)`
 sem repassar essas duas opções. Não conte com elas como limites aplicados nesse caminho.
 
-`LLM_RATE_LIMIT_PER_MINUTE` também está declarado, mas não há limitador por minuto
-ligado a ele. Concorrência, retries e mensagens de quota são mecanismos separados.
+`LLM_RATE_LIMIT_PER_MINUTE` controla todas as chamadas de IA no processo, incluindo
+novas tentativas, reforços e conversa. O reforço fica desligado por padrão e só é
+enviado quando há cota e concorrência disponíveis, sem ultrapassar pedidos aguardando.
+
+As bases carregadas têm cache de até 4 entradas/128 MiB, com carregamentos separados
+por arquivo. Os índices de validação têm cache de até 128 entradas/64 MiB: a primeira
+avaliação calcula os vereditos e as páginas seguintes geram evidências só para as
+linhas exibidas. Mudanças de plano, fonte ou data de verificação invalidam o índice.
+Esses limites cobrem os caches retidos, não toda a memória das tarefas em andamento.
 
 As opções `EMBEDDING_*` estão preparadas na configuração, e a dimensão do vetor é
 usada no modelo/migration. Não existe um pipeline ativo de busca semântica nessas telas.

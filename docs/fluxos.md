@@ -64,6 +64,10 @@ O caminho do backend é `upload_dataset` →
 `storage.save_file` → `ingest.start_dataset_processing` →
 `process_dataset` → `rule_validation.interpret`.
 
+O processamento reaproveita os bytes do upload e as linhas lidas ficam em cache com
+limite de memória. O schema é publicado antes da interpretação por IA: isso libera
+o envio e a extração do documento, mas a validação aguarda as bases terminarem.
+
 O CSV pode ser cortado na última quebra de linha que cabe no limite do armazenamento.
 O tamanho original é preservado para identificar essa cobertura parcial. A presença
 de uma coluna semanticamente ambígua não torna o CSV ilegível, mas impede conclusões
@@ -77,12 +81,13 @@ flowchart TD
     B["Texto colado"] --> D
     C["Link HTTP ou HTTPS"] --> S["safe_fetch: valida endereço e baixa conteúdo"]
     S --> D
-    D --> R["ConverterRegistry escolhe o conversor"]
+    D --> ORIGINAL["Salva original e metadados; Document em processing"]
+    ORIGINAL --> RESP["Retorna 202"]
+    ORIGINAL --> R["Em segundo plano: ConverterRegistry escolhe o conversor"]
     R --> P["PDF: lê texto e posições"]
     R --> H["HTML ou TXT: limpa, diagrama e lê o PDF gerado"]
     P --> G["Salva PDF e Document em processing"]
     H --> G
-    G --> RESP["Retorna 202"]
     G --> T["process_document grava texto, páginas e palavras"]
     T --> E["Marca extracting_rules"]
     E --> L["Gemini extrai regras de blocos com frases numeradas"]
@@ -95,8 +100,9 @@ flowchart TD
     T --> ER["Falha de leitura ou extração: Document error"]
 ```
 
-A conversão acontece antes de devolver 202. A extração de regras e as etapas seguintes
-continuam em segundo plano. Um PDF sem texto é recusado: o projeto não executa OCR.
+O original é salvo antes de devolver 202; conversão, extração e validação acontecem
+em segundo plano. Um PDF sem texto recebe status `error`: o projeto não executa OCR.
+O PDF do visualizador fica disponível depois da conversão, quando há `page_count`.
 
 Arquivos centrais:
 [documents.py](../backend/app/api/v1/documents.py),
@@ -227,11 +233,12 @@ flowchart TD
     B --> C["Bases em processing: agenda nova leitura do arquivo"]
     B --> D["Documentos em extracting_rules: limpa validações interrompidas"]
     D --> E{"O documento já tem regras?"}
-    E -->|Sim| F["Marca ready com aviso de interrupção"]
-    E -->|Não| G["Marca error e orienta reenviar"]
-    B --> H["Documentos ainda em processing: marca error"]
+    E -->|Sim| F["Retoma buscas e validação"]
+    E -->|Não| G["Retoma extração pelo PDF ou original salvo"]
+    B --> H["Documentos em processing: retoma conversão do original"]
     C --> I["Processamento normal da base"]
 ```
 
-A recuperação não representa uma fila durável de tarefas. Ela usa os estados
-persistidos para decidir o que pode ser retomado e o que exige uma nova ação.
+A recuperação usa os estados e arquivos persistidos. Páginas e palavras são
+substituídas ao retomar a extração, evitando duplicação. O processamento continua
+no mesmo processo da API, com um único worker.
