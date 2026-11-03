@@ -34,15 +34,17 @@ export function PanelToggles({
   layout,
   onChange,
   counts,
+  hiddenPanels = [],
 }: {
   layout: AnalysisLayout;
   onChange: (layout: AnalysisLayout) => void;
   /** Número exibido ao lado do rótulo (ex.: regras). */
   counts?: Partial<Record<keyof AnalysisLayout, number>>;
+  hiddenPanels?: (keyof AnalysisLayout)[];
 }) {
   return (
     <div role="group" aria-label="Painéis" className="flex items-center gap-0.5 rounded-md bg-surface-muted p-0.5">
-      {TOGGLES.map(({ key, label, icon: Icon }) => {
+      {TOGGLES.filter(({ key }) => !hiddenPanels.includes(key)).map(({ key, label, icon: Icon }) => {
         const on = layout[key];
         const count = counts?.[key];
         return (

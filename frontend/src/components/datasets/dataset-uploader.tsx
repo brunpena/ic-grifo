@@ -184,7 +184,7 @@ export function DatasetUploader({ datasets, ensureAnalysis, className }: Dataset
                   className={cn("text-xs tabular-nums", d.status === "error" ? "text-danger" : "text-foreground-subtle")}
                 >
                   {d.status === "processing"
-                    ? `Carregando a base no servidor… (${formatBytes(d.size_bytes)})`
+                    ? (d.status_message ?? `Carregando a base no servidor… (${formatBytes(d.size_bytes)})`)
                     : d.status === "error"
                       ? (d.status_message ?? "Não foi possível ler a base.")
                       : `${plural(d.row_count, "linha", "linhas")} · ${plural(d.columns.length, "coluna", "colunas")}`}

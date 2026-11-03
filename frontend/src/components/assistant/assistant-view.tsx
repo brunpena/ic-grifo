@@ -1,26 +1,20 @@
 "use client";
 
-import { useQueryClient } from "@tanstack/react-query";
 import {
   Database,
-  FilePlus,
   FileSearch,
   FileText,
   FileUp,
-  Library,
   Link2,
   MousePointerClick,
-  PanelLeftClose,
   Search,
   Sparkles,
   Type,
   X,
 } from "lucide-react";
-import Link from "next/link";
-import { type DragEvent, type ReactNode, useEffect, useRef, useState } from "react";
-import { AnalysisWorkspace, PanelToggles, useAnalysisLayout } from "@/components/analysis/analysis-workspace";
+import { type DragEvent, useEffect, useRef, useState } from "react";
+import { AnalysisWorkspace, PanelToggles, type AnalysisLayout } from "@/components/analysis/analysis-workspace";
 import { BrandLogo } from "@/components/brand-logo";
-import { AssistantMessage, type CitedRule, UserMessage } from "@/components/chat/chat-message";
 import { ProcessingSteps } from "@/components/chat/processing-steps";
 import { DatasetUploader } from "@/components/datasets/dataset-uploader";
 import { DocumentSourceDialog, type DocumentSourceMode } from "@/components/documents/document-source-dialog";
@@ -40,7 +34,6 @@ import { Button } from "@/components/ui/button";
 import { Dialog } from "@/components/ui/dialog";
 import { EmptyState } from "@/components/ui/empty-state";
 import { IconButton } from "@/components/ui/icon-button";
-import { Select } from "@/components/ui/select";
 import { useToast } from "@/components/ui/toast";
 import { useAnalysis, useCreateAnalysis } from "@/lib/analyses";
 import { errorMessage } from "@/lib/api";
@@ -49,18 +42,14 @@ import type { RuleStatus, RuleType } from "@/lib/design/tokens";
 import {
   DOCUMENT_ACCEPT,
   type DocumentInfo,
-  invalidateMessages,
   isDocumentFile,
   isPdfFile,
   type Rule,
-  streamMessage,
-  stripCitations,
   useCreateRule,
   useDocument,
   useDocumentFile,
-  useDocuments,
-  useMessages,
   useRules,
+  useResumeDocument,
   useUpdateRule,
   useUploadDocument,
 } from "@/lib/documents";
@@ -70,28 +59,14 @@ import { DESKTOP_QUERY, useMediaQuery } from "@/lib/use-media-query";
 import { cn } from "@/lib/utils";
 import { useValidateDocument } from "@/lib/validation";
 import { ValidationSummary } from "@/components/validation/validation-badge";
-import { AssistantComposer, AssistantDisclaimer } from "./assistant-composer";
 
-type ThreadMessage = {
-  id: string;
-  role: "user" | "assistant";
-  content: ReactNode;
-  citations?: CitedRule[];
-  streaming?: boolean;
-};
+type MobileTab = "document" | "rules" | "table";
 
-type MobileTab = "chat" | "document" | "rules" | "table";
-
-let nextId = 0;
-const localId = () => `local-${++nextId}`;
-
-/** Retângulos do grifo de uma regra numa página (vindos do back, em frações da página). */
 const rectsOn = (rule: Rule, page: number): PageRect[] =>
   rule.boxes.filter((b) => b.page === page).map(({ x, y, width, height }) => ({ x, y, width, height }));
 
 export function AssistantView() {
   const toast = useToast();
-  const queryClient = useQueryClient();
   const { data: user } = useCurrentUser();
   const isDesktop = useMediaQuery(DESKTOP_QUERY);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -109,8 +84,8 @@ export function AssistantView() {
   const [documentId, setDocumentId] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
   const upload = useUploadDocument();
+  const resumeDocument = useResumeDocument();
   const uploadMore = useUploadDocument();
-  const { data: recent } = useDocuments();
   const { data: doc } = useDocument(documentId);
   // Texto, HTML e links viram PDF no back; o PDF exibido vem sempre de lá (ou do cache).
   const documentFile = useDocumentFile(doc);
@@ -118,7 +93,7 @@ export function AssistantView() {
   const documentName = doc?.title ?? pendingUpload?.name ?? "";
   const isOpen = !!documentId || !!pendingUpload;
   const pdf = usePdfDocument(file);
-  const [layout, setLayout] = useAnalysisLayout();
+  const [layout, setLayout] = useState<AnalysisLayout>({ chat: false, rules: true, table: true });
   // Busca no documento (Ctrl+F).
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
@@ -126,7 +101,6 @@ export function AssistantView() {
   const search = usePdfSearch(pdf.status === "ready" ? pdf.doc : null, searchOpen ? searchQuery : "");
   const ready = doc?.status === "ready";
   const { data: rules = [] } = useRules(documentId, ready);
-  const { data: savedMessages = [] } = useMessages(documentId, ready);
   const updateRule = useUpdateRule(documentId ?? "");
   const createRule = useCreateRule(documentId ?? "");
   const generateQueries = useGenerateQueries(documentId ?? "");
@@ -134,14 +108,10 @@ export function AssistantView() {
   const [editingQueryId, setEditingQueryId] = useState<string | null>(null);
   // Só as bases já lidas no servidor entram nas buscas das regras.
   const datasets = (analysis?.datasets ?? []).filter((d) => d.status === "ready");
+  const canUploadDocument = (analysis?.datasets ?? []).some(
+    (d) => d.status !== "error" && d.columns.length > 0,
+  );
 
-  // Mensagens que ainda não estão no servidor (pergunta enviada e resposta chegando).
-  const [pending, setPending] = useState<ThreadMessage[]>([]);
-  const [notes, setNotes] = useState<ThreadMessage[]>([]);
-  const [draft, setDraft] = useState("");
-  const [sending, setSending] = useState(false);
-
-  // `null` = ajustar à largura do painel (até a pessoa mexer no zoom).
   const [zoomOverride, setZoomOverride] = useState<number | null>(null);
   const [page, setPage] = useState(1);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -171,16 +141,19 @@ export function AssistantView() {
     setDatasetsOpen(false);
     setZoomOverride(null);
     setSelectedId(null);
-    setPending([]);
-    setNotes([]);
     setPage(1);
-    setMobileTab("document");
+    setMobileTab("rules");
+    setLayout({ chat: false, rules: true, table: true });
     setSearchIndex(0);
     upload.reset();
   };
 
   /** Envia os arquivos para a análise atual e abre o primeiro. */
   const openFiles = async (picked: File[]) => {
+    if (!canUploadDocument) {
+      toast({ title: "Envie a base de dados primeiro", description: "Aguarde a leitura da base antes de enviar o documento.", variant: "error" });
+      return;
+    }
     const invalid = picked.filter((f) => !isDocumentFile(f));
     if (invalid.length) {
       toast({
@@ -244,51 +217,6 @@ export function AssistantView() {
     resetView();
   };
 
-  const note = (content: string) =>
-    setNotes((list) => [...list, { id: localId(), role: "assistant", content }]);
-
-  const send = async () => {
-    const text = draft.trim();
-    if (!text || sending) return;
-    if (!documentId || !doc) {
-      setDraft("");
-      setNotes((list) => [...list, { id: localId(), role: "user", content: text }]);
-      note("Envie um contrato, edital ou regulamento (PDF, HTML, texto ou link) e eu respondo com base nele.");
-      return;
-    }
-    if (!ready) {
-      note("Ainda estou lendo o documento. Assim que terminar, respondo sua pergunta.");
-      return;
-    }
-    setDraft("");
-    setSending(true);
-    const answerId = localId();
-    setPending([
-      { id: localId(), role: "user", content: text },
-      { id: answerId, role: "assistant", content: "", streaming: true },
-    ]);
-    let answer = "";
-    try {
-      await streamMessage(documentId, text, {
-        onDelta: (delta) => {
-          answer += delta;
-          setPending((list) =>
-            list.map((m) => (m.id === answerId ? { ...m, content: stripCitations(answer) } : m)),
-          );
-        },
-        onDone: () => undefined,
-      });
-      await invalidateMessages(queryClient, documentId);
-    } catch (error) {
-      toast({ title: "A IA não respondeu", description: errorMessage(error), variant: "error" });
-      await invalidateMessages(queryClient, documentId);
-    } finally {
-      setPending([]);
-      setSending(false);
-    }
-  };
-
-  // Mede a área do documento para o zoom "ajustar à largura".
   const viewerRef = (el: HTMLDivElement | null) => {
     scrollRef.current = el;
     if (!el) return;
@@ -407,19 +335,6 @@ export function AssistantView() {
     },
   };
 
-  const composer = (
-    <AssistantComposer
-      value={draft}
-      onChange={setDraft}
-      onSubmit={send}
-      onAttach={attach}
-      documentName={documentName || null}
-      // Com documento aberto, o nome dele já aparece no topo da conversa.
-      showDocument={!isOpen}
-    />
-  );
-
-  // ----- Sem documento: conversa centralizada, no estilo do lineFlow -----
   const sourceDialog = (
     <DocumentSourceDialog
       mode={sourceMode}
@@ -430,119 +345,40 @@ export function AssistantView() {
   );
 
   if (!isOpen) {
-    const recentDocs = (recent ?? []).slice(0, 4);
     return (
       <div className="relative flex h-full flex-col" {...dropHandlers}>
-        {fileInput}
-        <Glow />
-        <div className="relative flex items-center gap-2 px-6 pt-6">
-          <span className="text-base font-semibold">Grifo IA</span>
-          <span className="rounded-full border border-accent/40 px-2 py-0.5 text-[11px] font-medium text-accent">Beta</span>
-        </div>
-
-        {notes.length === 0 ? (
-          <div className="relative flex min-h-0 flex-1 flex-col items-center overflow-auto px-4 py-6 text-center">
-            <div className="my-auto flex w-full max-w-xl flex-col items-center gap-4">
-              <h1 className="text-[28px] leading-tight font-medium tracking-tight sm:text-[38px]">
-                Pronto para validar, {user ? firstName(user.name) : ""}?
-              </h1>
-              <p className="max-w-md text-sm text-foreground-muted">
-                Envie as bases de dados que serão verificadas e depois o documento. A IA encontra as regras, grifa cada
-                uma e busca nas bases os registros ligados a ela.
-              </p>
-
-              <section aria-labelledby="step-datasets" className="mt-2 flex w-full flex-col gap-2 text-left">
-                <h2 id="step-datasets" className="text-[13px] font-medium">
-                  <span className="text-foreground-subtle">1.</span> Bases de dados (CSV)
-                </h2>
-                <DatasetUploader datasets={analysis?.datasets ?? []} ensureAnalysis={ensureAnalysis} />
-              </section>
-
-              <section aria-labelledby="step-document" className="flex w-full flex-col gap-2 text-left">
-                <h2 id="step-document" className="text-[13px] font-medium">
-                  <span className="text-foreground-subtle">2.</span> Documento
-                </h2>
-                <div className="flex flex-wrap items-center gap-2">
-                  <Button
-                    size="sm"
-                    variant="primary"
-                    icon={<FileUp size={16} strokeWidth={1.75} aria-hidden />}
-                    onClick={attach}
-                    className="rounded-full"
-                  >
-                    Enviar arquivos
-                  </Button>
-                  <Button
-                    size="sm"
-                    icon={<Type size={16} strokeWidth={1.75} aria-hidden />}
-                    onClick={() => setSourceMode("text")}
-                    className="rounded-full"
-                  >
-                    Colar texto
-                  </Button>
-                  <Button
-                    size="sm"
-                    icon={<Link2 size={16} strokeWidth={1.75} aria-hidden />}
-                    onClick={() => setSourceMode("url")}
-                    className="rounded-full"
-                  >
-                    Usar um link
-                  </Button>
-                  <Link
-                    href="/regras"
-                    className="inline-flex h-8 items-center gap-2 rounded-full border border-border-strong bg-surface px-3 text-[13px] font-medium transition-colors duration-150 ease-out hover:bg-surface-hover"
-                  >
-                    <Library size={16} strokeWidth={1.75} aria-hidden />
-                    Ver base de regras
-                  </Link>
-                </div>
-                <p className="text-xs text-foreground-subtle">
-                  PDF, HTML ou TXT, vários de uma vez. PDFs digitalizados (só imagem) precisam passar por OCR antes.
-                </p>
-                {!analysis?.datasets.length && (
-                  <p className="text-xs text-foreground-subtle">
-                    Sem bases, a IA só encontra as regras do documento, sem buscar registros.
-                  </p>
-                )}
-              </section>
-
-              {recentDocs.length > 0 && (
-                <div className="mt-4 flex w-full flex-col gap-2">
-                  <span className="text-xs text-foreground-subtle">Documentos recentes</span>
-                  <ul className="flex flex-wrap justify-center gap-2">
-                    {recentDocs.map((d) => (
-                      <li key={d.id}>
-                        <Button
-                          size="sm"
-                          variant="secondary"
-                          icon={<FileText size={16} strokeWidth={1.75} aria-hidden />}
-                          onClick={() => openDocument(d)}
-                          className="max-w-64 rounded-full"
-                        >
-                          <span className="truncate">{d.title}</span>
-                        </Button>
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
+        {fileInput}<Glow />
+        <div className="relative flex min-h-0 flex-1 flex-col items-center overflow-auto px-4 py-8">
+          <div className="my-auto flex w-full max-w-2xl flex-col gap-6">
+            <WorkflowSteps current={canUploadDocument ? 2 : 1} />
+            <div className="text-center">
+              <h1 className="text-3xl font-medium tracking-tight">Vamos validar seus dados{user ? `, ${firstName(user.name)}` : ""}?</h1>
+              <p className="mt-3 text-sm text-foreground-muted">Envie a base de dados, adicione o documento de regras e confira o resultado em tabelas.</p>
             </div>
+            <section aria-labelledby="step-datasets" className="flex flex-col gap-3 rounded-xl border border-border bg-surface p-5">
+              <h2 id="step-datasets" className="font-medium">1. Envie a base de dados</h2>
+              <DatasetUploader datasets={analysis?.datasets ?? []} ensureAnalysis={ensureAnalysis} />
+            </section>
+            {canUploadDocument ? (
+              <section aria-labelledby="step-document" className="flex flex-col gap-3 rounded-xl border border-border bg-surface p-5">
+                <h2 id="step-document" className="font-medium">2. Envie o documento com as regras</h2>
+                <p className="text-sm text-foreground-muted">A IA identifica as regras e cruza com as bases enviadas.</p>
+                <div className="flex flex-wrap gap-2">
+                  <Button variant="primary" icon={<FileUp size={16} aria-hidden />} onClick={attach}>Enviar documento</Button>
+                  <Button icon={<Type size={16} aria-hidden />} onClick={() => setSourceMode("text")}>Colar texto</Button>
+                  <Button icon={<Link2 size={16} aria-hidden />} onClick={() => setSourceMode("url")}>Usar um link</Button>
+                </div>
+                <p className="text-xs text-foreground-subtle">PDF, HTML ou TXT.</p>
+              </section>
+            ) : <p role="status" className="text-center text-sm text-foreground-muted">O envio do documento fica disponível após a leitura da base de dados.</p>}
           </div>
-        ) : (
-          <ChatThread messages={notes} className="relative mx-auto w-full max-w-3xl flex-1 px-4 py-6" />
-        )}
-
-        <div className="relative mx-auto w-full max-w-3xl px-4 pb-4">
-          {composer}
-          <AssistantDisclaimer className="mt-2" />
         </div>
         {sourceDialog}
-        {dragging && <DropOverlay />}
+        {dragging && canUploadDocument && <DropOverlay />}
       </div>
     );
   }
 
-  // ----- Com documento: conversa, documento e regras -----
   const visibleRules = rules.filter(
     (r) => (!typeFilter || r.type === typeFilter) && (!statusFilter || r.status === statusFilter),
   );
@@ -563,89 +399,13 @@ export function AssistantView() {
   const generating = doc?.status === "extracting_rules" && rules.length > 0;
   const showRules = ready || generating;
 
-  const intro: ThreadMessage = {
-    id: "intro",
-    role: "assistant",
-    content: failed
-      ? `Não consegui analisar “${documentName}”. ${doc?.status_message ?? errorMessage(upload.error)}`
-      : showRules
-        ? `Li “${documentName}” e encontrei ${rules.length} ${rules.length === 1 ? "regra" : "regras"}. Revise na tabela ao lado ou me pergunte sobre o documento.`
-        : `Estou lendo “${documentName}” e procurando as regras. ${doc?.status_message ?? ""}`,
-  };
-  const thread: ThreadMessage[] = [
-    intro,
-    ...savedMessages.map((m) => ({ id: m.id, role: m.role, content: m.content, citations: m.citations })),
-    ...notes,
-    ...pending,
-  ];
-
-  const analysisDocuments = analysis?.documents ?? [];
-
-  const chatPanel = (
-    <section aria-label="Conversa" className="flex h-full min-h-0 flex-col bg-background">
-      <div className="flex h-11 shrink-0 items-center gap-2 border-b border-border px-3">
-        <FileText size={16} strokeWidth={1.75} aria-hidden className="shrink-0 text-accent" />
-        {documentId && analysisDocuments.length > 1 ? (
-          <Select
-            aria-label="Documento da análise"
-            value={documentId}
-            onChange={(e) => {
-              const target = analysisDocuments.find((d) => d.id === e.target.value);
-              if (target) openDocument(target);
-            }}
-            className="min-w-0 flex-1 [&_select]:h-8 [&_select]:text-[13px]"
-          >
-            {analysisDocuments.map((d) => (
-              <option key={d.id} value={d.id}>
-                {d.title}
-              </option>
-            ))}
-          </Select>
-        ) : (
-          <span className="min-w-0 flex-1 truncate text-[13px] font-medium">{documentName}</span>
-        )}
-        {pdf.status === "ready" && (
-          <span className="shrink-0 font-mono text-xs text-foreground-subtle tabular-nums">{pdf.pages.length} p.</span>
-        )}
-        <IconButton
-          aria-label="Bases de dados e significado das colunas"
-          icon={<Database size={16} strokeWidth={1.75} aria-hidden />}
-          onClick={() => setDatasetsOpen(true)}
-          tooltipSide="bottom"
-        />
-        <IconButton
-          aria-label="Adicionar arquivos à análise"
-          icon={<FilePlus size={16} strokeWidth={1.75} aria-hidden />}
-          onClick={attach}
-          tooltipSide="bottom"
-        />
-        <IconButton
-          aria-label="Adicionar texto ou link à análise"
-          icon={<Link2 size={16} strokeWidth={1.75} aria-hidden />}
-          onClick={() => setSourceMode("url")}
-          tooltipSide="bottom"
-        />
-        {isDesktop && (
-          <IconButton
-            aria-label="Esconder conversa"
-            icon={<PanelLeftClose size={16} strokeWidth={1.75} aria-hidden />}
-            onClick={() => setLayout({ ...layout, chat: false })}
-            tooltipSide="bottom"
-          />
-        )}
-        <IconButton aria-label="Fechar análise" icon={<X size={16} strokeWidth={1.75} aria-hidden />} onClick={closeDocument} />
-      </div>
-      <ChatThread
-        messages={thread}
-        className="flex-1 px-4 py-5"
-        onCitationHighlight={setHoverId}
-        onCitationClick={goToRule}
-      />
-      <div className="shrink-0 p-3">
-        {composer}
-        <AssistantDisclaimer className="mt-2" />
-      </div>
-    </section>
+  const resumeAction = (
+              <Button size="sm" variant="primary" disabled={resumeDocument.isPending}
+                onClick={() => resumeDocument.mutate(doc!.id, {
+                  onError: (error) => toast({ title: "Não foi possível continuar", description: errorMessage(error), variant: "error" }),
+                })}>
+                {resumeDocument.isPending ? "Retomando..." : "Continuar processamento"}
+              </Button>
   );
 
   const documentPanel = (
@@ -674,6 +434,7 @@ export function AssistantView() {
                   <PanelToggles
                     layout={layout}
                     onChange={setLayout}
+                    hiddenPanels={["chat"]}
                     counts={{ rules: rules.length, table: rules.filter((r) => r.query?.state === "ok").length }}
                   />
                 )}
@@ -701,6 +462,12 @@ export function AssistantView() {
         )
       }
     >
+      {doc?.status === "error" && pdf.status === "ready" && (
+        <div role="alert" className="m-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-danger/40 bg-danger-soft p-4 text-sm">
+          <p>{doc.status_message} Os pacotes concluídos foram preservados.</p>
+          {resumeAction}
+        </div>
+      )}
       {documentFile.isError ? (
         <EmptyState
           icon={FileText}
@@ -766,7 +533,7 @@ export function AssistantView() {
                     size="sm"
                     variant="primary"
                     loading={validateDocument.isPending || generating}
-                    onClick={() => validateDocument.mutate(true, {
+                    onClick={() => validateDocument.mutate(false, {
                       onError: (error) => toast({ title: "Não foi possível validar", description: errorMessage(error), variant: "error" }),
                     })}
                   >
@@ -841,9 +608,11 @@ export function AssistantView() {
               : (doc?.status_message ?? "Isso leva de alguns segundos a poucos minutos, conforme o tamanho do documento.")}
           </p>
           {failed && (
-            <Button size="sm" variant="primary" onClick={attach}>
-              Enviar de novo
-            </Button>
+            doc?.status === "error" ? (
+              resumeAction
+            ) : (
+              <Button size="sm" variant="primary" onClick={attach}>Enviar de novo</Button>
+            )
           )}
         </div>
       )}
@@ -862,12 +631,18 @@ export function AssistantView() {
   );
 
   return (
-    <div className="relative h-full" {...dropHandlers}>
+    <div className="relative flex h-full flex-col" {...dropHandlers}>
       {fileInput}
-      {isDesktop ? (
+      <div className="flex shrink-0 flex-wrap items-center gap-3 border-b border-border bg-surface px-4 py-3">
+        <div className="min-w-0 flex-1"><WorkflowSteps current={showRules ? 3 : 2} /><p className="mt-1 truncate text-xs text-foreground-muted">{documentName}</p></div>
+        <Button size="sm" icon={<Database size={16} aria-hidden />} onClick={() => setDatasetsOpen(true)}>Bases de dados</Button>
+        <Button size="sm" onClick={closeDocument}>Nova análise</Button>
+      </div>
+      <div className="min-h-0 flex-1">
+      {!showRules ? rulesPanel : isDesktop ? (
         <AnalysisWorkspace
           layout={layout}
-          chat={chatPanel}
+          chat={null}
           document={documentPanel}
           rules={rulesPanel}
           table={tablePanel(() => setLayout({ ...layout, table: false }))}
@@ -876,9 +651,7 @@ export function AssistantView() {
         <div className="flex h-full flex-col">
           <MobileTabs value={mobileTab} onChange={setMobileTab} ruleCount={rules.length} />
           <div className="min-h-0 flex-1">
-            {mobileTab === "chat"
-              ? chatPanel
-              : mobileTab === "document"
+            {mobileTab === "document"
                 ? documentPanel
                 : mobileTab === "rules"
                   ? rulesPanel
@@ -887,6 +660,7 @@ export function AssistantView() {
         </div>
       )}
 
+      </div>
       {sourceDialog}
       <Dialog
         open={datasetsOpen}
@@ -931,39 +705,18 @@ export function AssistantView() {
   );
 }
 
-function ChatThread({
-  messages,
-  className,
-  onCitationHighlight,
-  onCitationClick,
-}: {
-  messages: ThreadMessage[];
-  className?: string;
-  onCitationHighlight?: (ruleId: string | null) => void;
-  onCitationClick?: (ruleId: string) => void;
-}) {
+function WorkflowSteps({ current }: { current: 1 | 2 | 3 }) {
   return (
-    <div role="log" aria-label="Mensagens" className={cn("flex min-h-0 flex-col gap-5 overflow-auto", className)}>
-      {messages.map((m) =>
-        m.role === "user" ? (
-          <UserMessage key={m.id}>{m.content}</UserMessage>
-        ) : (
-          <AssistantMessage
-            key={m.id}
-            streaming={m.streaming}
-            citations={m.citations}
-            onCitationHighlight={onCitationHighlight}
-            onCitationClick={onCitationClick}
-          >
-            {m.content}
-          </AssistantMessage>
-        ),
-      )}
-    </div>
+    <ol aria-label="Etapas" className="flex flex-wrap gap-x-5 gap-y-2 text-xs">
+      {["Base de dados", "Documento de regras", "Resultado"].map((label, index) => (
+        <li key={label} aria-current={current === index + 1 ? "step" : undefined} className={cn("flex items-center gap-2", current === index + 1 ? "font-semibold text-accent" : "text-foreground-muted")}>
+          <span className="flex size-6 items-center justify-center rounded-full border border-current">{index + 1}</span>{label}
+        </li>
+      ))}
+    </ol>
   );
 }
 
-/** Brilho do azul da marca no centro da tela vazia (mais forte no escuro). */
 function Glow() {
   return (
     <div
@@ -984,7 +737,6 @@ function DropOverlay() {
 }
 
 const TABS: { value: MobileTab; label: string }[] = [
-  { value: "chat", label: "Conversa" },
   { value: "document", label: "Documento" },
   { value: "rules", label: "Regras" },
   { value: "table", label: "Tabela" },

@@ -210,8 +210,8 @@ export interface paths {
         get: operations["list_documents_api_v1_documents_get"];
         put?: never;
         /**
-         * Envia um arquivo (PDF, HTML ou TXT); a extração de regras continua em segundo plano
-         * @description O arquivo é convertido na hora: um PDF sem texto (digitalizado), uma página sem conteúdo ou um formato desconhecido voltam com 422. HTML e TXT são diagramados em PDF, que é o que `GET /documents/{id}/file` devolve. Sem `analysis_id`, o documento ganha uma análise só dele.
+         * Envia um arquivo (PDF, HTML ou TXT); conversão e extração em segundo plano
+         * @description O original é salvo antes da resposta 202. Conversão e leitura acontecem em segundo plano: PDF sem texto ou HTML vazio resultam em status `error`. Formatos não suportados voltam com 422. O PDF fica disponível após a conversão. Sem `analysis_id`, o documento ganha uma análise só dele.
          */
         post: operations["upload_document_api_v1_documents_post"];
         delete?: never;
@@ -251,6 +251,23 @@ export interface paths {
          * @description Só http/https. Endereços internos ou privados são bloqueados, inclusive depois de redirecionamentos. O download tem tempo e tamanho limitados; falhas voltam com 422 e uma mensagem explicando o motivo (`fetch_error`).
          */
         post: operations["create_url_document_api_v1_documents_url_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/documents/{document_id}/resume": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Continua o processamento sem reenviar pacotes concluidos */
+        post: operations["resume_document_api_v1_documents__document_id__resume_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1971,6 +1988,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    resume_document_api_v1_documents__document_id__resume_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                document_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DocumentOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

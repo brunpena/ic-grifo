@@ -67,6 +67,16 @@ function useDocumentCreated() {
   };
 }
 
+export function useResumeDocument() {
+  const onResumed = useDocumentCreated();
+  return useMutation({
+    mutationFn: (documentId: string) => unwrap(api.POST("/api/v1/documents/{document_id}/resume", {
+      params: { path: { document_id: documentId } },
+    })),
+    onSuccess: onResumed,
+  });
+}
+
 export function useUploadDocument() {
   const queryClient = useQueryClient();
   const onCreated = useDocumentCreated();
@@ -116,7 +126,7 @@ export function useDocumentFile(doc: DocumentInfo | undefined) {
   return useQuery({
     queryKey: keys.file(doc?.id ?? ""),
     queryFn: () => fetchDocumentFile(doc!),
-    enabled: !!doc,
+    enabled: !!doc?.page_count,
     staleTime: Infinity,
     gcTime: 10 * 60 * 1000,
   });
