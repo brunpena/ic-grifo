@@ -128,6 +128,7 @@ class Document(Base):
     mode: Mapped[str] = mapped_column(Text)
     storage_path: Mapped[str | None] = mapped_column(Text)
     full_text: Mapped[str | None] = mapped_column(Text)
+    extraction_checkpoint: Mapped[dict | None] = mapped_column(JSONB)
     page_count: Mapped[int | None] = mapped_column(Integer)
     status: Mapped[str] = mapped_column(Text, default="processing")
     status_message: Mapped[str | None] = mapped_column(Text)

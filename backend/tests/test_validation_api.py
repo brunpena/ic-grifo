@@ -36,7 +36,7 @@ def validation_ai(monkeypatch):
             for c in columns
         ]
 
-    async def extract(text, on_progress=None, datasets=None):
+    async def extract(text, on_progress=None, datasets=None, **kwargs):
         result = []
         for marker, kind in [
             ("Entrega", "prazo"),

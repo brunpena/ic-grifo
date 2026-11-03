@@ -140,7 +140,8 @@ async def delete_analysis(analysis_id: uuid.UUID, user: UserDep, db: SessionDep)
     await db.delete(analysis)
     await db.commit()
     await storage.delete_files(
-        [storage.pdf_name(i) for i in document_ids] + [storage.dataset_name(i) for i in dataset_ids]
+        [name for i in document_ids for name in storage.document_files(i)]
+        + [storage.dataset_name(i) for i in dataset_ids]
     )
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
@@ -168,6 +169,8 @@ async def upload_dataset(
     db: SessionDep,
 ) -> DatasetOut:
     await owned_analysis(db, analysis_id, user)
+    # A leitura e o envio ao storage não precisam manter uma conexão do banco.
+    await db.commit()
     settings = get_settings()
     filename = (file.filename or "base.csv")[:200]
     if not filename.lower().endswith(CSV_EXTENSIONS):
@@ -202,7 +205,9 @@ async def upload_dataset(
     taken = set(
         (await db.scalars(select(Dataset.name).where(Dataset.analysis_id == analysis_id))).all()
     )
+    await db.commit()
     dataset = Dataset(
+        id=uuid.uuid4(),
         analysis_id=analysis_id,
         name=dataset_display_name(filename, taken),
         filename=filename,
@@ -210,19 +215,18 @@ async def upload_dataset(
         original_size_bytes=original_size_bytes,
         status="processing",
     )
-    db.add(dataset)
-    await db.flush()
     try:
         dataset.storage_path = await storage.save_file(
             storage.dataset_name(dataset.id), data, "text/csv"
         )
     except storage.StorageError as exc:
         raise AppError(str(exc), code="storage_error", status_code=502) from exc
+    db.add(dataset)
     await db.commit()
     await db.refresh(dataset)
     await rule_validation.invalidate_analysis(db, analysis_id)
     await db.commit()
-    ingest.start_dataset_processing(dataset.id)
+    ingest.start_dataset_processing(dataset.id, data)
     return DatasetOut.model_validate(dataset)
 
 

@@ -30,17 +30,25 @@ from app.services.query_engine import (
 logger = logging.getLogger(__name__)
 
 
-async def analysis_datasets(db: AsyncSession, analysis_id: uuid.UUID) -> list[Dataset]:
+async def analysis_datasets(
+    db: AsyncSession, analysis_id: uuid.UUID, *, include_processing: bool = False
+) -> list[Dataset]:
     """Bases prontas da análise; as que ainda estão sendo lidas (ou falharam) ficam de fora."""
-    return list(
+    datasets = list(
         (
             await db.scalars(
                 select(Dataset)
-                .where(Dataset.analysis_id == analysis_id, Dataset.status == "ready")
+                .where(
+                    Dataset.analysis_id == analysis_id,
+                    Dataset.status.in_(
+                        ("ready", "processing") if include_processing else ("ready",)
+                    ),
+                )
                 .order_by(Dataset.created_at)
             )
         ).all()
     )
+    return [d for d in datasets if d.columns]
 
 
 def dataset_refs(datasets: list[Dataset]) -> list[DatasetRef]:
@@ -158,8 +166,11 @@ async def generate_for_document(
         llm.RulePrompt(ref=i + 1, type=r.type, summary=r.summary, excerpt=r.excerpt)
         for i, r in enumerate(pending)
     ]
+    # Objetos permanecem disponíveis (expire_on_commit=False), mas a conexão é liberada.
+    await db.commit()
     generated = await llm.generate_queries(prompts, dataset_prompts(datasets))
 
+    remove_ids: list[uuid.UUID] = []
     for prompt, rule in zip(prompts, pending, strict=True):
         answer = generated.get(prompt.ref)
         if answer is None:
@@ -168,7 +179,7 @@ async def generate_for_document(
         if answer.dataset is None:
             result.without_dataset += 1
             if current is not None:
-                await db.execute(delete(RuleQuery).where(RuleQuery.id == current.id))
+                remove_ids.append(current.id)
             continue
         if current is None:
             current = RuleQuery(rule_id=rule.id, query={}, origin="ia", matched_rows=[])
@@ -182,5 +193,7 @@ async def generate_for_document(
             logger.info(
                 "rule_query_invalid", extra={"rule_id": str(rule.id), "error": current.error}
             )
+    if remove_ids:
+        await db.execute(delete(RuleQuery).where(RuleQuery.id.in_(remove_ids)))
     await db.commit()
     return result

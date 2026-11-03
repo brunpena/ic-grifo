@@ -22,6 +22,18 @@ def pdf_name(document_id: uuid.UUID) -> str:
     return f"{document_id}.pdf"
 
 
+def source_name(document_id: uuid.UUID) -> str:
+    return f"sources/{document_id}.source"
+
+
+def source_metadata_name(document_id: uuid.UUID) -> str:
+    return f"sources/{document_id}.json"
+
+
+def document_files(document_id: uuid.UUID) -> list[str]:
+    return [pdf_name(document_id), source_name(document_id), source_metadata_name(document_id)]
+
+
 def dataset_name(dataset_id: uuid.UUID) -> str:
     return f"datasets/{dataset_id}.csv"
 
@@ -177,4 +189,4 @@ async def read_pdf(document_id: uuid.UUID) -> bytes:
 
 
 async def delete_pdf(document_id: uuid.UUID) -> None:
-    await delete_files([pdf_name(document_id)])
+    await delete_files(document_files(document_id))

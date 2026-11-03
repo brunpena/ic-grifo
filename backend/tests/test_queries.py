@@ -169,7 +169,7 @@ TEXT = (
 def fake_ai(monkeypatch):
     calls = []
 
-    async def extract(text, on_progress=None, datasets=None):
+    async def extract(text, on_progress=None, datasets=None, **kwargs):
         names = [d.name for d in datasets or []]
         start = text.index("Contratos acima")
         end = text.index("valor.") + len("valor.")

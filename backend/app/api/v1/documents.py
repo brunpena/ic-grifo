@@ -1,6 +1,5 @@
 """Documentos, regras e conversa sobre o documento."""
 
-import asyncio
 import json
 import logging
 import re
@@ -43,12 +42,19 @@ from app.schemas.documents import (
 )
 from app.schemas.queries import RecordRow, RecordsOut, RuleQueryOut, StructuredQuery
 from app.schemas.validation import RecordVerdict, ValidationRecordsOut
-from app.services import ingest, llm, rule_queries, rule_validation, safe_fetch, storage
+from app.services import (
+    document_upload,
+    ingest,
+    llm,
+    rule_queries,
+    rule_validation,
+    safe_fetch,
+    storage,
+)
 from app.services.converters import (
     ConversionError,
     SourceFile,
     UnsupportedFormatError,
-    registry,
 )
 from app.services.converters.text import title_from_text
 from app.services.highlights import page_range, rule_boxes
@@ -160,49 +166,71 @@ async def _create_document(
     source_url: str | None = None,
     title: str | None = None,
 ) -> DocumentOut:
-    """Converte o conteúdo (qualquer formato do registro), guarda o PDF e começa a extração."""
-    analysis = await _target_analysis(db, user, analysis_id)
+    """Persiste o original e confirma o envio antes da conversão e extração."""
     try:
-        converted = await asyncio.to_thread(registry.convert, source)
+        source_type = document_upload.validate_source(source)
     except UnsupportedFormatError as exc:
         raise AppError(str(exc), code="unsupported_format", status_code=422) from exc
     except ConversionError as exc:
         raise AppError(str(exc), code="conversion_error", status_code=422) from exc
-    title = title or converted.title
-
-    has_documents = await db.scalar(select(func.count()).where(Document.analysis_id == analysis.id))
+    user_id = user.id
+    analysis = await _target_analysis(db, user, analysis_id)
+    target_id = analysis.id
+    title_override = title
+    title = title or (source.filename if source_type == "pdf" else source.stem) or "Documento"
+    title = title[:200]
+    has_documents = await db.scalar(select(func.count()).where(Document.analysis_id == target_id))
     if analysis.title == DEFAULT_ANALYSIS_TITLE and not has_documents:
         analysis.title = title
+    # Release the connection before network/disk IO. The original is durable before
+    # publishing a processing document, so restart recovery can always resume it.
+    await db.commit()
+    document_id = uuid.uuid4()
+    try:
+        await document_upload.save_source(document_id, source, title=title_override)
+    except storage.StorageError as exc:
+        raise AppError(str(exc), code="storage_error", status_code=502) from exc
     doc = Document(
-        user_id=user.id,
-        analysis_id=analysis.id,
+        id=document_id,
+        user_id=user_id,
+        analysis_id=target_id,
         title=title,
-        source_type=converted.source_type,
+        source_type=source_type,
         source_url=source_url,
         mode="assistant",
         status="processing",
     )
-    db.add(doc)
-    await db.flush()
+    persisted = False
     try:
-        doc.storage_path = await storage.save_pdf(doc.id, converted.pdf)
-    except storage.StorageError as exc:
-        raise AppError(str(exc), code="storage_error", status_code=502) from exc
-    await db.commit()
-    await db.refresh(doc)
-    ingest.start_processing(doc.id, converted.extracted)
-    return DocumentOut.model_validate(doc)
+        db.add(doc)
+        await db.commit()
+        persisted = True
+        await db.refresh(doc)
+        result = DocumentOut.model_validate(doc)
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        if not persisted:
+            try:
+                await storage.delete_files(storage.document_files(document_id))
+            except Exception:
+                logger.exception(
+                    "document_source_cleanup_failed", extra={"document_id": str(document_id)}
+                )
+        raise
+    ingest.start_processing(document_id, source=source, title=title_override)
+    return result
 
 
 @router.post(
     "/documents",
     status_code=status.HTTP_202_ACCEPTED,
-    summary="Envia um arquivo (PDF, HTML ou TXT); a extração de regras continua em segundo plano",
+    summary="Envia um arquivo (PDF, HTML ou TXT); conversão e extração em segundo plano",
     description=(
-        "O arquivo é convertido na hora: um PDF sem texto (digitalizado), uma página sem "
-        "conteúdo ou um formato desconhecido voltam com 422. HTML e TXT são diagramados em "
-        "PDF, que é o que `GET /documents/{id}/file` devolve. Sem `analysis_id`, o "
-        "documento ganha uma análise só dele."
+        "O original é salvo antes da resposta 202. Conversão e leitura acontecem em segundo "
+        "plano: PDF sem texto ou HTML vazio resultam em status `error`. Formatos não "
+        "suportados voltam com 422. O PDF fica disponível após a conversão. Sem `analysis_id`, "
+        "o documento ganha uma análise só dele."
     ),
     responses=error_responses(401, 404, 413, 422),
 )
@@ -213,6 +241,7 @@ async def upload_document(
     analysis_id: Annotated[uuid.UUID | None, Form(description="Análise do documento")] = None,
 ) -> DocumentOut:
     limit = get_settings().max_upload_bytes
+    await db.commit()
     data = await file.read(limit + 1)
     if len(data) > limit:
         raise PayloadTooLargeError(
@@ -259,6 +288,7 @@ async def create_url_document(body: UrlDocumentIn, user: UserDep, db: SessionDep
     settings = get_settings()
     if body.analysis_id is not None:
         await owned_analysis(db, body.analysis_id, user)
+    await db.commit()
     try:
         fetched = await safe_fetch.fetch_url(
             body.url,
@@ -284,6 +314,31 @@ async def list_documents(user: UserDep, db: SessionDep) -> list[DocumentOut]:
     return [DocumentOut.model_validate(d) for d in docs]
 
 
+@router.post(
+    "/documents/{document_id}/resume",
+    status_code=202,
+    summary="Continua o processamento sem reenviar pacotes concluidos",
+)
+async def resume_document(document_id: uuid.UUID, user: UserDep, db: SessionDep) -> DocumentOut:
+    doc = await _owned_document(db, document_id, user)
+    claimed = await db.scalar(
+        update(Document)
+        .where(Document.id == doc.id, Document.status == "error")
+        .values(status="processing", status_message="Retomando pacotes pendentes")
+        .returning(Document.id)
+    )
+    if claimed is None:
+        raise ConflictError("Somente documentos interrompidos podem ser retomados.")
+    has_rules = await db.scalar(select(Rule.id).where(Rule.document_id == doc.id).limit(1))
+    await db.commit()
+    await db.refresh(doc)
+    if has_rules:
+        ingest.start_query_generation(doc.id, overwrite=False)
+    else:
+        ingest.start_processing(doc.id)
+    return DocumentOut.model_validate(doc)
+
+
 @router.get(
     "/documents/{document_id}", summary="Status do documento", responses=error_responses(404)
 )
@@ -299,8 +354,10 @@ async def get_document(document_id: uuid.UUID, user: UserDep, db: SessionDep) ->
 )
 async def get_document_file(document_id: uuid.UUID, user: UserDep, db: SessionDep) -> Response:
     doc = await _owned_document(db, document_id, user)
+    stored_id = doc.id
+    await db.commit()
     try:
-        data = await storage.read_pdf(doc.id)
+        data = await storage.read_pdf(stored_id)
     except storage.StorageError as exc:
         raise NotFoundError("Arquivo não encontrado.") from exc
     return Response(data, media_type="application/pdf")
@@ -471,6 +528,7 @@ async def set_rule_query(
 ) -> RuleOut:
     rule = await _owned_rule(db, rule_id, user)
     datasets = await _rule_datasets(db, rule)
+    await db.commit()
     try:
         execution = await rule_queries.run_query(body, datasets)
     except QueryError as exc:
@@ -498,7 +556,9 @@ async def run_rule_query(rule_id: uuid.UUID, user: UserDep, db: SessionDep) -> R
     rule_query = await _rule_query(db, rule.id)
     if rule_query is None:
         raise ConflictError("Esta regra ainda não tem busca.", code="no_query")
-    await rule_queries.execute(rule_query, await _rule_datasets(db, rule))
+    datasets = await _rule_datasets(db, rule)
+    await db.commit()
+    await rule_queries.execute(rule_query, datasets)
     await db.commit()
     return (await _rules_out(db, rule.document_id, [rule]))[0]
 
@@ -535,6 +595,7 @@ async def list_rule_records(
     dataset = await db.get(Dataset, rule_query.dataset_id)
     if dataset is None:
         raise ConflictError("A base usada por esta busca foi removida.", code="no_query")
+    await db.commit()
     try:
         if rule_query.match_count is not None and rule_query.match_count <= len(
             rule_query.matched_rows
@@ -612,10 +673,12 @@ async def validation_records(
     verdict: RecordVerdict | None = None,
 ) -> ValidationRecordsOut:
     rule = await _owned_rule(db, rule_id, user)
+    datasets = await _rule_datasets(db, rule)
+    await db.commit()
     try:
         return await rule_validation.records(
             rule,
-            await _rule_datasets(db, rule),
+            datasets,
             dataset_id,
             offset=offset,
             limit=limit,

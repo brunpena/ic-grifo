@@ -97,7 +97,7 @@ def test_dedupe_rules_drops_duplicates_from_overlapping_chunks():
 
 @pytest.fixture
 def fake_llm(monkeypatch):
-    async def extract(text, on_progress=None, datasets=None):
+    async def extract(text, on_progress=None, datasets=None, **kwargs):
         if on_progress:
             await on_progress(1, 1)
 
@@ -214,7 +214,9 @@ async def test_documents_are_private_and_validated(migrated_db, client, fake_llm
     resp = await client.post(
         "/api/v1/documents", files={"file": ("scan.pdf", blank.tobytes(), "application/pdf")}
     )
-    assert resp.status_code == 422 and "digitalizado" in resp.json()["error"]["message"]
+    assert resp.status_code == 202
+    scanned = await _wait_ready(client, resp.json()["id"])
+    assert scanned["status"] == "error" and "digitalizado" in scanned["status_message"]
     doc = (
         await client.post(
             "/api/v1/documents", files={"file": ("c.pdf", make_pdf(1), "application/pdf")}
@@ -266,6 +268,7 @@ async def test_text_and_link_documents_share_an_analysis(
     )
     assert resp.status_code == 202
     linked = resp.json()
+    linked = await _wait_ready(client, linked["id"])
     assert linked["source_type"] == "html" and linked["title"] == "Página do edital"
     assert linked["source_url"] == "https://exemplo.com/edital"
 
