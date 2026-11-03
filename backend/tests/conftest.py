@@ -24,6 +24,8 @@ os.environ["APP_ENV"] = "test"
 os.environ["STORAGE_BACKEND"] = "local"
 os.environ["LOCAL_STORAGE_DIR"] = tempfile.mkdtemp(prefix="icgrifo-test-storage-")
 os.environ["GEMINI_API_KEY"] = ""
+os.environ["GEMINI_API_KEY_2"] = ""
+os.environ["GEMINI_API_KEY_3"] = ""
 os.environ["CORS_ORIGINS"] = "http://localhost:3000,https://front.exemplo.com"
 
 import httpx  # noqa: E402

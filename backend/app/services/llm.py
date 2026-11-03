@@ -1,12 +1,17 @@
 """Chamadas ao Gemini (API REST do Google AI Studio): extração de regras e conversa."""
 
 import asyncio
+import hashlib
 import json
 import logging
 import random
 import re
+import time
+from collections import deque
 from collections.abc import AsyncIterator, Awaitable, Callable
-from dataclasses import dataclass, field
+from contextlib import asynccontextmanager
+from dataclasses import asdict, dataclass, field
+from weakref import WeakKeyDictionary
 
 import httpx
 
@@ -24,6 +29,77 @@ CONNECTION_ERROR = "Não foi possível falar com a API do Gemini. Verifique a co
 BLOCKED = {"SAFETY", "PROHIBITED_CONTENT", "BLOCKLIST", "SPII", "OTHER"}
 
 
+class _RequestLimiter:
+    """Budget shared by all documents, retries and streams on this event loop."""
+
+    def __init__(self, concurrency: int, rate: int, *, window: float = 60.0):
+        self.concurrency = concurrency
+        self.rate = rate
+        self.window = window
+        self.active = 0
+        self.waiters = 0
+        self.starts: deque[float] = deque()
+        self.changed = asyncio.Condition()
+
+    async def acquire(self, *, wait: bool = True) -> bool:
+        async with self.changed:
+            if not wait and self.waiters:
+                return False
+            while True:
+                now = asyncio.get_running_loop().time()
+                while self.starts and self.starts[0] <= now - self.window:
+                    self.starts.popleft()
+                if self.active < self.concurrency and len(self.starts) < self.rate:
+                    self.active += 1
+                    self.starts.append(now)
+                    return True
+                if not wait:
+                    return False
+                delay = (
+                    self.starts[0] + self.window - now if len(self.starts) >= self.rate else None
+                )
+                self.waiters += 1
+                try:
+                    await asyncio.wait_for(self.changed.wait(), timeout=delay)
+                except TimeoutError:
+                    pass
+                finally:
+                    self.waiters -= 1
+
+    async def release(self) -> None:
+        async with self.changed:
+            self.active -= 1
+            self.changed.notify_all()
+
+
+_limiters: WeakKeyDictionary[asyncio.AbstractEventLoop, _RequestLimiter] = WeakKeyDictionary()
+
+
+def _request_limiter() -> _RequestLimiter:
+    loop = asyncio.get_running_loop()
+    settings = get_settings()
+    concurrency = max(1, settings.llm_max_concurrency)
+    rate = max(1, settings.llm_rate_limit_per_minute)
+    limiter = _limiters.get(loop)
+    if limiter is None:
+        limiter = _RequestLimiter(concurrency, rate)
+        _limiters[loop] = limiter
+    else:
+        limiter.concurrency = concurrency
+        limiter.rate = rate
+    return limiter
+
+
+@asynccontextmanager
+async def _request_slot():
+    limiter = _request_limiter()
+    await limiter.acquire()
+    try:
+        yield
+    finally:
+        await limiter.release()
+
+
 class LlmUnavailableError(Exception):
     """Sem chave da API configurada."""
 
@@ -32,11 +108,50 @@ class LlmApiError(Exception):
     """Falha da API do Gemini, com mensagem em português para a pessoa."""
 
 
+_key_cooldowns: dict[str, tuple[float, str]] = {}
+_key_cursor = 0
+
+
+def _configured_keys() -> list[str]:
+    settings = get_settings()
+    keys = [
+        settings.gemini_api_key.get_secret_value().strip(),
+        settings.gemini_api_key_2.get_secret_value().strip(),
+        settings.gemini_api_key_3.get_secret_value().strip(),
+    ]
+    return list(dict.fromkeys(key for key in keys if key))
+
+
 def ensure_configured() -> str:
-    key = get_settings().gemini_api_key.get_secret_value()
-    if not key:
+    keys = _configured_keys()
+    if not keys:
         raise LlmUnavailableError("Configure GEMINI_API_KEY no .env do back-end para usar a IA.")
-    return key
+    return keys[0]
+
+
+def _select_key() -> str:
+    global _key_cursor
+    ensure_configured()
+    keys = _configured_keys()
+    for offset in range(len(keys)):
+        index = (_key_cursor + offset) % len(keys)
+        key = keys[index]
+        if _key_cooldowns.get(key, (0, ""))[0] <= time.monotonic():
+            _key_cursor = (index + 1) % len(keys)
+            return key
+    body = min((_key_cooldowns[key] for key in keys), key=lambda item: item[0])[1]
+    raise LlmApiError(friendly_error(429, body))
+
+
+def _quota_failover(key: str, status: int, body: str, attempt: int) -> bool:
+    if status != 429 or len(_configured_keys()) < 2:
+        return False
+    delay = 24 * 60 * 60 if _daily_quota(body) else _retry_delay(attempt, body)
+    _key_cooldowns[key] = (time.monotonic() + delay, body)
+    return any(
+        candidate != key and _key_cooldowns.get(candidate, (0, ""))[0] <= time.monotonic()
+        for candidate in _configured_keys()
+    )
 
 
 def friendly_error(status: int, body: str) -> str:
@@ -97,13 +212,18 @@ async def _post_hedged(client: httpx.AsyncClient, key: str, payload: dict) -> ht
     de 2 min; passados LLM_HEDGE_SECONDS sem resposta, manda outra igual e fica com a
     primeira que der certo."""
     hedge = get_settings().llm_hedge_seconds
+    limiter = _request_limiter()
 
-    def send() -> asyncio.Future[httpx.Response]:
-        return asyncio.ensure_future(
-            client.post(_url("generateContent"), headers={"x-goog-api-key": key}, json=payload)
+    async def send() -> httpx.Response:
+        return await client.post(
+            _url("generateContent"), headers={"x-goog-api-key": key}, json=payload
         )
 
-    pending = {send()}
+    # Start the hedge clock only after the original request has a budget slot.
+    await limiter.acquire()
+    pending = {asyncio.create_task(send())}
+    tasks = set(pending)
+    reservations = 1
     hedged = hedge <= 0
     try:
         while True:
@@ -111,8 +231,13 @@ async def _post_hedged(client: httpx.AsyncClient, key: str, payload: dict) -> ht
                 pending, timeout=None if hedged else hedge, return_when=asyncio.FIRST_COMPLETED
             )
             if not done:
-                logger.info("gemini_hedge", extra={"after_s": hedge})
-                pending.add(send())
+                # Speculative work must not queue behind real requests or exceed quota.
+                if await limiter.acquire(wait=False):
+                    reservations += 1
+                    logger.info("gemini_hedge", extra={"after_s": hedge})
+                    task = asyncio.create_task(send())
+                    pending.add(task)
+                    tasks.add(task)
                 hedged = True
                 continue
             for task in done:
@@ -124,13 +249,17 @@ async def _post_hedged(client: httpx.AsyncClient, key: str, payload: dict) -> ht
     finally:
         for task in pending:
             task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        for _ in range(reservations):
+            await limiter.release()
 
 
 async def _generate(payload: dict) -> dict:
     """generateContent com novas tentativas em limite de uso e sobrecarga."""
-    key = ensure_configured()
+    ensure_configured()
     async with httpx.AsyncClient(timeout=180) as client:
         for attempt in range(MAX_ATTEMPTS):
+            key = _select_key()
             last = attempt == MAX_ATTEMPTS - 1
             try:
                 response = await _post_hedged(client, key, payload)
@@ -142,6 +271,8 @@ async def _generate(payload: dict) -> dict:
             if response.status_code == 200:
                 return response.json()
             body = response.text
+            if _quota_failover(key, response.status_code, body, attempt) and not last:
+                continue
             if response.status_code in RETRY_STATUS and not last and not _daily_quota(body):
                 await asyncio.sleep(_retry_delay(attempt, body))
                 continue
@@ -255,9 +386,11 @@ def describe_datasets(datasets: list[DatasetPrompt]) -> str:
                 detail = "(sempre vazia)"
             semantic = column.get("semantic")
             if semantic:
-                detail += (f"; significado: {semantic['meaning']}"
-                           f"; confiança: {semantic['confidence']}"
-                           f"; evento: {semantic.get('event')}; unidade: {semantic.get('unit')}")
+                detail += (
+                    f"; significado: {semantic['meaning']}"
+                    f"; confiança: {semantic['confidence']}"
+                    f"; evento: {semantic.get('event')}; unidade: {semantic.get('unit')}"
+                )
             lines.append(f"- {column['name']} ({kind}) {detail}")
         lines.append("</base>")
         blocks.append("\n".join(lines))
@@ -381,7 +514,11 @@ async def extract_rules_from_chunk(
         rules = json.loads(answer)["rules"]
     except (json.JSONDecodeError, KeyError, TypeError):
         logger.warning("llm_invalid_json", extra={"chunk_first": ids.start})
-        return []
+        raise LlmApiError(
+            "Resposta incompleta da IA. Continue para tentar este pacote novamente."
+        ) from None
+    if finish != "STOP" or not isinstance(rules, list):
+        raise LlmApiError("Resposta incompleta da IA. Continue para tentar este pacote novamente.")
     result: list[ExtractedRule] = []
     for r in rules:
         if r.get("type") not in RULE_TYPES or not str(r.get("summary") or "").strip():
@@ -410,34 +547,65 @@ async def extract_rules(
     text: str,
     on_progress: Callable[[int, int], Awaitable[None]] | None = None,
     datasets: list[DatasetPrompt] | None = None,
+    checkpoint: dict | None = None,
+    on_checkpoint: Callable[[dict], Awaitable[None]] | None = None,
 ) -> list[ExtractedRule]:
     """Extrai regras de todos os blocos, em paralelo (até LLM_MAX_CONCURRENCY ao mesmo tempo)."""
     ensure_configured()
     settings = get_settings()
     sentences = split_sentences(text)
     chunks = split_chunks(sentences, settings.llm_chunk_chars, settings.llm_chunk_overlap)
+    signature = hashlib.sha256(
+        json.dumps(
+            {
+                "version": 1,
+                "text": text,
+                "datasets": [asdict(d) for d in datasets or []],
+                "chunks": [(c.start, c.stop) for c in chunks],
+                "model": settings.gemini_model,
+                "thinking": settings.gemini_thinking_level,
+                "prompt": _extraction_system(datasets or []),
+            },
+            sort_keys=True,
+            ensure_ascii=False,
+        ).encode()
+    ).hexdigest()
+    completed = (
+        dict((checkpoint or {}).get("completed", {}))
+        if ((checkpoint or {}).get("signature") == signature)
+        else {}
+    )
     semaphore = asyncio.Semaphore(settings.llm_max_concurrency)
-    done = 0
+    done = len(completed)
     lock = asyncio.Lock()
 
     async def run(ids: range) -> list[ExtractedRule]:
         nonlocal done
+        package_id = f"{ids.start}:{ids.stop}"
+        if package_id in completed:
+            return [ExtractedRule(**r) for r in completed[package_id]]
         async with semaphore:
             rules = await extract_rules_from_chunk(text, sentences, ids, datasets)
-        async with lock:
-            done += 1
-            if on_progress:
-                await on_progress(done, len(chunks))
+            async with lock:
+                completed[package_id] = [asdict(r) for r in rules]
+                if on_checkpoint:
+                    await on_checkpoint({"signature": signature, "completed": dict(completed)})
+                done += 1
+                if on_progress:
+                    await on_progress(done, len(chunks))
         return rules
 
+    if on_progress:
+        await on_progress(done, len(chunks))
+
+    # Each completed package is durable before another package takes its slot.
     tasks = [asyncio.ensure_future(run(c)) for c in chunks]
     try:
         results = await asyncio.gather(*tasks)
     except BaseException:
-        # O gather repassa o primeiro erro mas deixa os outros blocos rodando, e cada
-        # um continuaria gastando cota da API à toa.
         for task in tasks:
             task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
         raise
     return [item for batch in results for item in batch]
 
@@ -660,7 +828,7 @@ def document_context(title: str, pages: list[tuple[int, str]], rules: list[tuple
 
 async def stream_chat(context: str, history: list[dict]) -> AsyncIterator[str]:
     """Gera a resposta em pedaços de texto (streaming por SSE da API do Gemini)."""
-    key = ensure_configured()
+    ensure_configured()
     payload = {
         "systemInstruction": {"parts": [{"text": f"{CHAT_SYSTEM}\n\n{context}"}]},
         "contents": [
@@ -674,31 +842,45 @@ async def stream_chat(context: str, history: list[dict]) -> AsyncIterator[str]:
     }
     async with httpx.AsyncClient(timeout=180) as client:
         for attempt in range(MAX_ATTEMPTS):
+            key = _select_key()
             try:
-                async with client.stream(
-                    "POST",
-                    _url("streamGenerateContent"),
-                    params={"alt": "sse"},
-                    headers={"x-goog-api-key": key},
-                    json=payload,
-                ) as response:
+                async with (
+                    _request_slot(),
+                    client.stream(
+                        "POST",
+                        _url("streamGenerateContent"),
+                        params={"alt": "sse"},
+                        headers={"x-goog-api-key": key},
+                        json=payload,
+                    ) as response,
+                ):
                     if response.status_code != 200:
                         body = (await response.aread()).decode(errors="replace")
-                        if response.status_code in RETRY_STATUS and attempt < MAX_ATTEMPTS - 1:
-                            await asyncio.sleep(_retry_delay(attempt, body))
+                        if (
+                            _quota_failover(key, response.status_code, body, attempt)
+                            and attempt < MAX_ATTEMPTS - 1
+                        ):
                             continue
-                        logger.warning("gemini_error", extra={"status": response.status_code})
-                        raise LlmApiError(friendly_error(response.status_code, body))
-                    finish = None
-                    async for line in response.aiter_lines():
-                        if not line.startswith("data:"):
-                            continue
-                        text, reason = _text(json.loads(line[5:]))
-                        finish = reason or finish
-                        if text:
-                            yield text
-                    if finish in BLOCKED:
-                        yield "\n\nNão consigo responder a essa pergunta."
-                    return
+                        if (
+                            response.status_code not in RETRY_STATUS
+                            or attempt == MAX_ATTEMPTS - 1
+                            or _daily_quota(body)
+                        ):
+                            logger.warning("gemini_error", extra={"status": response.status_code})
+                            raise LlmApiError(friendly_error(response.status_code, body))
+                    else:
+                        finish = None
+                        async for line in response.aiter_lines():
+                            if not line.startswith("data:"):
+                                continue
+                            text, reason = _text(json.loads(line[5:]))
+                            finish = reason or finish
+                            if text:
+                                yield text
+                        if finish in BLOCKED:
+                            yield "\n\nNão consigo responder a essa pergunta."
+                        return
+                # Release concurrency while backing off; the next attempt spends quota again.
+                await asyncio.sleep(_retry_delay(attempt, body))
             except httpx.HTTPError as exc:
                 raise LlmApiError(CONNECTION_ERROR) from exc

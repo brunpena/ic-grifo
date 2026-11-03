@@ -53,20 +53,22 @@ class Settings(BaseSettings):
     url_fetch_timeout_seconds: float = 20
     # Texto colado na tela, em caracteres.
     max_pasted_chars: int = 1_000_000
-    llm_rate_limit_per_minute: int = 20
+    llm_rate_limit_per_minute: int = Field(default=20, gt=0)
 
     # LLM (Gemini; chave gratuita em aistudio.google.com/apikey)
     gemini_api_key: SecretStr = SecretStr("")
+    gemini_api_key_2: SecretStr = SecretStr("")
+    gemini_api_key_3: SecretStr = SecretStr("")
     # Alias que acompanha o Flash mais recente, disponível no plano gratuito.
     gemini_model: str = "gemini-flash-latest"
     # Raciocínio na extração de regras ("low", "medium", "high"; vazio = padrão do modelo).
     # O padrão do Flash é pensar bastante, o que deixa cada bloco várias vezes mais lento.
     gemini_thinking_level: str = "low"
     # O plano gratuito tem cota de requisições por minuto e por dia (por modelo).
-    llm_max_concurrency: int = 6
+    llm_max_concurrency: int = Field(default=6, gt=0)
     # Segundos sem resposta até mandar a mesma requisição de novo (0 = desligado).
     # Cada reforço gasta uma requisição a mais da cota.
-    llm_hedge_seconds: float = 25
+    llm_hedge_seconds: float = 0
     # Blocos maiores gastam menos requisições, mas a IA passa a deixar regras de fora
     # (ver docs/v1.1.md). Os blocos terminam sempre em fim de frase.
     llm_chunk_chars: int = 12000

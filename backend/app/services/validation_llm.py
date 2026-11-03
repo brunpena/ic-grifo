@@ -107,15 +107,16 @@ async def _json(system: str, data: dict) -> dict:
 async def interpret_columns(name: str, columns: list[dict]) -> list[dict]:
     """Preserva nomes/tipos inferidos pelo parser e acrescenta a interpretação semântica."""
     llm.ensure_configured()
-    meanings: dict[str, dict] = {}
-    for start in range(0, len(columns), COLUMN_BATCH):
-        batch = columns[start : start + COLUMN_BATCH]
+    context = [{"name": c["name"], "type": c["type"]} for c in columns]
+
+    async def interpret_batch(batch: list[dict]) -> dict[str, dict]:
+        meanings: dict[str, dict] = {}
         requested = {c["name"] for c in batch}
         answer = await _json(
             COLUMN_SYSTEM,
             {
                 "dataset": name,
-                "context": [{"name": c["name"], "type": c["type"]} for c in columns],
+                "context": context,
                 "columns": batch,
             },
         )
@@ -137,6 +138,21 @@ async def interpret_columns(name: str, columns: list[dict]) -> list[dict]:
                 meanings[key] = ColumnMeaning.model_validate(item).model_dump()
             except ValidationError:
                 meanings[key] = uncertain_column("A IA retornou uma interpretação inválida.")
+        return meanings
+
+    # Network concurrency and rate are limited globally by llm._generate.
+    tasks = [
+        asyncio.create_task(interpret_batch(columns[start : start + COLUMN_BATCH]))
+        for start in range(0, len(columns), COLUMN_BATCH)
+    ]
+    try:
+        results = await asyncio.gather(*tasks)
+    except BaseException:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        raise
+    meanings = {name: meaning for batch in results for name, meaning in batch.items()}
     return [
         {
             **c,

@@ -9,6 +9,14 @@ from app.core.config import get_settings
 from app.services import llm
 
 
+@pytest.fixture(autouse=True)
+def reset_key_pool(monkeypatch):
+    monkeypatch.setattr(get_settings(), "gemini_api_key_2", SecretStr(""))
+    monkeypatch.setattr(get_settings(), "gemini_api_key_3", SecretStr(""))
+    monkeypatch.setattr(llm, "_key_cooldowns", {})
+    monkeypatch.setattr(llm, "_key_cursor", 0)
+
+
 @pytest.fixture
 def gemini(monkeypatch):
     """Troca o cliente HTTP do serviço por respostas da API do Gemini em sequência."""
@@ -140,3 +148,119 @@ async def test_failed_chunk_cancels_the_others(monkeypatch):
         await llm.extract_rules("Primeira frase longa. Segunda frase longa. Terceira frase.")
     await asyncio.sleep(0)
     assert pending and all(t.cancelled() for t in pending)
+
+
+@pytest.mark.parametrize("stream", [False, True])
+async def test_second_key_handles_daily_quota(gemini, monkeypatch, stream):
+    responses, requests = gemini
+    monkeypatch.setattr(get_settings(), "gemini_api_key_2", SecretStr("segunda-chave"))
+    responses.append(httpx.Response(429, json={"quotaId": "RequestsPerDay"}))
+    if stream:
+        responses.append(httpx.Response(200, text=f"data: {json.dumps(_answer('ok'))}\n\n"))
+        assert "".join([part async for part in llm.stream_chat("contexto", [])]) == "ok"
+    else:
+        responses.append(httpx.Response(200, json=_answer("ok")))
+        assert await llm._generate({}) == _answer("ok")
+    assert [r.headers["x-goog-api-key"] for r in requests] == ["chave-teste", "segunda-chave"]
+    assert llm._select_key() == "segunda-chave"
+
+
+async def test_key_pool_rotates_and_stops_when_both_exhausted(gemini, monkeypatch):
+    responses, requests = gemini
+    monkeypatch.setattr(get_settings(), "gemini_api_key_2", SecretStr("segunda-chave"))
+    responses.extend([httpx.Response(200, json=_answer("ok")) for _ in range(2)])
+    await llm._generate({})
+    await llm._generate({})
+    assert [r.headers["x-goog-api-key"] for r in requests] == ["chave-teste", "segunda-chave"]
+    responses.extend([httpx.Response(429, json={"quotaId": "RequestsPerDay"}) for _ in range(2)])
+    with pytest.raises(llm.LlmApiError, match="cota"):
+        await llm._generate({})
+    with pytest.raises(llm.LlmApiError, match="cota"):
+        await llm._generate({})
+    assert len(requests) == 4
+
+
+def test_duplicate_keys_and_cooldown_expiration(monkeypatch):
+    monkeypatch.setattr(get_settings(), "gemini_api_key", SecretStr("same"))
+    monkeypatch.setattr(get_settings(), "gemini_api_key_2", SecretStr("same"))
+    assert llm._configured_keys() == ["same"]
+    monkeypatch.setattr(get_settings(), "gemini_api_key_2", SecretStr("other"))
+    monkeypatch.setattr(llm.time, "monotonic", lambda: 100.0)
+    assert llm._quota_failover("same", 429, '{"retryDelay": "3s"}', 0)
+    assert llm._select_key() == "other"
+    monkeypatch.setattr(llm.time, "monotonic", lambda: 105.0)
+    assert llm._select_key() == "same"
+
+
+@pytest.mark.parametrize("stream", [False, True])
+async def test_third_key_handles_two_exhausted_keys(gemini, monkeypatch, stream):
+    responses, requests = gemini
+    monkeypatch.setattr(get_settings(), "gemini_api_key_2", SecretStr("segunda-chave"))
+    monkeypatch.setattr(get_settings(), "gemini_api_key_3", SecretStr("terceira-chave"))
+    responses.extend([httpx.Response(429, json={"quotaId": "RequestsPerDay"}) for _ in range(2)])
+    if stream:
+        responses.append(httpx.Response(200, text=f"data: {json.dumps(_answer('ok'))}\n\n"))
+        assert "".join([part async for part in llm.stream_chat("contexto", [])]) == "ok"
+    else:
+        responses.append(httpx.Response(200, json=_answer("ok")))
+        assert await llm._generate({}) == _answer("ok")
+    assert [r.headers["x-goog-api-key"] for r in requests] == [
+        "chave-teste", "segunda-chave", "terceira-chave",
+    ]
+    assert llm._select_key() == "terceira-chave"
+
+
+def test_three_keys_rotate(gemini, monkeypatch):
+    monkeypatch.setattr(get_settings(), "gemini_api_key_2", SecretStr("segunda-chave"))
+    monkeypatch.setattr(get_settings(), "gemini_api_key_3", SecretStr("terceira-chave"))
+    assert [llm._select_key() for _ in range(4)] == [
+        "chave-teste", "segunda-chave", "terceira-chave", "chave-teste",
+    ]
+
+
+async def test_resume_only_sends_missing_packages(monkeypatch):
+    monkeypatch.setattr(get_settings(), "gemini_api_key", SecretStr("test"))
+    monkeypatch.setattr(get_settings(), "llm_chunk_chars", 20)
+    monkeypatch.setattr(get_settings(), "llm_chunk_overlap", 0)
+    monkeypatch.setattr(get_settings(), "llm_max_concurrency", 1)
+    text = "Primeira frase longa. Segunda frase longa. Terceira frase longa."
+    calls, saved, progress = [], {}, []
+    fail = True
+
+    async def extract(text, sentences, ids, datasets):
+        calls.append(ids.start)
+        if fail and ids.start > 0:
+            raise llm.LlmApiError("overloaded")
+        # An empty successful package must also be remembered.
+        return [] if ids.start == 0 else [llm.ExtractedRule(
+            "prazo", sentences[ids.start].start, sentences[ids.start].end, "Prazo",
+        )]
+
+    async def save(value):
+        saved.clear()
+        saved.update(json.loads(json.dumps(value)))
+
+    async def report(done, total):
+        progress.append((done, total))
+
+    monkeypatch.setattr(llm, "extract_rules_from_chunk", extract)
+    with pytest.raises(llm.LlmApiError):
+        await llm.extract_rules(text, on_checkpoint=save)
+    assert len(saved["completed"]) == 1
+    calls.clear()
+    fail = False
+    rules = await llm.extract_rules(text, checkpoint=saved, on_checkpoint=save, on_progress=report)
+    assert 0 not in calls and len(calls) == 2 and len(rules) == 2
+    assert progress[0] == (1, 3) and progress[-1] == (3, 3)
+    calls.clear()
+    assert await llm.extract_rules(text, checkpoint=saved) == rules
+    assert calls == []
+    await llm.extract_rules(text + " Quarta frase longa.", checkpoint=saved)
+    assert 0 in calls
+
+
+async def test_incomplete_package_is_not_success(gemini):
+    responses, _ = gemini
+    responses.append(httpx.Response(200, json=_answer('{"rules": []}', "MAX_TOKENS")))
+    with pytest.raises(llm.LlmApiError, match="Resposta incompleta"):
+        await llm.extract_rules_from_chunk("Texto.", llm.split_sentences("Texto."), range(1))
