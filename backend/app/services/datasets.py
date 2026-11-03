@@ -131,7 +131,11 @@ def _header(raw: list[str]) -> list[str]:
 
 
 def parse_csv(
-    data: bytes, *, max_rows: int | None = None, max_columns: int | None = None
+    data: bytes,
+    *,
+    max_rows: int | None = None,
+    max_columns: int | None = None,
+    known_columns: list[dict] | None = None,
 ) -> ParsedCsv:
     text, encoding = decode(data)
     if not text.strip():
@@ -179,10 +183,22 @@ def parse_csv(
     if any(cell and len(cell) > MAX_CELL_CHARS for row in rows for cell in row):
         raise DatasetError(f"Há células com mais de {_thousands(MAX_CELL_CHARS)} caracteres.")
 
-    prefer = "br" if delimiter == ";" else "us"
-    columns = [
-        infer_column(name, [row[i] for row in rows], prefer) for i, name in enumerate(header)
-    ]
+    if known_columns is not None:
+        if header != [c["name"] for c in known_columns]:
+            raise DatasetError("O cabeçalho da base mudou. Envie a base novamente.")
+        columns = [
+            ColumnInfo(
+                name=c["name"], type=c["type"], format=c.get("format"),
+                null_count=c.get("null_count", 0), distinct_count=c.get("distinct_count", 0),
+                examples=c.get("examples", []), values=c.get("values", []),
+            )
+            for c in known_columns
+        ]
+    else:
+        prefer = "br" if delimiter == ";" else "us"
+        columns = [
+            infer_column(name, [row[i] for row in rows], prefer) for i, name in enumerate(header)
+        ]
     return ParsedCsv(encoding=encoding, delimiter=delimiter, columns=columns, rows=rows)
 
 

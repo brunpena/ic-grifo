@@ -5,11 +5,13 @@ import hashlib
 import json
 import logging
 import uuid
+from collections import OrderedDict
 from datetime import UTC, datetime
 
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import get_settings
 from app.db.models import Dataset, Document, Rule
 from app.schemas.validation import (
     DatasetValidation,
@@ -18,7 +20,7 @@ from app.schemas.validation import (
     ValidationRecordsOut,
 )
 from app.services import compliance, llm, rule_queries, validation_llm
-from app.services.query_engine import DatasetRef, QueryError, fold, load_dataset
+from app.services.query_engine import DatasetRef, LoadedDataset, QueryError, fold, load_dataset
 
 logger = logging.getLogger(__name__)
 
@@ -44,13 +46,20 @@ async def interpret(name: str, columns: list[dict]) -> tuple[list[dict], str | N
 
 
 async def ensure_meanings(db: AsyncSession, datasets: list[Dataset], *, refresh: bool) -> None:
-    changed = False
-    for dataset in datasets:
-        if refresh or any(not c.get("semantic") for c in dataset.columns):
-            dataset.columns, warning = await interpret(dataset.name, dataset.columns)
-            dataset.status_message = warning
-            changed = True
-    if changed and datasets:
+    pending = [d for d in datasets if refresh or any(not c.get("semantic") for c in d.columns)]
+    # Release the read transaction before waiting on the remote model.
+    await db.commit()
+    semaphore = asyncio.Semaphore(max(1, get_settings().llm_max_concurrency))
+
+    async def interpret_one(dataset: Dataset):
+        async with semaphore:
+            return await interpret(dataset.name, dataset.columns)
+
+    meanings = await asyncio.gather(*(interpret_one(dataset) for dataset in pending))
+    for dataset, (columns, warning) in zip(pending, meanings, strict=True):
+        dataset.columns = columns
+        dataset.status_message = warning
+    if pending:
         await invalidate_analysis(db, datasets[0].analysis_id)
     await db.commit()
 
@@ -67,6 +76,54 @@ async def invalidate_analysis(db: AsyncSession, analysis_id: uuid.UUID) -> None:
 def source_signature(dataset) -> str:
     payload = (dataset.status, dataset.size_bytes, dataset.original_size_bytes, dataset.columns)
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+
+
+INDEX_CACHE_SIZE = 128
+INDEX_CACHE_MAX_BYTES = 64 * 1024 * 1024
+_indices: OrderedDict[str, compliance.ValidationIndex] = OrderedDict()
+_index_tasks: dict[str, asyncio.Task[compliance.ValidationIndex]] = {}
+
+
+async def _validation_index(
+    plan: ValidationPlan,
+    dataset: Dataset,
+    checked_at: datetime,
+    compiled: compliance.CompiledValidation,
+    loaded: LoadedDataset,
+) -> compliance.ValidationIndex:
+    # A plan, source version or reference time change must never reuse old verdicts.
+    payload = (
+        plan.model_dump(mode="json"),
+        str(dataset.id),
+        source_signature(dataset),
+        checked_at.isoformat(),
+    )
+    key = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+    if key in _indices:
+        _indices.move_to_end(key)
+        return _indices[key]
+
+    async def build():
+        try:
+            index = await asyncio.to_thread(compliance.index_rows, compiled, loaded.typed_rows)
+            if index.memory_bytes <= INDEX_CACHE_MAX_BYTES:
+                _indices[key] = index
+                while (
+                    len(_indices) > INDEX_CACHE_SIZE
+                    or sum(item.memory_bytes for item in _indices.values()) > INDEX_CACHE_MAX_BYTES
+                ):
+                    _indices.popitem(last=False)
+            return index
+        finally:
+            _index_tasks.pop(key, None)
+
+    # No await between lookup and registration; other coroutines see the same task.
+    task = _index_tasks.get(key)
+    if task is None:
+        task = asyncio.create_task(build())
+        _index_tasks[key] = task
+        task.add_done_callback(lambda done: None if done.cancelled() else done.exception())
+    return await asyncio.shield(task)
 
 
 async def _sources(db: AsyncSession, analysis_id: uuid.UUID) -> dict[str, str]:
@@ -145,15 +202,13 @@ async def evaluate_plan(
                 plan.missing_data,
             )
             loaded = await load_dataset(dataset.id, dataset.size_bytes, dataset.columns)
-            counts, _, _ = await asyncio.to_thread(
-                compliance.evaluate_rows, compiled, loaded.raw_rows, loaded.typed_rows, limit=0
-            )
+            index = await _validation_index(plan, dataset, checked_at, compiled, loaded)
             checked.append(
                 DatasetValidation(
                     dataset_id=dataset.id,
                     dataset_name=dataset.name,
                     explanation="; ".join(compiled.uncertainty),
-                    **counts,
+                    **index.counts,
                 )
             )
             errors.extend(compiled.uncertainty)
@@ -281,6 +336,7 @@ async def records(
         plan.missing_data,
     )
     loaded = await load_dataset(dataset.id, dataset.size_bytes, dataset.columns)
+    index = await _validation_index(plan, dataset, checked_at, compiled, loaded)
     _, total, page = await asyncio.to_thread(
         compliance.evaluate_rows,
         compiled,
@@ -289,6 +345,7 @@ async def records(
         offset=offset,
         limit=limit,
         verdict=verdict,
+        index=index,
     )
     return ValidationRecordsOut(
         dataset_id=dataset.id,

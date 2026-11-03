@@ -1,12 +1,26 @@
 """Retângulos do grifo de cada regra, a partir das palavras que o trecho cobre."""
 
+import asyncio
 import uuid
+from bisect import bisect_left, bisect_right
 from collections import defaultdict
+from collections.abc import Sequence
+from typing import NamedTuple
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Page, Word
+
+
+class WordGeometry(NamedTuple):
+    char_start: int
+    char_end: int
+    page: int
+    x0: float
+    y0: float
+    x1: float
+    y1: float
 
 
 async def rule_boxes(
@@ -25,17 +39,34 @@ async def rule_boxes(
         for p in await db.scalars(select(Page).where(Page.document_id == document_id))
     }
     words = (
-        await db.scalars(
-            select(Word)
+        await db.execute(
+            select(Word.char_start, Word.char_end, Word.page, Word.x0, Word.y0, Word.x1, Word.y1)
             .where(Word.document_id == document_id, Word.char_end > low, Word.char_start < high)
             .order_by(Word.char_start)
         )
     ).all()
+    return await asyncio.to_thread(_build_boxes, words, pages, ranges)
+
+
+def _build_boxes(
+    rows: Sequence[tuple],
+    pages: dict[int, tuple[float, float]],
+    ranges: dict[uuid.UUID, tuple[int, int]],
+) -> dict[uuid.UUID, list[dict]]:
+    words = [WordGeometry(*row) for row in rows]
+    starts = [w.char_start for w in words]
+    # Prefix maxima also support repeated/overlapping offsets (e.g. split words).
+    ends: list[int] = []
+    for w in words:
+        ends.append(max(ends[-1], w.char_end) if ends else w.char_end)
 
     boxes: dict[uuid.UUID, list[dict]] = defaultdict(list)
     for rule_id, (start, end) in ranges.items():
         current: list[float] | None = None  # [page, x0, y0, x1, y1]
-        for w in words:
+        low = bisect_right(ends, start)
+        high = bisect_left(starts, end)
+        for index in range(low, high):
+            w = words[index]
             if w.char_end <= start or w.char_start >= end:
                 continue
             same_line = (

@@ -10,10 +10,11 @@ entram em `is_null`: qualquer outra comparação com elas é falsa (como no SQL)
 
 import asyncio
 import re
+import sys
 import unicodedata
 import uuid
 from collections import OrderedDict
-from collections.abc import Callable, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
 
@@ -26,12 +27,21 @@ from app.schemas.queries import (
     StructuredQuery,
 )
 from app.services import storage
-from app.services.datasets import FALSE_VALUES, TRUE_VALUES, Value, parse_csv, parse_value
+from app.services.datasets import (
+    FALSE_VALUES,
+    TRUE_VALUES,
+    DatasetError,
+    ParsedCsv,
+    Value,
+    parse_csv,
+    parse_value,
+)
 
 _CANONICAL_NUMBER = re.compile(r"[+-]?\d+(?:\.\d+)?")
 MAX_LIST_VALUES = 200
 MAX_STORED_MATCHES = 50_000
 CACHE_SIZE = 4
+CACHE_MAX_BYTES = 128 * 1024 * 1024
 
 ORDERED = {"eq", "ne", "gt", "gte", "lt", "lte", "between", "in", "not_in", "is_null", "not_null"}
 OPERATORS_BY_TYPE: dict[str, set[str]] = {
@@ -314,36 +324,94 @@ def compile_query(query: StructuredQuery, datasets: Sequence[DatasetRef]) -> Com
 class LoadedDataset:
     raw_rows: list[list[str | None]]
     typed_rows: list[list[Value]]
+    memory_bytes: int = 0
 
 
-_cache: OrderedDict[tuple[uuid.UUID, int], LoadedDataset] = OrderedDict()
+CacheKey = tuple[uuid.UUID, int, tuple[tuple[str, str, str | None], ...]]
+_cache: OrderedDict[CacheKey, LoadedDataset] = OrderedDict()
+_loading: dict[CacheKey, asyncio.Task[LoadedDataset]] = {}
 _cache_lock = asyncio.Lock()
 
 
-def _load(data: bytes, columns: list[dict]) -> LoadedDataset:
-    parsed = parse_csv(data)
+def _from_parsed(parsed: ParsedCsv, columns: list[dict]) -> LoadedDataset:
     typed = [[parse_value(c, row[i]) for i, c in enumerate(columns)] for row in parsed.rows]
-    return LoadedDataset(raw_rows=parsed.rows, typed_rows=typed)
+    # Conservative estimate: shared strings may be counted twice, never under-budgeted.
+    memory_bytes = sum(
+        sys.getsizeof(rows)
+        + sum(sys.getsizeof(row) + sum(sys.getsizeof(v) for v in row) for row in rows)
+        for rows in (parsed.rows, typed)
+    )
+    return LoadedDataset(parsed.rows, typed, memory_bytes)
+
+
+def _load(data: bytes, columns: list[dict]) -> LoadedDataset:
+    try:
+        return _from_parsed(parse_csv(data, known_columns=columns), columns)
+    except DatasetError as exc:
+        raise QueryError(str(exc)) from exc
+
+
+def _key(dataset_id: uuid.UUID, size_bytes: int, columns: list[dict]) -> CacheKey:
+    return dataset_id, size_bytes, tuple((c["name"], c["type"], c.get("format")) for c in columns)
+
+
+async def _cached_load(
+    key: CacheKey, loader: Callable[[], Awaitable[LoadedDataset]]
+) -> LoadedDataset:
+    async def fill() -> LoadedDataset:
+        try:
+            loaded = await loader()
+            async with _cache_lock:
+                if loaded.memory_bytes <= CACHE_MAX_BYTES:
+                    _cache[key] = loaded
+                    _cache.move_to_end(key)
+                    while (
+                        len(_cache) > CACHE_SIZE
+                        or sum(item.memory_bytes for item in _cache.values()) > CACHE_MAX_BYTES
+                    ):
+                        _cache.popitem(last=False)
+            return loaded
+        finally:
+            async with _cache_lock:
+                _loading.pop(key, None)
+
+    async with _cache_lock:
+        if key in _cache:
+            _cache.move_to_end(key)
+            return _cache[key]
+        task = _loading.get(key)
+        if task is None:
+            task = asyncio.create_task(fill())
+            _loading[key] = task
+            # A disconnected caller must neither cancel a shared load nor leave an
+            # unobserved exception when it was the last waiter.
+            task.add_done_callback(lambda done: None if done.cancelled() else done.exception())
+    return await asyncio.shield(task)
+
+
+async def prime_dataset(
+    dataset_id: uuid.UUID, size_bytes: int, columns: list[dict], parsed: ParsedCsv
+) -> LoadedDataset:
+    """Reuse ingestion's parsed CSV instead of downloading and parsing it again."""
+    return await _cached_load(
+        _key(dataset_id, size_bytes, columns),
+        lambda: asyncio.to_thread(_from_parsed, parsed, columns),
+    )
 
 
 async def load_dataset(
     dataset_id: uuid.UUID, size_bytes: int, columns: list[dict]
 ) -> LoadedDataset:
     """Linhas da base (texto e tipadas), com cache das últimas bases usadas."""
-    key = (dataset_id, size_bytes)
-    async with _cache_lock:
-        if key in _cache:
-            _cache.move_to_end(key)
-            return _cache[key]
+
+    async def read() -> LoadedDataset:
         try:
             data = await storage.read_file(storage.dataset_name(dataset_id))
         except storage.StorageError as exc:
             raise QueryError("O arquivo da base não foi encontrado. Envie a base de novo.") from exc
-        loaded = await asyncio.to_thread(_load, data, columns)
-        _cache[key] = loaded
-        while len(_cache) > CACHE_SIZE:
-            _cache.popitem(last=False)
-        return loaded
+        return await asyncio.to_thread(_load, data, columns)
+
+    return await _cached_load(_key(dataset_id, size_bytes, columns), read)
 
 
 def run(compiled: CompiledQuery, rows: list[list[Value]]) -> list[int]:

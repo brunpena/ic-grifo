@@ -7,6 +7,8 @@ vira conformidade. A interpretação da IA permanece visível separada da revis�
 import calendar
 import math
 import operator
+import sys
+from array import array
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
@@ -176,7 +178,10 @@ def compile_check(check: ComplianceCheck, ref: DatasetRef, today: date):
             raise QueryError("Verifique o preenchimento diretamente na coluna original.")
         if check.right is not None:
             raise QueryError("A verificação de preenchimento não recebe comparação.")
-        return lambda row: ((left(row) is None) == (check.op == "is_null"), check.explanation)
+        return lambda row, explain=True: (
+            (left(row) is None) == (check.op == "is_null"),
+            check.explanation if explain else "",
+        )
     if check.right is None:
         raise QueryError("A verificação precisa do valor de comparação.")
     if check.right.kind == "literal":
@@ -204,19 +209,26 @@ def compile_check(check: ComplianceCheck, ref: DatasetRef, today: date):
         if kind != other_kind and {kind, other_kind} != {"integer", "decimal"}:
             raise QueryError("As colunas comparadas precisam de tipos compatíveis.")
 
-    def evaluate(row: Row) -> tuple[Outcome, str]:
+    def evaluate(row: Row, explain: bool = True) -> tuple[Outcome, str]:
         try:
             a, b = left(row), right(row)
             if check.right.kind == "deadline" and a is not None:
                 start_index, _ = _column(ref, check.right.column)
                 start = row[start_index]
                 if start is not None and a < start:
-                    return None, f"{check.explanation}: a data final é anterior ao início do prazo."
+                    return None, (
+                        f"{check.explanation}: a data final é anterior ao início do prazo."
+                        if explain
+                        else ""
+                    )
             if a is None or b is None:
-                return None, f"{check.explanation}: faltam valores para comparar."
+                return (
+                    None,
+                    f"{check.explanation}: faltam valores para comparar." if explain else "",
+                )
             numbers = [v for v in (a, b) if isinstance(v, (int, float))]
             if any(not math.isfinite(v) for v in numbers):
-                return None, f"{check.explanation}: número inválido na base."
+                return None, f"{check.explanation}: número inválido na base." if explain else ""
             if kind == "text":
                 a = fold(str(a))
                 b = [fold(str(v)) for v in b] if isinstance(b, list) else fold(str(b))
@@ -234,10 +246,16 @@ def compile_check(check: ComplianceCheck, ref: DatasetRef, today: date):
                 result = a.endswith(b)
             return (
                 result,
-                f"{check.explanation}: {_format(a)} {OPERATOR_LABELS[check.op]} {_format(b)}.",
+                f"{check.explanation}: {_format(a)} {OPERATOR_LABELS[check.op]} {_format(b)}."
+                if explain
+                else "",
             )
         except (ValueError, TypeError, OverflowError, ZeroDivisionError):
-            return None, f"{check.explanation}: valor ausente, inválido ou cálculo impossível."
+            return None, (
+                f"{check.explanation}: valor ausente, inválido ou cálculo impossível."
+                if explain
+                else ""
+            )
 
     return evaluate
 
@@ -269,20 +287,22 @@ class CompiledValidation:
     logic: str
     uncertainty: list[str]
 
-    def evaluate(self, row: Row) -> tuple[str | None, str]:
+    def evaluate(self, row: Row, explain: bool = True) -> tuple[str | None, str]:
         applies = self.scope(row)
         if applies is False:
-            return None, "Fora do escopo da regra."
+            return None, "Fora do escopo da regra." if explain else ""
         if self.uncertainty:
-            return "inconclusiva", "; ".join(self.uncertainty)
+            return "inconclusiva", "; ".join(self.uncertainty) if explain else ""
         if applies is None:
-            return "inconclusiva", "Faltam dados para determinar se a regra se aplica."
-        checked = [check(row) for check in self.checks]
+            return "inconclusiva", (
+                "Faltam dados para determinar se a regra se aplica." if explain else ""
+            )
+        checked = [check(row, explain=explain) for check in self.checks]
         result = combine([outcome for outcome, _ in checked], self.logic)
         verdict = (
             "conforme" if result is True else "violacao" if result is False else "inconclusiva"
         )
-        return verdict, " ".join(detail for _, detail in checked)
+        return verdict, " ".join(detail for _, detail in checked) if explain else ""
 
 
 def compile_validation(
@@ -318,6 +338,36 @@ def compile_validation(
     )
 
 
+@dataclass
+class ValidationIndex:
+    counts: dict[str, int]
+    indices: dict[str, array]
+
+    @property
+    def memory_bytes(self) -> int:
+        return sys.getsizeof(self.indices) + sum(
+            sys.getsizeof(items) for items in self.indices.values()
+        )
+
+
+def index_rows(compiled: CompiledValidation, rows: list[Row]) -> ValidationIndex:
+    indices = {key: array("Q") for key in ("all", "conforme", "violacao", "inconclusiva")}
+    for index, row in enumerate(rows):
+        verdict, _ = compiled.evaluate(row, explain=False)
+        if verdict is not None:
+            indices["all"].append(index)
+            indices[verdict].append(index)
+    return ValidationIndex(
+        counts={
+            "applicable_count": len(indices["all"]),
+            "passed_count": len(indices["conforme"]),
+            "failed_count": len(indices["violacao"]),
+            "unknown_count": len(indices["inconclusiva"]),
+        },
+        indices=indices,
+    )
+
+
 def evaluate_rows(
     compiled: CompiledValidation,
     raw_rows: list[list[str | None]],
@@ -326,31 +376,19 @@ def evaluate_rows(
     offset: int = 0,
     limit: int = 100,
     verdict: str | None = None,
+    index: ValidationIndex | None = None,
 ) -> tuple[dict[str, int], int, list[ValidationRecord]]:
-    counts = {"applicable_count": 0, "passed_count": 0, "failed_count": 0, "unknown_count": 0}
+    index = index if index is not None else index_rows(compiled, rows)
+    indices = index.indices[verdict or "all"]
     page: list[ValidationRecord] = []
-    total = 0
-    for index, row in enumerate(rows):
-        result, explanation = compiled.evaluate(row)
-        if result is None:
-            continue
-        counts["applicable_count"] += 1
-        key = {
-            "conforme": "passed_count",
-            "violacao": "failed_count",
-            "inconclusiva": "unknown_count",
-        }[result]
-        counts[key] += 1
-        if verdict is not None and result != verdict:
-            continue
-        if offset <= total < offset + limit:
-            page.append(
-                ValidationRecord(
-                    index=index, values=raw_rows[index], verdict=result, explanation=explanation
-                )
+    for row_index in indices[offset : offset + limit]:
+        result, explanation = compiled.evaluate(rows[row_index])
+        page.append(
+            ValidationRecord(
+                index=row_index, values=raw_rows[row_index], verdict=result, explanation=explanation
             )
-        total += 1
-    return counts, total, page
+        )
+    return index.counts, len(indices), page
 
 
 def summarize(
