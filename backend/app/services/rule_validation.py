@@ -82,6 +82,19 @@ INDEX_CACHE_SIZE = 128
 INDEX_CACHE_MAX_BYTES = 64 * 1024 * 1024
 _indices: OrderedDict[str, compliance.ValidationIndex] = OrderedDict()
 _index_tasks: dict[str, asyncio.Task[compliance.ValidationIndex]] = {}
+_index_datasets: dict[str, uuid.UUID] = {}
+
+
+async def clear_dataset_indices(dataset_ids: list[uuid.UUID]) -> None:
+    """Libera índices e referências em memória aos DuckDBs do uso encerrado."""
+    selected = set(dataset_ids)
+    keys = {key for key, dataset_id in _index_datasets.items() if dataset_id in selected}
+    tasks = [_index_tasks[key] for key in keys if key in _index_tasks]
+    if tasks:
+        await asyncio.gather(*(asyncio.shield(task) for task in tasks), return_exceptions=True)
+    for key in keys:
+        _indices.pop(key, None)
+        _index_datasets.pop(key, None)
 
 
 async def _validation_index(
@@ -112,14 +125,18 @@ async def _validation_index(
                     len(_indices) > INDEX_CACHE_SIZE
                     or sum(item.memory_bytes for item in _indices.values()) > INDEX_CACHE_MAX_BYTES
                 ):
-                    _indices.popitem(last=False)
+                    removed, _ = _indices.popitem(last=False)
+                    _index_datasets.pop(removed, None)
             return index
         finally:
             _index_tasks.pop(key, None)
+            if key not in _indices:
+                _index_datasets.pop(key, None)
 
     # No await between lookup and registration; other coroutines see the same task.
     task = _index_tasks.get(key)
     if task is None:
+        _index_datasets[key] = dataset.id
         task = asyncio.create_task(build())
         _index_tasks[key] = task
         task.add_done_callback(lambda done: None if done.cancelled() else done.exception())

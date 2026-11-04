@@ -42,6 +42,8 @@ class Settings(BaseSettings):
     # 500 GB, conforme Storage > Settings). Bases maiores são cortadas na última linha que cabe.
     supabase_max_file_mb: int = 50
     local_storage_dir: Path = Path("./data/storage")
+    # Cache analítico embarcado, independente do backend de armazenamento dos uploads.
+    duckdb_cache_dir: Path = Path("./data/duckdb")
 
     # Limites
     max_upload_mb: int = 50

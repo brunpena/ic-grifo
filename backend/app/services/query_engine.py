@@ -1,23 +1,23 @@
-"""Validação e execução das buscas estruturadas sobre as bases em CSV.
+"""Validação das buscas e execução SQL no cache DuckDB persistente.
 
-Somente leitura por construção: não há SQL nem `eval`. A busca é conferida contra o
-schema da base (coluna existe, operador serve para o tipo, valor converte para o tipo)
-e vira uma função Python que filtra as linhas já tipadas.
+A busca é conferida contra o schema e compilada para SQL parametrizado. Predicados
+Python permanecem apenas para explicar as poucas linhas retornadas na paginação.
 
 Comparações de texto ignoram maiúsculas, acentos e espaços repetidos. Células vazias só
 entram em `is_null`: qualquer outra comparação com elas é falsa (como no SQL).
 """
 
 import asyncio
+import hashlib
+import json
 import re
-import sys
-import unicodedata
 import uuid
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
 
+from app.core.config import get_settings
 from app.schemas.queries import (
     MAX_CONDITIONS,
     MAX_DEPTH,
@@ -36,6 +36,8 @@ from app.services.datasets import (
     parse_csv,
     parse_value,
 )
+from app.services.duckdb_cache import CACHE_VERSION, CsvCacheError, CsvDuckDBCache
+from app.services.text_normalization import fold
 
 _CANONICAL_NUMBER = re.compile(r"[+-]?\d+(?:\.\d+)?")
 MAX_LIST_VALUES = 200
@@ -95,20 +97,15 @@ class CompiledQuery:
 # ---------------------------------------------------------------------------
 
 
-def fold(text: str) -> str:
-    decomposed = unicodedata.normalize("NFKD", text.casefold())
-    return " ".join("".join(c for c in decomposed if not unicodedata.combining(c)).split())
-
-
-def _as_number(column: dict, value: Scalar) -> float:
+def _as_number(column: dict, value: Scalar) -> int | float:
     if isinstance(value, bool):
         raise ValueError
     if isinstance(value, int | float):
-        return float(value)
+        return value
     text = str(value).strip()
     # Número canônico (como no JSON) primeiro: "1234.5" não pode virar 12345 numa coluna "br".
     if _CANONICAL_NUMBER.fullmatch(text):
-        return float(text)
+        return int(text) if re.fullmatch(r"[+-]?\d+", text) else float(text)
     for fmt in (column.get("format"), "br", "us"):
         parsed = parse_value({"type": "decimal", "format": fmt}, text)
         if isinstance(parsed, float):
@@ -153,7 +150,9 @@ def coerce(column: dict, value: Scalar) -> Value:
     kind = column["type"]
     if kind in ("integer", "decimal"):
         number = _as_number(column, value)
-        return int(number) if kind == "integer" and number.is_integer() else number
+        if kind == "integer" and (isinstance(number, int) or number.is_integer()):
+            return int(number)
+        return number
     if kind == "date":
         return _as_date(value)
     if kind == "datetime":
@@ -322,9 +321,47 @@ def compile_query(query: StructuredQuery, datasets: Sequence[DatasetRef]) -> Com
 
 @dataclass
 class LoadedDataset:
-    raw_rows: list[list[str | None]]
-    typed_rows: list[list[Value]]
+    raw_rows: Sequence[list[str | None]]
+    typed_rows: Sequence[list[Value]]
     memory_bytes: int = 0
+
+
+class DuckDBRows(Sequence[list[Value]]):
+    """Visão paginada: os registros permanecem no disco até serem solicitados."""
+
+    def __init__(
+        self, cache: CsvDuckDBCache, columns: list[dict], count: int, *, raw: bool
+    ) -> None:
+        self.cache, self.columns, self.count, self.raw = cache, columns, count, raw
+
+    def __len__(self) -> int:
+        return self.count
+
+    def fetch(self, indices: Sequence[int]) -> dict[int, list]:
+        if not indices:
+            return {}
+        prefix = "r" if self.raw else "c"
+        projection = ", ".join(f"{prefix}{i}" for i in range(len(self.columns)))
+        placeholders = ", ".join("?" for _ in indices)
+        try:
+            rows = self.cache.consultar(
+                f"SELECT _row_id, {projection} FROM dados WHERE _row_id IN ({placeholders})",
+                indices,
+            )
+        except CsvCacheError as exc:
+            raise QueryError(str(exc)) from exc
+        return {row[0]: list(row[1:]) for row in rows}
+
+    def __getitem__(self, index: int | slice) -> list[Value] | list[list[Value]]:
+        if isinstance(index, slice):
+            indices = list(range(*index.indices(self.count)))
+            rows = self.fetch(indices)
+            return [rows[i] for i in indices]
+        if index < 0:
+            index += self.count
+        if not 0 <= index < self.count:
+            raise IndexError(index)
+        return self.fetch([index])[index]
 
 
 CacheKey = tuple[uuid.UUID, int, tuple[tuple[str, str, str | None], ...]]
@@ -333,26 +370,33 @@ _loading: dict[CacheKey, asyncio.Task[LoadedDataset]] = {}
 _cache_lock = asyncio.Lock()
 
 
-def _from_parsed(parsed: ParsedCsv, columns: list[dict]) -> LoadedDataset:
-    typed = [[parse_value(c, row[i]) for i, c in enumerate(columns)] for row in parsed.rows]
-    # Conservative estimate: shared strings may be counted twice, never under-budgeted.
-    memory_bytes = sum(
-        sys.getsizeof(rows)
-        + sum(sys.getsizeof(row) + sum(sys.getsizeof(v) for v in row) for row in rows)
-        for rows in (parsed.rows, typed)
-    )
-    return LoadedDataset(parsed.rows, typed, memory_bytes)
-
-
-def _load(data: bytes, columns: list[dict]) -> LoadedDataset:
-    try:
-        return _from_parsed(parse_csv(data, known_columns=columns), columns)
-    except DatasetError as exc:
-        raise QueryError(str(exc)) from exc
-
-
 def _key(dataset_id: uuid.UUID, size_bytes: int, columns: list[dict]) -> CacheKey:
     return dataset_id, size_bytes, tuple((c["name"], c["type"], c.get("format")) for c in columns)
+
+
+def _disk_cache(key: CacheKey) -> tuple[CsvDuckDBCache, str]:
+    signature = hashlib.sha256(
+        json.dumps([CACHE_VERSION, str(key[0]), *key[1:]]).encode()
+    ).hexdigest()
+    path = get_settings().duckdb_cache_dir / f"{key[0]}-{signature[:24]}.duckdb"
+    return CsvDuckDBCache(path), signature
+
+
+def _open_cached(cache: CsvDuckDBCache, columns: list[dict], count: int) -> LoadedDataset:
+    return LoadedDataset(
+        DuckDBRows(cache, columns, count, raw=True),
+        DuckDBRows(cache, columns, count, raw=False),
+        memory_bytes=1024 + len(json.dumps(columns).encode()) * 2,
+    )
+
+
+def _persist(key: CacheKey, parsed: ParsedCsv, columns: list[dict]) -> LoadedDataset:
+    try:
+        cache, signature = _disk_cache(key)
+        cache.importar_processado(parsed, signature)
+        return _open_cached(cache, columns, len(parsed.rows))
+    except CsvCacheError as exc:
+        raise QueryError(str(exc)) from exc
 
 
 async def _cached_load(
@@ -395,25 +439,131 @@ async def prime_dataset(
     """Reuse ingestion's parsed CSV instead of downloading and parsing it again."""
     return await _cached_load(
         _key(dataset_id, size_bytes, columns),
-        lambda: asyncio.to_thread(_from_parsed, parsed, columns),
+        lambda: asyncio.to_thread(_persist, _key(dataset_id, size_bytes, columns), parsed, columns),
     )
 
 
 async def load_dataset(
     dataset_id: uuid.UUID, size_bytes: int, columns: list[dict]
 ) -> LoadedDataset:
-    """Linhas da base (texto e tipadas), com cache das últimas bases usadas."""
+    """Abre o .duckdb persistido; só lê o upload se o cache ainda não existe."""
 
     async def read() -> LoadedDataset:
         try:
+            cache, signature = _disk_cache(_key(dataset_id, size_bytes, columns))
+            metadata = await asyncio.to_thread(cache.metadata)
+            if metadata and metadata["signature"] == signature:
+                return _open_cached(cache, columns, metadata["row_count"])
             data = await storage.read_file(storage.dataset_name(dataset_id))
+            parsed = await asyncio.to_thread(parse_csv, data, known_columns=columns)
+            return await asyncio.to_thread(
+                _persist, _key(dataset_id, size_bytes, columns), parsed, columns
+            )
         except storage.StorageError as exc:
             raise QueryError("O arquivo da base não foi encontrado. Envie a base de novo.") from exc
-        return await asyncio.to_thread(_load, data, columns)
+        except (CsvCacheError, DatasetError) as exc:
+            raise QueryError(str(exc)) from exc
 
     return await _cached_load(_key(dataset_id, size_bytes, columns), read)
 
 
-def run(compiled: CompiledQuery, rows: list[list[Value]]) -> list[int]:
+def run(compiled: CompiledQuery, rows: Sequence[list[Value]]) -> list[int]:
+    if isinstance(rows, DuckDBRows):
+        from app.services.duckdb_sql import query_sql
+
+        sql, parameters = query_sql(compiled.normalized, compiled.dataset)
+        try:
+            return [row[0] for row in rows.cache.consultar(sql, parameters)]
+        except CsvCacheError as exc:
+            raise QueryError(str(exc)) from exc
     predicate = compiled.predicate
     return [i for i, row in enumerate(rows) if predicate(row)]
+
+
+class SQLMatches(Sequence[int]):
+    """Resultado SQL com contagem total e IDs paginados, sem materializar toda a base."""
+
+    def __init__(
+        self, rows: DuckDBRows, compiled: CompiledQuery, *, prefetch_limit: int | None = None
+    ) -> None:
+        from app.services.duckdb_sql import query_sql
+
+        self.cache = rows.cache
+        self.sql, self.params = query_sql(compiled.normalized, compiled.dataset)
+        try:
+            self.total = self.cache.consultar(f"SELECT count(*) FROM ({self.sql})", self.params)[0][
+                0
+            ]
+            # A API persiste no máximo esses IDs; as páginas seguintes são consultadas sob demanda.
+            budget = MAX_STORED_MATCHES if prefetch_limit is None else prefetch_limit
+            self.first = self._page(0, min(self.total, budget))
+        except CsvCacheError as exc:
+            raise QueryError(str(exc)) from exc
+
+    def _page(self, start: int, stop: int) -> list[int]:
+        if stop <= start:
+            return []
+        try:
+            return [
+                row[0]
+                for row in self.cache.consultar(
+                    f"{self.sql} LIMIT $_limit OFFSET $_offset",
+                    {**self.params, "_limit": stop - start, "_offset": start},
+                )
+            ]
+        except CsvCacheError as exc:
+            raise QueryError(str(exc)) from exc
+
+    def __len__(self) -> int:
+        return self.total
+
+    def __getitem__(self, index: int | slice) -> int | list[int]:
+        if isinstance(index, slice):
+            start, stop, step = index.indices(self.total)
+        else:
+            if index < 0:
+                index += self.total
+            if not 0 <= index < self.total:
+                raise IndexError(index)
+            start, stop, step = index, index + 1, 1
+        if step != 1:
+            raise ValueError("A paginação SQL precisa de passo 1.")
+        page = self.first[start:stop] if stop <= len(self.first) else self._page(start, stop)
+        return page if isinstance(index, slice) else page[0]
+
+
+def search(
+    compiled: CompiledQuery, rows: Sequence[list[Value]], *, prefetch_limit: int | None = None
+) -> Sequence[int]:
+    if isinstance(rows, DuckDBRows):
+        return SQLMatches(rows, compiled, prefetch_limit=prefetch_limit)
+    return run(compiled, rows)
+
+
+def fetch_rows(rows: Sequence, indices: Sequence[int]) -> dict[int, list]:
+    """Carrega apenas uma página, em uma única consulta, sem bloquear o event loop."""
+    if isinstance(rows, DuckDBRows):
+        return rows.fetch(indices)
+    return {i: rows[i] for i in indices}
+
+
+async def delete_dataset_cache(dataset_id: uuid.UUID) -> None:
+    """Remove também os dados locais após a exclusão autorizada da base."""
+    async with _cache_lock:
+        pending = [task for key, task in _loading.items() if key[0] == dataset_id]
+    if pending:
+        await asyncio.gather(*(asyncio.shield(task) for task in pending), return_exceptions=True)
+    async with _cache_lock:
+        for key in list(_cache):
+            if key[0] == dataset_id:
+                del _cache[key]
+
+    def remove():
+        from filelock import FileLock
+
+        for path in get_settings().duckdb_cache_dir.glob(f"{dataset_id}-*.duckdb"):
+            with FileLock(str(path) + ".lock", timeout=60):
+                path.unlink(missing_ok=True)
+                path.with_suffix(".duckdb.wal").unlink(missing_ok=True)
+
+    await asyncio.to_thread(remove)

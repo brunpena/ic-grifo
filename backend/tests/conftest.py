@@ -23,6 +23,7 @@ os.environ["DATABASE_PGBOUNCER"] = "false"
 os.environ["APP_ENV"] = "test"
 os.environ["STORAGE_BACKEND"] = "local"
 os.environ["LOCAL_STORAGE_DIR"] = tempfile.mkdtemp(prefix="icgrifo-test-storage-")
+os.environ["DUCKDB_CACHE_DIR"] = tempfile.mkdtemp(prefix="icgrifo-test-duckdb-")
 os.environ["GEMINI_API_KEY"] = ""
 os.environ["GEMINI_API_KEY_2"] = ""
 os.environ["GEMINI_API_KEY_3"] = ""

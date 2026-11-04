@@ -144,7 +144,8 @@ async def test_prime_reuses_rows_and_cache_obeys_byte_budget(monkeypatch):
     columns = [c.to_dict() for c in parsed.columns]
     first_id = uuid.uuid4()
     first = await query_engine.prime_dataset(first_id, len(CSV), columns, parsed)
-    assert first.raw_rows is parsed.rows
+    assert isinstance(first.raw_rows, query_engine.DuckDBRows)
+    assert first.raw_rows[:] == parsed.rows
     assert await query_engine.load_dataset(first_id, len(CSV), columns) is first
     monkeypatch.setattr(query_engine, "CACHE_MAX_BYTES", first.memory_bytes + 1)
     second_id = uuid.uuid4()

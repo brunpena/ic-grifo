@@ -1,8 +1,7 @@
 """Bases de dados em CSV: leitura, schema inferido e valores tipados.
 
-O CSV original fica no storage; o banco guarda só o schema (colunas, tipos e exemplos) e
-algumas linhas de amostra, que vão como contexto para a IA. A mesma inferência é usada
-depois para converter as linhas na hora de rodar as buscas das regras.
+O CSV original fica no storage; o DuckDB local guarda os registros para as consultas.
+Só o schema (colunas, tipos e exemplos) vai como contexto para a IA.
 """
 
 import csv

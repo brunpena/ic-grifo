@@ -1,4 +1,4 @@
-"""Execução determinística de planos de conformidade, sem SQL ou código gerado.
+"""Execução de planos de conformidade no DuckDB e explicação paginada das evidências.
 
 Cada registro recebe conforme, violacao ou inconclusiva. Ausência de evidência nunca
 vira conformidade. A interpretação da IA permanece visível separada da revisão humana.
@@ -9,7 +9,7 @@ import math
 import operator
 import sys
 from array import array
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 
@@ -24,13 +24,16 @@ from app.schemas.validation import (
     ValidationRecord,
 )
 from app.services.datasets import Value
+from app.services.duckdb_cache import CsvCacheError
 from app.services.query_engine import (
     OPERATOR_LABELS,
     OPERATORS_BY_TYPE,
     DatasetRef,
+    DuckDBRows,
     QueryError,
     coerce,
     compile_query,
+    fetch_rows,
     fold,
 )
 
@@ -286,6 +289,7 @@ class CompiledValidation:
     checks: list
     logic: str
     uncertainty: list[str]
+    sql: tuple[str, dict] | None = None
 
     def evaluate(self, row: Row, explain: bool = True) -> tuple[str | None, str]:
         applies = self.scope(row)
@@ -330,18 +334,29 @@ def compile_validation(
         ((_column(ref, n)[1].get("semantic") or {}).get("confidence")) != "high"
         for n in _scope_columns(normalized)
     )
+    from app.services.duckdb_sql import validation_sql
+
+    checks = [compile_check(c, ref, today) for c in plan.checks]
+    sql = validation_sql(
+        plan.model_copy(update={"scope": normalized}),
+        ref,
+        today,
+        uncertainty=bool(uncertainty),
+        uncertain_scope=uncertain_scope,
+    )
     return CompiledValidation(
         scope=(lambda _row: None) if uncertain_scope else _scope(normalized, ref),
-        checks=[compile_check(c, ref, today) for c in plan.checks],
+        checks=checks,
         logic=plan.logic,
         uncertainty=uncertainty,
+        sql=sql,
     )
 
 
 @dataclass
 class ValidationIndex:
     counts: dict[str, int]
-    indices: dict[str, array]
+    indices: dict[str, Sequence[int]]
 
     @property
     def memory_bytes(self) -> int:
@@ -350,7 +365,78 @@ class ValidationIndex:
         )
 
 
-def index_rows(compiled: CompiledValidation, rows: list[Row]) -> ValidationIndex:
+class _SQLIndices(Sequence[int]):
+    """Só busca os índices da página; não traz milhões de IDs para o Python."""
+
+    def __init__(self, rows: DuckDBRows, sql: str, params: dict, verdict: str, count: int) -> None:
+        self.rows, self.sql, self.params = rows, sql, params
+        self.verdict, self.count = verdict, count
+
+    def __len__(self) -> int:
+        return self.count
+
+    def __getitem__(self, index: int | slice) -> int | list[int]:
+        if isinstance(index, slice):
+            start, stop, step = index.indices(self.count)
+        else:
+            if index < 0:
+                index += self.count
+            if not 0 <= index < self.count:
+                raise IndexError(index)
+            start, stop, step = index, index + 1, 1
+        if step != 1:
+            raise ValueError("A paginação SQL precisa de passo 1.")
+        if start >= stop:
+            return []
+        where = "verdict IS NOT NULL" if self.verdict == "all" else "verdict = $_verdict"
+        params = {**self.params, "_limit": stop - start, "_offset": start}
+        if self.verdict != "all":
+            params["_verdict"] = self.verdict
+        try:
+            result = self.rows.cache.consultar(
+                f"SELECT _row_id FROM ({self.sql}) WHERE {where} "
+                "ORDER BY _row_id LIMIT $_limit OFFSET $_offset",
+                params,
+            )
+        except CsvCacheError as exc:
+            raise QueryError(str(exc)) from exc
+        indices = [row[0] for row in result]
+        return indices if isinstance(index, slice) else indices[0]
+
+
+def index_rows(compiled: CompiledValidation, rows: Sequence[Row]) -> ValidationIndex:
+    if isinstance(rows, DuckDBRows):
+        if compiled.sql is None:
+            raise QueryError("O plano não tem uma consulta de banco compilada.")
+        sql, params = compiled.sql
+        try:
+            grouped = dict(
+                rows.cache.consultar(
+                    f"SELECT verdict, count(*) FROM ({sql}) "
+                    "WHERE verdict IS NOT NULL GROUP BY verdict",
+                    params,
+                )
+            )
+        except CsvCacheError as exc:
+            raise QueryError(str(exc)) from exc
+        counts = {
+            "applicable_count": sum(grouped.values()),
+            "passed_count": grouped.get("conforme", 0),
+            "failed_count": grouped.get("violacao", 0),
+            "unknown_count": grouped.get("inconclusiva", 0),
+        }
+        return ValidationIndex(
+            counts,
+            {
+                verdict: _SQLIndices(rows, sql, params, verdict, count)
+                for verdict, count in [("all", counts["applicable_count"]), *grouped.items()]
+            }
+            | {
+                verdict: _SQLIndices(rows, sql, params, verdict, 0)
+                for verdict in ("conforme", "violacao", "inconclusiva")
+                if verdict not in grouped
+            },
+        )
     indices = {key: array("Q") for key in ("all", "conforme", "violacao", "inconclusiva")}
     for index, row in enumerate(rows):
         verdict, _ = compiled.evaluate(row, explain=False)
@@ -370,8 +456,8 @@ def index_rows(compiled: CompiledValidation, rows: list[Row]) -> ValidationIndex
 
 def evaluate_rows(
     compiled: CompiledValidation,
-    raw_rows: list[list[str | None]],
-    rows: list[Row],
+    raw_rows: Sequence[list[str | None]],
+    rows: Sequence[Row],
     *,
     offset: int = 0,
     limit: int = 100,
@@ -381,11 +467,13 @@ def evaluate_rows(
     index = index if index is not None else index_rows(compiled, rows)
     indices = index.indices[verdict or "all"]
     page: list[ValidationRecord] = []
-    for row_index in indices[offset : offset + limit]:
-        result, explanation = compiled.evaluate(rows[row_index])
+    selected = indices[offset : offset + limit]
+    typed_page, raw_page = fetch_rows(rows, selected), fetch_rows(raw_rows, selected)
+    for row_index in selected:
+        result, explanation = compiled.evaluate(typed_page[row_index])
         page.append(
             ValidationRecord(
-                index=row_index, values=raw_rows[row_index], verdict=result, explanation=explanation
+                index=row_index, values=raw_page[row_index], verdict=result, explanation=explanation
             )
         )
     return index.counts, len(indices), page
