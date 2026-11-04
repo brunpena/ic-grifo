@@ -35,7 +35,7 @@ import { Dialog } from "@/components/ui/dialog";
 import { EmptyState } from "@/components/ui/empty-state";
 import { IconButton } from "@/components/ui/icon-button";
 import { useToast } from "@/components/ui/toast";
-import { useAnalysis, useCreateAnalysis } from "@/lib/analyses";
+import { closeAnalysis, useAnalysis, useCloseAnalysis, useCreateAnalysis } from "@/lib/analyses";
 import { errorMessage } from "@/lib/api";
 import { firstName, useCurrentUser } from "@/lib/auth";
 import type { RuleStatus, RuleType } from "@/lib/design/tokens";
@@ -57,8 +57,6 @@ import type { FloatingAnchor } from "@/lib/floating";
 import { describeQuery, useGenerateQueries } from "@/lib/queries";
 import { DESKTOP_QUERY, useMediaQuery } from "@/lib/use-media-query";
 import { cn } from "@/lib/utils";
-import { useValidateDocument } from "@/lib/validation";
-import { ValidationSummary } from "@/components/validation/validation-badge";
 
 type MobileTab = "document" | "rules" | "table";
 
@@ -81,6 +79,8 @@ export function AssistantView() {
   const [analysisId, setAnalysisId] = useState<string | null>(null);
   const { data: analysis } = useAnalysis(analysisId);
   const createAnalysis = useCreateAnalysis();
+  const endAnalysis = useCloseAnalysis();
+  const closedAnalyses = useRef(new Set<string>());
   const [documentId, setDocumentId] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
   const upload = useUploadDocument();
@@ -104,13 +104,31 @@ export function AssistantView() {
   const updateRule = useUpdateRule(documentId ?? "");
   const createRule = useCreateRule(documentId ?? "");
   const generateQueries = useGenerateQueries(documentId ?? "");
-  const validateDocument = useValidateDocument(documentId ?? "");
   const [editingQueryId, setEditingQueryId] = useState<string | null>(null);
   // Só as bases já lidas no servidor entram nas buscas das regras.
   const datasets = (analysis?.datasets ?? []).filter((d) => d.status === "ready");
   const canUploadDocument = (analysis?.datasets ?? []).some(
     (d) => d.status !== "error" && d.columns.length > 0,
   );
+
+  // Ao sair da tela ou fechar a aba, tenta entregar a limpeza mesmo durante a navegação.
+  useEffect(() => {
+    if (!analysisId) return;
+    closedAnalyses.current.delete(analysisId);
+    const release = () => {
+      if (!closedAnalyses.current.has(analysisId)) {
+        closedAnalyses.current.add(analysisId);
+        void closeAnalysis(analysisId, true).catch(() => {
+          // O navegador pode interromper a rede durante o encerramento da aba.
+        });
+      }
+    };
+    window.addEventListener("pagehide", release);
+    return () => {
+      window.removeEventListener("pagehide", release);
+      release();
+    };
+  }, [analysisId]);
 
   const [zoomOverride, setZoomOverride] = useState<number | null>(null);
   const [page, setPage] = useState(1);
@@ -178,6 +196,11 @@ export function AssistantView() {
       { file: first, analysisId: target },
       {
         onSuccess: (created) => {
+          // Um upload pode terminar depois que a pessoa encerrou o uso.
+          if (closedAnalyses.current.has(target)) {
+            void closeAnalysis(target, true).catch(() => {});
+            return;
+          }
           setDocumentId(created.id);
           setPendingUpload(null);
         },
@@ -188,6 +211,11 @@ export function AssistantView() {
       uploadMore.mutate(
         { file: extra, analysisId: target },
         {
+          onSuccess: () => {
+            if (closedAnalyses.current.has(target)) {
+              void closeAnalysis(target, true).catch(() => {});
+            }
+          },
           onError: (error) =>
             toast({ title: `Não foi possível enviar “${extra.name}”`, description: errorMessage(error), variant: "error" }),
         },
@@ -210,7 +238,18 @@ export function AssistantView() {
     return created.id;
   };
 
-  const closeDocument = () => {
+  const closeDocument = async () => {
+    if (endAnalysis.isPending) return;
+    if (analysisId) {
+      closedAnalyses.current.add(analysisId);
+      try {
+        await endAnalysis.mutateAsync(analysisId);
+      } catch (error) {
+        closedAnalyses.current.delete(analysisId);
+        toast({ title: "Não foi possível encerrar a análise", description: errorMessage(error), variant: "error" });
+        return;
+      }
+    }
     setPendingUpload(null);
     setDocumentId(null);
     setAnalysisId(null);
@@ -362,7 +401,7 @@ export function AssistantView() {
             {canUploadDocument ? (
               <section aria-labelledby="step-document" className="flex flex-col gap-3 rounded-xl border border-border bg-surface p-5">
                 <h2 id="step-document" className="font-medium">2. Envie o documento com as regras</h2>
-                <p className="text-sm text-foreground-muted">A IA identifica as regras e cruza com as bases enviadas.</p>
+                <p className="text-sm text-foreground-muted">A IA identifica as regras e prepara consultas usando o significado das colunas. Selecione uma regra para ver os registros.</p>
                 <div className="flex flex-wrap gap-2">
                   <Button variant="primary" icon={<FileUp size={16} aria-hidden />} onClick={attach}>Enviar documento</Button>
                   <Button icon={<Type size={16} aria-hidden />} onClick={() => setSourceMode("text")}>Colar texto</Button>
@@ -399,14 +438,17 @@ export function AssistantView() {
   const generating = doc?.status === "extracting_rules" && rules.length > 0;
   const showRules = ready || generating;
 
-  const resumeAction = (
+  const resumeAction = doc?.status === "error" ? (
               <Button size="sm" variant="primary" disabled={resumeDocument.isPending}
-                onClick={() => resumeDocument.mutate(doc!.id, {
+                onClick={() => {
+                  if (!doc) return;
+                  resumeDocument.mutate(doc.id, {
                   onError: (error) => toast({ title: "Não foi possível continuar", description: errorMessage(error), variant: "error" }),
-                })}>
+                  });
+                }}>
                 {resumeDocument.isPending ? "Retomando..." : "Continuar processamento"}
               </Button>
-  );
+  ) : null;
 
   const documentPanel = (
     <PdfViewer
@@ -528,18 +570,6 @@ export function AssistantView() {
             notice={generating ? (doc?.status_message ?? "Verificando as regras nas bases…") : doc?.status_message}
             actions={
               <>
-                {rules.length > 0 && (
-                  <Button
-                    size="sm"
-                    variant="primary"
-                    loading={validateDocument.isPending || generating}
-                    onClick={() => validateDocument.mutate(false, {
-                      onError: (error) => toast({ title: "Não foi possível validar", description: errorMessage(error), variant: "error" }),
-                    })}
-                  >
-                    Validar todas as regras
-                  </Button>
-                )}
                 {datasets.length > 0 && rules.length > 0 && (
                   <Button
                     size="sm"
@@ -552,7 +582,7 @@ export function AssistantView() {
                       })
                     }
                   >
-                    Gerar buscas com IA
+                    Preparar consultas com IA
                   </Button>
                 )}
                 {isDesktop && (
@@ -565,9 +595,7 @@ export function AssistantView() {
               </>
             }
           />
-          <ValidationSummary rules={rules} />
           <RulesTable
-            showValidation
             className="flex-1"
             rules={visibleRules.map((r) => ({
               ...r,
@@ -636,7 +664,7 @@ export function AssistantView() {
       <div className="flex shrink-0 flex-wrap items-center gap-3 border-b border-border bg-surface px-4 py-3">
         <div className="min-w-0 flex-1"><WorkflowSteps current={showRules ? 3 : 2} /><p className="mt-1 truncate text-xs text-foreground-muted">{documentName}</p></div>
         <Button size="sm" icon={<Database size={16} aria-hidden />} onClick={() => setDatasetsOpen(true)}>Bases de dados</Button>
-        <Button size="sm" onClick={closeDocument}>Nova análise</Button>
+        <Button size="sm" loading={endAnalysis.isPending} onClick={() => void closeDocument()}>Nova análise</Button>
       </div>
       <div className="min-h-0 flex-1">
       {!showRules ? rulesPanel : isDesktop ? (
@@ -666,7 +694,7 @@ export function AssistantView() {
         open={datasetsOpen}
         onOpenChange={setDatasetsOpen}
         title="Bases da análise"
-        description="Confira o significado das colunas e os dados usados na validação."
+        description="Confira o significado das colunas usadas nas consultas das regras."
         className="max-h-[85dvh] w-[760px] overflow-y-auto"
       >
         <DatasetUploader datasets={analysis?.datasets ?? []} ensureAnalysis={ensureAnalysis} />

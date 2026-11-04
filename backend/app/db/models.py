@@ -243,6 +243,8 @@ class RuleQuery(Base):
         ForeignKey("datasets.id", ondelete="SET NULL"), index=True
     )
     query: Mapped[dict] = mapped_column(JSONB)
+    sql: Mapped[str | None] = mapped_column(Text)
+    sql_parameters: Mapped[dict | None] = mapped_column(JSONB)
     origin: Mapped[str] = mapped_column(Text)
     # pendente (ainda não rodou), ok ou erro (ver `error`).
     state: Mapped[str] = mapped_column(Text, default="pendente")

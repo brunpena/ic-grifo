@@ -33,7 +33,6 @@ def do_run_migrations(connection: Connection) -> None:
 
 
 async def run_async_migrations() -> None:
-    # A URL vem de DATABASE_URL (mesma configuração da aplicação), nunca do alembic.ini.
     engine = make_engine(get_settings())
     async with engine.connect() as connection:
         await connection.run_sync(do_run_migrations)

@@ -12,7 +12,6 @@ import { errorMessage } from "@/lib/api";
 import type { Rule } from "@/lib/documents";
 import { describeQuery, useRuleRecords } from "@/lib/queries";
 import { cn } from "@/lib/utils";
-import { ValidationBadge } from "@/components/validation/validation-badge";
 import { ValidationDetails } from "@/components/validation/validation-details";
 
 const PAGE_SIZE = 100;
@@ -66,9 +65,9 @@ export function RecordsPanel({
             ))}
           </Select>
         )}
-        {selected?.validation && selected.query && (
+        {selected?.validation && (
           <Button size="sm" variant="ghost" onClick={() => setSearchFor(searchFor === selected.id ? null : selected.id)}>
-            {searchFor === selected.id ? "Ver validação" : "Ver busca"}
+            {searchFor === selected.id ? "Ver consulta" : "Ver validação"}
           </Button>
         )}
         {onClose && (
@@ -82,7 +81,7 @@ export function RecordsPanel({
         )}
       </div>
 
-      {selected?.validation && searchFor !== selected.id ? (
+      {selected?.validation && searchFor === selected.id ? (
         <ValidationDetails key={selected.id + selected.validation.checked_at} rule={selected} onBack={() => onSelectRule(null)} />
       ) : !hasDatasets && !rules.some((r) => r.validation) ? (
         <EmptyState
@@ -114,9 +113,9 @@ function RulesOverview({ rules, onSelectRule }: { rules: Rule[]; onSelectRule: (
               <RuleTypeBadge type={rule.type} className="shrink-0" />
               <span className="flex min-w-0 flex-1 flex-col">
                 <span className="truncate text-[13px] font-medium">{rule.summary}</span>
-                <span className="truncate text-xs text-foreground-subtle">{rule.validation?.explanation ?? "Ainda não avaliada nas bases"}</span>
+                <span className="truncate text-xs text-foreground-subtle">{rule.query ? describeQuery(rule.query.query) : "Sem consulta para esta regra"}</span>
               </span>
-              <ValidationBadge validation={rule.validation} />
+              <span className="text-xs text-foreground-muted">{rule.query?.state === "erro" ? "Revisar consulta" : rule.query ? "Selecionar para consultar" : "Sem consulta"}</span>
             </button>
           </li>
         ))}
@@ -128,7 +127,7 @@ function RulesOverview({ rules, onSelectRule }: { rules: Rule[]; onSelectRule: (
 function RuleRecords({ rule, onBack, onEditQuery }: { rule: Rule; onBack: () => void; onEditQuery: (rule: Rule) => void }) {
   const [offset, setOffset] = useState(0);
   const query = rule.query;
-  const ok = query?.state === "ok";
+  const ok = !!query && query.state !== "erro";
   const records = useRuleRecords(rule.id, offset, PAGE_SIZE, ok);
   const data = records.data;
 

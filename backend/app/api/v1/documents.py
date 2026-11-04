@@ -40,7 +40,7 @@ from app.schemas.documents import (
     TextDocumentIn,
     UrlDocumentIn,
 )
-from app.schemas.queries import RecordRow, RecordsOut, RuleQueryOut, StructuredQuery
+from app.schemas.queries import RecordsOut, RuleQueryOut, StructuredQuery
 from app.schemas.validation import RecordVerdict, ValidationRecordsOut
 from app.services import (
     document_upload,
@@ -58,7 +58,7 @@ from app.services.converters import (
 )
 from app.services.converters.text import title_from_text
 from app.services.highlights import page_range, rule_boxes
-from app.services.query_engine import QueryError, load_dataset
+from app.services.query_engine import QueryError
 from app.services.text_match import find_excerpt
 
 logger = logging.getLogger(__name__)
@@ -95,6 +95,8 @@ def _query_out(q: RuleQuery, dataset_names: dict[uuid.UUID, str]) -> RuleQueryOu
         dataset_id=q.dataset_id,
         dataset_name=dataset_names.get(q.dataset_id) if q.dataset_id else None,
         query=query,
+        sql=q.sql,
+        sql_parameters=q.sql_parameters or {},
         origin=q.origin,
         state=q.state,
         error=q.error,
@@ -516,7 +518,7 @@ async def generate_document_queries(
 
 @router.put(
     "/rules/{rule_id}/query",
-    summary="Define (ou corrige) a busca da regra e roda de novo",
+    summary="Define (ou corrige) e prepara a SQL da regra, sem executar",
     description=(
         "A busca é validada contra o schema da base antes de ser gravada; uma busca inválida "
         "volta com 422 (`invalid_query`) e a mensagem do problema, sem alterar a atual."
@@ -529,18 +531,19 @@ async def set_rule_query(
     rule = await _owned_rule(db, rule_id, user)
     datasets = await _rule_datasets(db, rule)
     await db.commit()
+    rule_query = await _rule_query(db, rule.id)
+    # Valida antes de modificar a consulta existente.
     try:
-        execution = await rule_queries.run_query(body, datasets)
+        compiled = rule_queries.compile_query(body, rule_queries.dataset_refs(datasets))
     except QueryError as exc:
         raise AppError(str(exc), code="invalid_query", status_code=422) from exc
-    rule_query = await _rule_query(db, rule.id)
     if rule_query is None:
         rule_query = RuleQuery(rule_id=rule.id, query={}, origin="manual", matched_rows=[])
         db.add(rule_query)
-    rule_queries.set_query(rule_query, execution.normalized.model_dump(mode="json"), "manual")
-    rule_queries.apply_execution(rule_query, execution)
-    if execution.dataset.id not in (rule.dataset_ids or []):
-        rule.dataset_ids = [*(rule.dataset_ids or []), execution.dataset.id]
+    rule_queries.set_query(rule_query, compiled.normalized.model_dump(mode="json"), "manual")
+    rule_queries.prepare_query(rule_query, datasets)
+    if compiled.dataset.id not in (rule.dataset_ids or []):
+        rule.dataset_ids = [*(rule.dataset_ids or []), compiled.dataset.id]
     await db.commit()
     await db.refresh(rule)
     return (await _rules_out(db, rule.document_id, [rule]))[0]
@@ -590,33 +593,19 @@ async def list_rule_records(
 ) -> RecordsOut:
     rule = await _owned_rule(db, rule_id, user)
     rule_query = await _rule_query(db, rule.id)
-    if rule_query is None or rule_query.state != "ok" or rule_query.dataset_id is None:
+    if rule_query is None or rule_query.state == "erro":
         raise ConflictError("Esta regra não tem uma busca válida.", code="no_query")
-    dataset = await db.get(Dataset, rule_query.dataset_id)
-    if dataset is None:
-        raise ConflictError("A base usada por esta busca foi removida.", code="no_query")
+    datasets = await _rule_datasets(db, rule)
     await db.commit()
     try:
-        if rule_query.match_count is not None and rule_query.match_count <= len(
-            rule_query.matched_rows
-        ):
-            indices = list(rule_query.matched_rows)
-        else:
-            # Mais registros do que o guardado: roda a busca na hora.
-            query = StructuredQuery.model_validate(rule_query.query)
-            indices = (await rule_queries.run_query(query, [dataset])).rows
-        loaded = await load_dataset(dataset.id, dataset.size_bytes, dataset.columns)
-    except QueryError as exc:
+        result = await rule_queries.execute_page(rule_query, datasets, offset=offset, limit=limit)
+    except (QueryError, ValidationError) as exc:
+        rule_queries.mark_failed(rule_query, str(exc))
+        await db.commit()
         raise ConflictError(str(exc), code="no_query") from exc
-    page = [i for i in indices[offset : offset + limit] if i < len(loaded.raw_rows)]
-    return RecordsOut(
-        dataset_id=dataset.id,
-        dataset_name=dataset.name,
-        columns=[c["name"] for c in dataset.columns],
-        total=len(indices),
-        offset=offset,
-        rows=[RecordRow(index=i, values=loaded.raw_rows[i]) for i in page],
-    )
+    await db.commit()
+    result.query = _query_out(rule_query, {result.dataset_id: result.dataset_name})
+    return result
 
 
 # ---------------------------------------------------------------------------

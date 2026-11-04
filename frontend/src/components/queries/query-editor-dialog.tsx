@@ -162,11 +162,10 @@ function QueryEditorForm({ rule, datasets, documentId, onClose }: Omit<QueryEdit
     save.mutate(
       { ruleId: rule.id, query },
       {
-        onSuccess: (saved) => {
-          const count = saved.query?.match_count ?? 0;
+        onSuccess: () => {
           toast({
             title: "Busca salva",
-            description: `${count.toLocaleString("pt-BR")} ${count === 1 ? "registro encontrado" : "registros encontrados"}.`,
+            description: "Selecione a regra para consultar os registros na tabela.",
             variant: "success",
           });
           onClose();

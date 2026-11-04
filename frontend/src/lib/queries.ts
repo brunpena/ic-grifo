@@ -92,7 +92,7 @@ function useReplaceRule(documentId: string) {
   };
 }
 
-/** Grava a busca (validada no back) e já traz o novo resultado. */
+/** Prepara e salva a consulta; os registros são buscados apenas na regra selecionada. */
 export function useSetRuleQuery(documentId: string) {
   const replace = useReplaceRule(documentId);
   return useMutation({
@@ -143,15 +143,26 @@ export function useGenerateQueries(documentId: string) {
 
 /** Registros encontrados pela busca da regra, uma página por vez. */
 export function useRuleRecords(ruleId: string | null, offset: number, limit: number, enabled = true) {
+  const client = useQueryClient();
   return useQuery({
     queryKey: ruleKeys.records(ruleId ?? "", offset, limit),
-    queryFn: () =>
-      unwrap(
+    queryFn: async () => {
+      const result = await unwrap(
         api.GET("/api/v1/rules/{rule_id}/records", {
           params: { path: { rule_id: ruleId! }, query: { offset, limit } },
         }),
-      ),
+      );
+      if (result.query) {
+        client.setQueriesData<Rule[]>({
+          predicate: (q) => q.queryKey[0] === "documents" && q.queryKey[2] === "rules",
+        }, (rules) => rules?.map((rule) => rule.id === ruleId ? { ...rule, query: result.query! } : rule));
+      }
+      return result;
+    },
     enabled: !!ruleId && enabled,
     placeholderData: keepPreviousData,
+    staleTime: 0,
+    refetchOnMount: "always",
+    refetchOnWindowFocus: false,
   });
 }

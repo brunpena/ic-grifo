@@ -651,11 +651,17 @@ QUERY_BATCH = 25
 
 QUERY_SYSTEM = """Você transforma regras de documentos normativos em buscas sobre \
 bases de dados em CSV. As buscas nunca são SQL: são condições sobre colunas.
+Use os significados, eventos, unidades e confiança já interpretados de cada coluna.
+O backend compila sua resposta em SQL parametrizado e só consulta o DuckDB quando
+a pessoa seleciona a regra. Não execute consultas nem estime registros encontrados.
+Não trate assinatura, publicação, realização ou vencimento como datas equivalentes.
+Se as colunas necessárias forem ambíguas ou faltarem evidências para relacioná-las à
+regra, retorne dataset null e explique em reason, sem inventar interpretações.
 
 Para cada regra, monte a busca que encontra os registros AOS QUAIS A REGRA SE APLICA \
 (o escopo da regra), não os que a violam. Exemplo: "contratos acima de R$ 50 mil exigem \
-garantia" → registros com Valor > 50000. Quem verifica se cada registro cumpre a regra \
-é outra etapa.
+garantia" → registros com Valor > 50000. A consulta apresenta os registros relacionados;
+encontrar um registro não é uma conclusão automática de conformidade ou violação.
 
 Formato de cada busca:
 - dataset: nome exato de uma das bases, ou null quando nenhuma base tem colunas para \

@@ -56,7 +56,7 @@ export function QueryBadge({
       >
         <Database size={14} strokeWidth={1.75} aria-hidden />
         {query.state === "pendente" ? (
-          "Pendente"
+          "Pronta"
         ) : (
           <span className="tabular-nums">
             {count.toLocaleString("pt-BR")}

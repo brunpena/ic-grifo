@@ -6,8 +6,10 @@ mão (`origin = "manual"`) nunca são substituídas pela IA.
 """
 
 import asyncio
+import json
 import logging
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -16,15 +18,18 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Dataset, Document, Rule, RuleQuery
-from app.schemas.queries import StructuredQuery
+from app.schemas.queries import RecordRow, RecordsOut, StructuredQuery
 from app.services import llm
+from app.services.duckdb_sql import query_sql
 from app.services.query_engine import (
     MAX_STORED_MATCHES,
+    CompiledQuery,
     DatasetRef,
     QueryError,
     compile_query,
+    fetch_rows,
     load_dataset,
-    run,
+    search,
 )
 
 logger = logging.getLogger(__name__)
@@ -66,7 +71,7 @@ class Execution:
     dataset: Dataset
     # A busca com nomes de coluna exatos e valores no tipo da coluna (é o que se grava).
     normalized: StructuredQuery
-    rows: list[int]
+    rows: Sequence[int]
 
 
 async def run_query(query: StructuredQuery, datasets: list[Dataset]) -> Execution:
@@ -74,7 +79,7 @@ async def run_query(query: StructuredQuery, datasets: list[Dataset]) -> Executio
     compiled = compile_query(query, dataset_refs(datasets))
     dataset = next(d for d in datasets if d.id == compiled.dataset.id)
     loaded = await load_dataset(dataset.id, dataset.size_bytes, dataset.columns)
-    rows = await asyncio.to_thread(run, compiled, loaded.typed_rows)
+    rows = await asyncio.to_thread(search, compiled, loaded.typed_rows)
     return Execution(dataset=dataset, normalized=compiled.normalized, rows=rows)
 
 
@@ -99,6 +104,7 @@ def mark_failed(rule_query: RuleQuery, message: str) -> None:
 async def execute(rule_query: RuleQuery, datasets: list[Dataset]) -> None:
     """Roda a busca e grava o resultado na linha (sem commit)."""
     try:
+        prepare_query(rule_query, datasets)
         execution = await run_query(StructuredQuery.model_validate(rule_query.query), datasets)
     except QueryError as exc:
         mark_failed(rule_query, str(exc))
@@ -113,8 +119,59 @@ def set_query(rule_query: RuleQuery, query: dict, origin: str) -> None:
     rule_query.query = query
     rule_query.origin = origin
     rule_query.state = "pendente"
+    rule_query.sql = None
+    rule_query.sql_parameters = None
+    rule_query.error = None
+    rule_query.match_count = None
+    rule_query.matched_rows = []
+    rule_query.executed_at = None
     rule_query.verdict = None
     rule_query.verdict_details = None
+
+
+def prepare_query(rule_query: RuleQuery, datasets: list[Dataset]) -> CompiledQuery:
+    """Valida e salva a SQL, sem abrir o DuckDB ou executar a consulta.
+
+    Na execução recompilamos os critérios validados contra o schema atual; SQL livre
+    do cliente/modelo ou uma string persistida adulterada nunca é executada.
+    """
+    compiled = compile_query(
+        StructuredQuery.model_validate(rule_query.query), dataset_refs(datasets)
+    )
+    sql, parameters = query_sql(compiled.normalized, compiled.dataset)
+    rule_query.query = compiled.normalized.model_dump(mode="json")
+    rule_query.dataset_id = compiled.dataset.id
+    rule_query.sql = sql
+    rule_query.sql_parameters = json.loads(json.dumps(parameters, default=str))
+    return compiled
+
+
+async def execute_page(
+    rule_query: RuleQuery, datasets: list[Dataset], *, offset: int, limit: int
+) -> RecordsOut:
+    """Selecionar uma regra executa a SQL local e traz somente a página solicitada."""
+    compiled = prepare_query(rule_query, datasets)
+    dataset = next(d for d in datasets if d.id == compiled.dataset.id)
+    loaded = await load_dataset(dataset.id, dataset.size_bytes, dataset.columns)
+
+    def page():
+        indices = search(compiled, loaded.typed_rows, prefetch_limit=0)
+        selected = indices[offset : offset + limit]
+        values = fetch_rows(loaded.raw_rows, selected)
+        return len(indices), [RecordRow(index=i, values=values[i]) for i in selected]
+
+    total, rows = await asyncio.to_thread(page)
+    rule_query.state, rule_query.error = "ok", None
+    rule_query.match_count, rule_query.matched_rows = total, []
+    rule_query.executed_at = datetime.now(UTC)
+    return RecordsOut(
+        dataset_id=dataset.id,
+        dataset_name=dataset.name,
+        columns=[c["name"] for c in dataset.columns],
+        total=total,
+        offset=offset,
+        rows=rows,
+    )
 
 
 @dataclass
@@ -128,7 +185,7 @@ class GenerationResult:
 async def generate_for_document(
     db: AsyncSession, document_id: uuid.UUID, *, overwrite: bool, only_related: bool
 ) -> GenerationResult:
-    """Gera (com a IA) e roda as buscas das regras do documento; faz commit no fim.
+    """Gera e prepara as consultas SQL sem executar buscas nos registros.
 
     `only_related`: só as regras que a extração ligou a alguma base.
     `overwrite`: refaz também as buscas que a IA já tinha gerado (nunca as manuais).
@@ -140,6 +197,10 @@ async def generate_for_document(
     datasets = await analysis_datasets(db, document.analysis_id)
     if not datasets:
         return result
+    # A geração usa os significados já interpretados; só interpreta os que faltam.
+    from app.services.rule_validation import ensure_meanings
+
+    await ensure_meanings(db, datasets, refresh=False)
     rules = (
         await db.scalars(
             select(Rule)
@@ -185,8 +246,12 @@ async def generate_for_document(
             current = RuleQuery(rule_id=rule.id, query={}, origin="ia", matched_rows=[])
             db.add(current)
         set_query(current, answer.query, "ia")
-        await execute(current, datasets)
-        if current.state == "ok":
+        try:
+            prepare_query(current, datasets)
+        except (QueryError, ValidationError) as exc:
+            mark_failed(current, str(exc))
+            current.executed_at = None
+        if current.state == "pendente":
             result.generated += 1
         else:
             result.failed += 1

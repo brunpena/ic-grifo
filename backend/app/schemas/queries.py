@@ -1,7 +1,7 @@
 """Busca estruturada: como uma regra vira consulta a uma base de dados.
 
-Nunca é SQL. É um JSON com a base, as condições (coluna, operador, valor) e como elas se
-combinam; antes de rodar, `services.query_engine` confere tudo contra o schema da base.
+Os critérios JSON são validados e compilados para SQL parametrizado no DuckDB.
+A preparação não lê registros; a execução acontece ao selecionar a regra.
 
 Exemplo:
     {"dataset": "contratos", "logic": "and", "conditions": [
@@ -74,6 +74,8 @@ class RuleQueryOut(BaseModel):
     dataset_id: uuid.UUID | None = Field(description="Nulo se a base foi removida.")
     dataset_name: str | None
     query: StructuredQuery
+    sql: str | None = None
+    sql_parameters: dict[str, Scalar] = Field(default_factory=dict)
     origin: QueryOrigin
     state: QueryState = Field(description="pendente (não rodou), ok ou erro (ver `error`).")
     error: str | None
@@ -90,6 +92,7 @@ class RecordsOut(BaseModel):
     total: int = Field(description="Total de registros encontrados pela busca.")
     offset: int
     rows: list["RecordRow"]
+    query: RuleQueryOut | None = None
 
 
 class RecordRow(BaseModel):

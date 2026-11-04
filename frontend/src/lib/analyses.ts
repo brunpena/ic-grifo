@@ -48,6 +48,17 @@ export function useCreateAnalysis() {
   });
 }
 
+export async function closeAnalysis(id: string, keepalive = false): Promise<void> {
+  await unwrap(api.POST("/api/v1/analyses/{analysis_id}/close", {
+    params: { path: { analysis_id: id } },
+    keepalive,
+  }));
+}
+
+export function useCloseAnalysis() {
+  return useMutation({ mutationFn: (id: string) => closeAnalysis(id) });
+}
+
 /** Envia um CSV. Use uma chamada por arquivo: cada um tem seu próprio erro. A base volta
  * em `processing` e o servidor a lê em segundo plano (ver `useAnalysis`). */
 export function useUploadDataset() {

@@ -22,6 +22,7 @@ from app.schemas.common import error_responses
 from app.schemas.documents import DocumentOut
 from app.services import ingest, rule_validation, storage
 from app.services.datasets import dataset_display_name, fit_to_size
+from app.services.query_engine import delete_dataset_cache
 
 router = APIRouter(tags=["análises"])
 
@@ -123,6 +124,54 @@ async def update_analysis(
     return await _detail(db, analysis_id)
 
 
+@router.post(
+    "/analyses/{analysis_id}/close",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Encerra o uso da análise e remove seus caches DuckDB locais",
+    responses=error_responses(404),
+)
+async def close_analysis(analysis_id: uuid.UUID, user: UserDep, db: SessionDep) -> Response:
+    await owned_analysis(db, analysis_id, user)
+    document_ids = list(
+        await db.scalars(select(Document.id).where(Document.analysis_id == analysis_id))
+    )
+    dataset_ids = list(
+        await db.scalars(select(Dataset.id).where(Dataset.analysis_id == analysis_id))
+    )
+    await db.commit()
+    await ingest.stop_analysis_work(document_ids, dataset_ids)
+    # Não deixar um reinício retomar o uso encerrado e recriar o cache automaticamente.
+    await db.execute(
+        update(Document)
+        .where(
+            Document.id.in_(document_ids),
+            Document.status.in_(("processing", "extracting_rules")),
+        )
+        .values(
+            status="error",
+            status_message="Processamento interrompido ao fechar a análise. "
+            "Use Continuar processamento para retomar.",
+        )
+    )
+    await db.execute(
+        update(Dataset)
+        .where(
+            Dataset.id.in_(dataset_ids),
+            Dataset.status == "processing",
+        )
+        .values(
+            status="error",
+            status_message="Leitura interrompida ao fechar a análise. "
+            "Envie a base novamente para retomar.",
+        )
+    )
+    await db.commit()
+    await rule_validation.clear_dataset_indices(dataset_ids)
+    for dataset_id in dataset_ids:
+        await delete_dataset_cache(dataset_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
 @router.delete(
     "/analyses/{analysis_id}",
     status_code=status.HTTP_204_NO_CONTENT,
@@ -143,6 +192,8 @@ async def delete_analysis(analysis_id: uuid.UUID, user: UserDep, db: SessionDep)
         [name for i in document_ids for name in storage.document_files(i)]
         + [storage.dataset_name(i) for i in dataset_ids]
     )
+    for dataset_id in dataset_ids:
+        await delete_dataset_cache(dataset_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
@@ -262,4 +313,5 @@ async def delete_dataset(dataset_id: uuid.UUID, user: UserDep, db: SessionDep) -
     await db.delete(dataset)
     await db.commit()
     await storage.delete_files([storage.dataset_name(dataset_id)])
+    await delete_dataset_cache(dataset_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)

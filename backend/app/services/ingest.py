@@ -24,7 +24,9 @@ logger = logging.getLogger(__name__)
 
 # Referências às tarefas em andamento (sem isso o asyncio pode descartá-las).
 _tasks: set[asyncio.Task] = set()
+_tasks_by_owner: dict[tuple[str, uuid.UUID], set[asyncio.Task]] = {}
 _validation_requested: set[uuid.UUID] = set()
+_queries_requested: set[uuid.UUID] = set()
 
 
 QUERIES_MESSAGE = "Gerando as buscas nas bases de dados"
@@ -34,10 +36,34 @@ QUERIES_INTERRUPTED = (
 )
 
 
-def _start(coro) -> None:
+def _start(coro, *, owner: tuple[str, uuid.UUID] | None = None) -> None:
     task = asyncio.create_task(coro)
     _tasks.add(task)
     task.add_done_callback(_tasks.discard)
+    if owner is not None:
+        _tasks_by_owner.setdefault(owner, set()).add(task)
+
+        def finished(done: asyncio.Task) -> None:
+            tasks = _tasks_by_owner.get(owner)
+            if tasks is not None:
+                tasks.discard(done)
+                if not tasks:
+                    _tasks_by_owner.pop(owner, None)
+
+        task.add_done_callback(finished)
+
+
+async def stop_analysis_work(document_ids: list[uuid.UUID], dataset_ids: list[uuid.UUID]) -> None:
+    """Encerra as tarefas deste uso antes de apagar os bancos que elas poderiam recriar."""
+    owners = {*(("document", i) for i in document_ids), *(("dataset", i) for i in dataset_ids)}
+    _validation_requested.difference_update(document_ids)
+    _queries_requested.difference_update(document_ids)
+    while pending := {
+        task for owner in owners for task in _tasks_by_owner.get(owner, ()) if not task.done()
+    }:
+        for task in pending:
+            task.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
 
 
 def start_processing(
@@ -47,11 +73,14 @@ def start_processing(
     source: SourceFile | None = None,
     title: str | None = None,
 ) -> None:
-    _start(process_document(document_id, extracted, source=source, title=title))
+    _start(
+        process_document(document_id, extracted, source=source, title=title),
+        owner=("document", document_id),
+    )
 
 
 def start_dataset_processing(dataset_id: uuid.UUID, data: bytes | None = None) -> None:
-    _start(process_dataset(dataset_id, data))
+    _start(process_dataset(dataset_id, data), owner=("dataset", dataset_id))
 
 
 async def process_dataset(dataset_id: uuid.UUID, data: bytes | None = None) -> None:
@@ -115,14 +144,25 @@ async def process_dataset(dataset_id: uuid.UUID, data: bytes | None = None) -> N
                 )
             )
         for document_id in ready_ids:
-            start_validation(document_id)
+            request_query_generation(document_id)
+
+
+def request_query_generation(document_id: uuid.UUID) -> None:
+    """Base nova: prepara consultas, sem validar registros ou concorrer com a extração."""
+    _queries_requested.add(document_id)
+    if any(not task.done() for task in _tasks_by_owner.get(("document", document_id), ())):
+        return
+    start_query_generation(document_id, overwrite=True)
 
 
 def start_validation(
     document_id: uuid.UUID, *, refresh_columns: bool = False, reserved: bool = False
 ) -> None:
     _validation_requested.add(document_id)
-    _start(_validate(document_id, refresh_columns=refresh_columns, reserved=reserved))
+    _start(
+        _validate(document_id, refresh_columns=refresh_columns, reserved=reserved),
+        owner=("document", document_id),
+    )
 
 
 async def _validate(document_id: uuid.UUID, *, refresh_columns: bool, reserved: bool) -> None:
@@ -176,7 +216,10 @@ async def _run_validation(document_id: uuid.UUID, *, refresh_columns: bool = Fal
 
 def start_query_generation(document_id: uuid.UUID, *, overwrite: bool) -> None:
     """Gera de novo as buscas (pedido da pessoa), com o documento em `extracting_rules`."""
-    _start(_generate_queries(document_id, overwrite=overwrite, only_related=False))
+    _start(
+        _generate_queries(document_id, overwrite=overwrite, only_related=False),
+        owner=("document", document_id),
+    )
 
 
 async def _generate_queries(document_id: uuid.UUID, *, overwrite: bool, only_related: bool) -> None:
@@ -187,6 +230,7 @@ async def _generate_queries(document_id: uuid.UUID, *, overwrite: bool, only_rel
     try:
         if not await _wait_for_datasets(document_id):
             return
+        _queries_requested.discard(document_id)
         with log_step(logger, "generate_queries", document_id=str(document_id)) as info:
             async with SessionLocal() as db:
                 result = await rule_queries.generate_for_document(
@@ -205,7 +249,6 @@ async def _generate_queries(document_id: uuid.UUID, *, overwrite: bool, only_rel
     except Exception:
         logger.exception("generate_queries_failed", extra={"document_id": str(document_id)})
         message = "As regras foram encontradas, mas não foi possível gerar as buscas."
-    await _run_validation(document_id)
     await _set_status(document_id, "ready", message)
 
 
@@ -242,10 +285,14 @@ async def _set_status(document_id: uuid.UUID, status: str, message: str | None =
             .values(status=status, status_message=message)
         )
         await db.commit()
-    if status == "ready" and document_id in _validation_requested:
+    if status == "ready" and document_id in _queries_requested:
+        _queries_requested.discard(document_id)
+        start_query_generation(document_id, overwrite=True)
+    elif status == "ready" and document_id in _validation_requested:
         start_validation(document_id)
     elif status == "error":
         _validation_requested.discard(document_id)
+        _queries_requested.discard(document_id)
 
 
 async def process_document(
@@ -341,9 +388,13 @@ async def process_document(
 
         async def save_checkpoint(value: dict) -> None:
             async with SessionLocal() as db:
-                await db.execute(update(Document).where(Document.id == document_id).values(
-                    extraction_checkpoint=value,
-                ))
+                await db.execute(
+                    update(Document)
+                    .where(Document.id == document_id)
+                    .values(
+                        extraction_checkpoint=value,
+                    )
+                )
                 await db.commit()
 
         async def progress(done: int, total: int) -> None:
@@ -351,15 +402,13 @@ async def process_document(
                 document_id, "extracting_rules", f"Pacotes concluidos: {done} de {total}"
             )
 
+        if not await _wait_for_datasets(document_id):
+            return
         async with SessionLocal() as db:
             analysis_id = await db.scalar(
                 select(Document.analysis_id).where(Document.id == document_id)
             )
-            datasets = (
-                await rule_queries.analysis_datasets(db, analysis_id, include_processing=True)
-                if analysis_id
-                else []
-            )
+            datasets = await rule_queries.analysis_datasets(db, analysis_id) if analysis_id else []
         dataset_ids = {d.name: d.id for d in datasets}
 
         with log_step(logger, "extract_rules", document_id=str(document_id)) as info:
@@ -391,9 +440,8 @@ async def process_document(
             await db.commit()
 
         if datasets:
-            await _generate_queries(document_id, overwrite=False, only_related=True)
+            await _generate_queries(document_id, overwrite=False, only_related=False)
         else:
-            await _run_validation(document_id)
             await _set_status(document_id, "ready")
     except (PdfReadError, StorageError, ConversionError) as exc:
         await _set_status(document_id, "error", str(exc))
@@ -455,6 +503,9 @@ async def recover_interrupted() -> None:
         start_dataset_processing(dataset_id)
     for document_id, has_rules in documents:
         if has_rules:
-            _start(_generate_queries(document_id, overwrite=False, only_related=True))
+            _start(
+                _generate_queries(document_id, overwrite=False, only_related=False),
+                owner=("document", document_id),
+            )
         else:
             start_processing(document_id)

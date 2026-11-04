@@ -260,13 +260,15 @@ async def test_rules_become_queries_over_the_datasets(migrated_db, client, fake_
         )
     ).json()
     assert (await _wait_ready(client, doc["id"]))["status"] == "ready"
-    # Só a regra ligada a uma base foi para a IA gerar a busca.
-    assert fake_ai == [["Garantia acima de 50 mil"]]
+    # Todas as regras são consideradas, com os significados já interpretados.
+    assert fake_ai == [["Garantia acima de 50 mil", "Manter sigilo"]]
 
     garantia, sigilo = (await client.get(f"/api/v1/documents/{doc['id']}/rules")).json()
     assert garantia["dataset_ids"] == [dataset["id"]] and sigilo["query"] is None
     query = garantia["query"]
-    assert query["state"] == "ok" and query["origin"] == "ia" and query["match_count"] == 2
+    assert query["state"] == "pendente" and query["origin"] == "ia"
+    assert query["match_count"] is None and query["executed_at"] is None
+    assert query["sql"] and list(query["sql_parameters"].values()) == [50000]
     assert query["dataset_name"] == "contratos" and query["verdict"] is None
     assert query["query"]["conditions"][0]["value"] == 50000
 
@@ -292,7 +294,9 @@ async def test_rules_become_queries_over_the_datasets(migrated_db, client, fake_
     )
     assert resp.status_code == 200
     manual = resp.json()["query"]
-    assert manual["origin"] == "manual" and manual["match_count"] == 0
+    assert manual["origin"] == "manual" and manual["match_count"] is None
+    assert manual["state"] == "pendente"
+    assert (await client.get(f"/api/v1/rules/{garantia['id']}/records")).json()["total"] == 0
 
     # Regerar com a IA, mesmo sobrescrevendo, não mexe na busca manual.
     resp = await client.post(f"/api/v1/documents/{doc['id']}/queries", json={"overwrite": True})

@@ -93,6 +93,11 @@ def validation_ai(monkeypatch):
     monkeypatch.setattr(validation_llm, "plan_rules", plans)
     monkeypatch.setattr(llm, "extract_rules", extract)
     monkeypatch.setattr(llm, "ensure_configured", lambda: "test-key")
+
+    async def no_queries(rules, datasets):
+        return {r.ref: llm.GeneratedQuery(None, {}, "Sem consulta neste teste") for r in rules}
+
+    monkeypatch.setattr(llm, "generate_queries", no_queries)
     return calls
 
 
@@ -139,6 +144,9 @@ async def test_general_validation_covers_all_rules_and_all_matching_rows(
     ).json()
     await ready(client, f"/api/v1/documents/{doc['id']}")
     url = f"/api/v1/documents/{doc['id']}/rules"
+    assert validation_ai == []  # O fluxo normal prepara consultas, sem planos adicionais.
+    assert (await client.post(f"/api/v1/documents/{doc['id']}/validation")).status_code == 202
+    await ready(client, f"/api/v1/documents/{doc['id']}")
     rules = (await client.get(url)).json()
     assert validation_ai == [["Entrega", "Garantia", "Manter", "Resposta"]]
     deadline, guarantee, secrecy, business = rules
@@ -202,13 +210,15 @@ async def test_rule_without_datasets_is_explicitly_inconclusive(migrated_db, cli
     await register(client)
     doc = (await client.post("/api/v1/documents/text", json={"content": TEXT})).json()
     await ready(client, f"/api/v1/documents/{doc['id']}")
+    assert (await client.post(f"/api/v1/documents/{doc['id']}/validation")).status_code == 202
+    await ready(client, f"/api/v1/documents/{doc['id']}")
     rules = (await client.get(f"/api/v1/documents/{doc['id']}/rules")).json()
     assert all(r["validation"]["status"] == "inconclusiva" for r in rules)
     assert validation_ai == []
 
 
 @pytest.mark.db
-async def test_dataset_finishing_during_validation_queues_a_fresh_complete_run(
+async def test_dataset_finishing_queues_queries_and_legacy_validation_is_explicit(
     migrated_db, client, validation_ai, monkeypatch
 ):
     from app.services import ingest
@@ -230,19 +240,21 @@ async def test_dataset_finishing_during_validation_queues_a_fresh_complete_run(
             await release.wait()
         return await planner(rules, datasets, reference_date)
 
-    original_start = ingest.start_validation
+    original_start = ingest.request_query_generation
 
     def observe(document_id, **kwargs):
         queued.set()
         original_start(document_id, **kwargs)
 
     monkeypatch.setattr(validation_llm, "plan_rules", hold_first)
-    monkeypatch.setattr(ingest, "start_validation", observe)
+    monkeypatch.setattr(ingest, "request_query_generation", observe)
     doc = (
         await client.post(
             "/api/v1/documents/text", json={"analysis_id": analysis["id"], "content": TEXT}
         )
     ).json()
+    await ready(client, f"/api/v1/documents/{doc['id']}")
+    assert (await client.post(f"/api/v1/documents/{doc['id']}/validation")).status_code == 202
     try:
         await asyncio.wait_for(started.wait(), 5)
         second = (await client.post(url, files={"file": ("outra.csv", CSV, "text/csv")})).json()
@@ -250,12 +262,11 @@ async def test_dataset_finishing_during_validation_queues_a_fresh_complete_run(
         await asyncio.wait_for(queued.wait(), 5)
     finally:
         release.set()
-    for _ in range(200):
-        state = (await client.get(f"/api/v1/documents/{doc['id']}")).json()
-        if runs >= 2 and state["status"] == "ready":
-            break
-        await asyncio.sleep(0.05)
-    assert runs >= 2 and state["status"] == "ready"
+    await ready(client, f"/api/v1/documents/{doc['id']}")
+    assert runs == 1
+    assert (await client.post(f"/api/v1/documents/{doc['id']}/validation")).status_code == 202
+    await ready(client, f"/api/v1/documents/{doc['id']}")
+    assert runs == 2
     rules = (await client.get(f"/api/v1/documents/{doc['id']}/rules")).json()
     assert all(r["validation"]["status"] != "desatualizada" for r in rules)
     assert rules[0]["validation"]["status"] == "violacao"
@@ -295,6 +306,8 @@ async def test_semantic_change_during_evaluation_cannot_publish_an_old_approval(
             "/api/v1/documents/text", json={"analysis_id": analysis["id"], "content": TEXT}
         )
     ).json()
+    await ready(client, f"/api/v1/documents/{doc['id']}")
+    assert (await client.post(f"/api/v1/documents/{doc['id']}/validation")).status_code == 202
     await ready(client, f"/api/v1/documents/{doc['id']}")
     rules = (await client.get(f"/api/v1/documents/{doc['id']}/rules")).json()
     assert all(r["validation"]["status"] == "desatualizada" for r in rules)

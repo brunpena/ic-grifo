@@ -13,7 +13,7 @@ from tests.test_documents import _login, _wait_ready, make_pdf
 
 
 @pytest.mark.db
-async def test_schema_unlocks_document_while_meanings_run(migrated_db, client, monkeypatch):
+async def test_rule_extraction_waits_for_column_meanings(migrated_db, client, monkeypatch):
     await _login(client)
     analysis = (await client.post("/api/v1/analyses", json={})).json()
     interpreting, release, extracted = asyncio.Event(), asyncio.Event(), asyncio.Event()
@@ -25,6 +25,7 @@ async def test_schema_unlocks_document_while_meanings_run(migrated_db, client, m
 
     async def rules(text, on_progress=None, datasets=None, **kwargs):
         assert len(datasets) == 1 and datasets[0].columns[0]["name"] == "value"
+        assert datasets[0].columns[0]["semantic"]["confidence"] == "high"
         extracted.set()
         return []
 
@@ -51,13 +52,14 @@ async def test_schema_unlocks_document_while_meanings_run(migrated_db, client, m
         )
         assert response.status_code == 202
         doc_id = response.json()["id"]
-        await asyncio.wait_for(extracted.wait(), 3)
+        assert not extracted.is_set()
         current = (await client.get(f"/api/v1/documents/{doc_id}")).json()
-        assert current["status"] == "extracting_rules"
+        assert current["status"] in ("processing", "extracting_rules")
     finally:
         release.set()
     ready = await _wait_ready(client, doc_id)
     assert ready["status"] == "ready"
+    assert extracted.is_set()
 
 
 @pytest.mark.db

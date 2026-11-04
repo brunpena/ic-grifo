@@ -158,6 +158,23 @@ export interface paths {
         patch: operations["update_analysis_api_v1_analyses__analysis_id__patch"];
         trace?: never;
     };
+    "/api/v1/analyses/{analysis_id}/close": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Encerra o uso da análise e remove seus caches DuckDB locais */
+        post: operations["close_analysis_api_v1_analyses__analysis_id__close_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/analyses/{analysis_id}/datasets": {
         parameters: {
             query?: never;
@@ -374,7 +391,7 @@ export interface paths {
         };
         get?: never;
         /**
-         * Define (ou corrige) a busca da regra e roda de novo
+         * Define (ou corrige) e prepara a SQL da regra, sem executar
          * @description A busca é validada contra o schema da base antes de ser gravada; uma busca inválida volta com 422 (`invalid_query`) e a mensagem do problema, sem alterar a atual.
          */
         put: operations["set_rule_query_api_v1_rules__rule_id__query_put"];
@@ -941,6 +958,7 @@ export interface components {
             offset: number;
             /** Rows */
             rows: components["schemas"]["RecordRow"][];
+            query?: components["schemas"]["RuleQueryOut"] | null;
         };
         /** RegisterIn */
         RegisterIn: {
@@ -1027,6 +1045,12 @@ export interface components {
             /** Dataset Name */
             dataset_name: string | null;
             query: components["schemas"]["StructuredQuery-Output"];
+            /** Sql */
+            sql?: string | null;
+            /** Sql Parameters */
+            sql_parameters?: {
+                [key: string]: string | number | boolean;
+            };
             /**
              * Origin
              * @enum {string}
@@ -1649,6 +1673,44 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["AnalysisDetailOut"];
                 };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    close_analysis_api_v1_analyses__analysis_id__close_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                analysis_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Not Found */
             404: {
