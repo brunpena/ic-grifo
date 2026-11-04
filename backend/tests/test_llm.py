@@ -15,6 +15,9 @@ def reset_key_pool(monkeypatch):
     monkeypatch.setattr(get_settings(), "gemini_api_key_3", SecretStr(""))
     monkeypatch.setattr(llm, "_key_cooldowns", {})
     monkeypatch.setattr(llm, "_key_cursor", 0)
+    llm._limiters.clear()
+    yield
+    llm._limiters.clear()
 
 
 @pytest.fixture
@@ -205,7 +208,9 @@ async def test_third_key_handles_two_exhausted_keys(gemini, monkeypatch, stream)
         responses.append(httpx.Response(200, json=_answer("ok")))
         assert await llm._generate({}) == _answer("ok")
     assert [r.headers["x-goog-api-key"] for r in requests] == [
-        "chave-teste", "segunda-chave", "terceira-chave",
+        "chave-teste",
+        "segunda-chave",
+        "terceira-chave",
     ]
     assert llm._select_key() == "terceira-chave"
 
@@ -214,8 +219,68 @@ def test_three_keys_rotate(gemini, monkeypatch):
     monkeypatch.setattr(get_settings(), "gemini_api_key_2", SecretStr("segunda-chave"))
     monkeypatch.setattr(get_settings(), "gemini_api_key_3", SecretStr("terceira-chave"))
     assert [llm._select_key() for _ in range(4)] == [
-        "chave-teste", "segunda-chave", "terceira-chave", "chave-teste",
+        "chave-teste",
+        "segunda-chave",
+        "terceira-chave",
+        "chave-teste",
     ]
+
+
+@pytest.mark.parametrize("stream", [False, True])
+async def test_third_credential_overload_is_not_reported_as_daily_quota(
+    gemini, monkeypatch, stream
+):
+    responses, requests = gemini
+    monkeypatch.setattr(get_settings(), "gemini_api_key_2", SecretStr("second"))
+    monkeypatch.setattr(get_settings(), "gemini_api_key_3", SecretStr("third"))
+    responses.extend(
+        [
+            httpx.Response(429, json={"quotaId": "RequestsPerDay"}),
+            httpx.Response(429, json={"quotaId": "RequestsPerDay"}),
+            httpx.Response(503, json={"error": {"status": "UNAVAILABLE"}}),
+        ]
+    )
+    if stream:
+        responses.append(httpx.Response(200, text=f"data: {json.dumps(_answer('ok'))}\n\n"))
+        assert "".join([part async for part in llm.stream_chat("context", [])]) == "ok"
+    else:
+        responses.append(httpx.Response(200, json=_answer("ok")))
+        assert await llm._generate({}) == _answer("ok")
+    assert [r.headers["x-goog-api-key"] for r in requests] == [
+        "chave-teste",
+        "second",
+        "third",
+        "third",
+    ]
+
+
+def test_daily_cooldown_uses_provider_release_time_and_is_scoped_to_model(monkeypatch):
+    settings = get_settings()
+    monkeypatch.setattr(settings, "gemini_api_key", SecretStr("first"))
+    monkeypatch.setattr(settings, "gemini_api_key_2", SecretStr("second"))
+    monkeypatch.setattr(settings, "gemini_model", "model-a")
+    now = [100.0]
+    monkeypatch.setattr(llm.time, "monotonic", lambda: now[0])
+    body = json.dumps({"quotaId": "RequestsPerDay", "retryDelay": "19307s"})
+    assert llm._quota_failover("first", 429, body, 0)
+    assert not llm._quota_failover("second", 429, body, 0)
+    with pytest.raises(llm.LlmApiError, match="cota diária"):
+        llm._select_key()
+    # Alterar o modelo não herda o bloqueio do modelo anterior.
+    monkeypatch.setattr(settings, "gemini_model", "model-b")
+    assert llm._select_key() in {"first", "second"}
+    monkeypatch.setattr(settings, "gemini_model", "model-a")
+    now[0] = 100.0 + 19309
+    assert llm._select_key() in {"first", "second"}
+
+
+def test_quota_logs_identify_slots_without_exposing_credentials(monkeypatch, caplog):
+    monkeypatch.setattr(get_settings(), "gemini_api_key", SecretStr("private-credential-one"))
+    monkeypatch.setattr(get_settings(), "gemini_api_key_2", SecretStr("private-credential-two"))
+    llm._quota_failover("private-credential-one", 429, '{"quotaId":"RequestsPerDay"}', 0)
+    record = next(r for r in caplog.records if r.message == "gemini_quota_limited")
+    assert record.credential_slot == 1 and record.configured_credentials == 2
+    assert "private-credential" not in str(record.__dict__)
 
 
 async def test_resume_only_sends_missing_packages(monkeypatch):
@@ -232,9 +297,18 @@ async def test_resume_only_sends_missing_packages(monkeypatch):
         if fail and ids.start > 0:
             raise llm.LlmApiError("overloaded")
         # An empty successful package must also be remembered.
-        return [] if ids.start == 0 else [llm.ExtractedRule(
-            "prazo", sentences[ids.start].start, sentences[ids.start].end, "Prazo",
-        )]
+        return (
+            []
+            if ids.start == 0
+            else [
+                llm.ExtractedRule(
+                    "prazo",
+                    sentences[ids.start].start,
+                    sentences[ids.start].end,
+                    "Prazo",
+                )
+            ]
+        )
 
     async def save(value):
         saved.clear()

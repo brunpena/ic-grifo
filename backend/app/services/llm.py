@@ -108,7 +108,7 @@ class LlmApiError(Exception):
     """Falha da API do Gemini, com mensagem em português para a pessoa."""
 
 
-_key_cooldowns: dict[str, tuple[float, str]] = {}
+_key_cooldowns: dict[tuple[str, str], tuple[float, str]] = {}
 _key_cursor = 0
 
 
@@ -133,24 +133,45 @@ def _select_key() -> str:
     global _key_cursor
     ensure_configured()
     keys = _configured_keys()
+    model = get_settings().gemini_model
     for offset in range(len(keys)):
         index = (_key_cursor + offset) % len(keys)
         key = keys[index]
-        if _key_cooldowns.get(key, (0, ""))[0] <= time.monotonic():
+        if _key_cooldowns.get((model, key), (0, ""))[0] <= time.monotonic():
             _key_cursor = (index + 1) % len(keys)
             return key
-    body = min((_key_cooldowns[key] for key in keys), key=lambda item: item[0])[1]
+    body = min((_key_cooldowns[(model, key)] for key in keys), key=lambda item: item[0])[1]
     raise LlmApiError(friendly_error(429, body))
 
 
 def _quota_failover(key: str, status: int, body: str, attempt: int) -> bool:
-    if status != 429 or len(_configured_keys()) < 2:
+    keys = _configured_keys()
+    if status != 429 or len(keys) < 2:
         return False
-    delay = 24 * 60 * 60 if _daily_quota(body) else _retry_delay(attempt, body)
-    _key_cooldowns[key] = (time.monotonic() + delay, body)
+    model = get_settings().gemini_model
+    daily = _daily_quota(body)
+    # RetryInfo de cota diária pode indicar horas até o reset. Não bloquear 24h
+    # adicionais quando o Google informa uma liberação anterior.
+    retry_after = _provider_retry_delay(body)
+    delay = (
+        ((retry_after + 1) if retry_after is not None else 24 * 60 * 60)
+        if daily
+        else (_retry_delay(attempt, body))
+    )
+    _key_cooldowns[(model, key)] = (time.monotonic() + delay, body)
+    logger.warning(
+        "gemini_quota_limited",
+        extra={
+            "model": model,
+            "credential_slot": keys.index(key) + 1,
+            "configured_credentials": len(keys),
+            "quota_period": "day" if daily else "temporary",
+            "cooldown_seconds": round(delay, 1),
+        },
+    )
     return any(
-        candidate != key and _key_cooldowns.get(candidate, (0, ""))[0] <= time.monotonic()
-        for candidate in _configured_keys()
+        candidate != key and _key_cooldowns.get((model, candidate), (0, ""))[0] <= time.monotonic()
+        for candidate in keys
     )
 
 
@@ -161,8 +182,9 @@ def friendly_error(status: int, body: str) -> str:
         return "A chave do Gemini é inválida. Confira GEMINI_API_KEY no .env do back-end."
     if status == 429 and _daily_quota(body):
         return (
-            "A cota diária do Gemini para este modelo acabou. Tente amanhã, troque "
-            "GEMINI_MODEL no .env (cada modelo tem cota própria) ou ative o faturamento."
+            "O Google informou limite de cota diária para este modelo nas credenciais "
+            "disponíveis. Chaves do mesmo projeto compartilham a cota. Confira os limites "
+            "do projeto no Google AI Studio e aguarde a liberação informada pelo provedor."
         )
     if status == 429:
         return (
@@ -183,11 +205,17 @@ def _daily_quota(body: str) -> bool:
     return "PerDay" in body
 
 
+def _provider_retry_delay(body: str) -> float | None:
+    """RetryInfo em segundos, sem reduzir o prazo diário ao backoff de 60 segundos."""
+    match = re.search(r'"retryDelay":\s*"(\d+(?:\.\d+)?)s"', body)
+    return float(match.group(1)) if match else None
+
+
 def _retry_delay(attempt: int, body: str) -> float:
     # O 429 do Gemini costuma dizer quanto esperar ("retryDelay": "37s").
-    match = re.search(r'"retryDelay":\s*"(\d+(?:\.\d+)?)s"', body)
-    if match:
-        return min(float(match.group(1)) + 1, 60)
+    delay = _provider_retry_delay(body)
+    if delay is not None:
+        return min(delay + 1, 60)
     # Com jitter, para os blocos em paralelo não voltarem todos no mesmo instante.
     return min(2 ** (attempt + 1), 20) * random.uniform(0.5, 1.0)
 
