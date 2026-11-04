@@ -2,6 +2,11 @@
 
 [Índice](README.md) · [Arquitetura](arquitetura.md) · [Fluxogramas](fluxos.md)
 
+O fluxo padrão prepara SQL a partir dos significados das colunas e das regras, sem
+executar pesquisas na geração. Selecionar uma regra executa sua consulta no DuckDB
+em cache e preenche a tabela. A verificação de conformidade descrita neste guia é
+opcional, solicitada explicitamente pela API de validação geral.
+
 ## Três operações diferentes
 
 | Operação | Exemplo | Onde fica |
@@ -14,8 +19,8 @@ A revisão pode estar aprovada e os registros apresentarem violações. Uma busc
 executar sem erro e retornar linhas que não cumprem a obrigação.
 
 Uma regra criada manualmente começa sem resultado de conformidade. Mudanças no tipo
-ou resumo invalidam o resultado anterior. Use “Validar todas as regras” para verificar
-essas regras no próximo processamento. Aprovar a revisão sem mudar o conteúdo não
+ou resumo invalidam o resultado anterior. Use a API de validação geral para verificar
+essas regras explicitamente. Aprovar a revisão sem mudar o conteúdo não
 sobrescreve uma violação já observada.
 
 ## Exemplo do começo ao fim
@@ -187,7 +192,7 @@ análise quando o escopo exclui registros.
 | `today` | Data de referência da avaliação, apenas quando o plano usa essa operação. |
 
 Os operadores de comparação são os definidos em
-[schemas/queries.py](../backend/app/schemas/queries.py). Não há SQL, `eval` ou
+[schemas/queries.py](../backend/app/schemas/queries.py). Não há SQL livre, `eval` ou
 expressões livres do modelo. Comparações de uma expressão consigo mesma e cálculos
 que usam a mesma coluna como as duas fontes são recusados.
 
@@ -231,7 +236,8 @@ das colunas. Atualizar a interpretação de uma coluna também pode invalidar re
 mesmo que os bytes do CSV não tenham mudado.
 
 As evidências de todas as linhas não são gravadas como novas linhas SQL. Ao paginar,
-o serviço reproduz o plano sobre a base carregada e devolve a página solicitada.
+o serviço executa o plano como SQL parametrizado no DuckDB local e devolve a página
+solicitada, sem carregar a base inteira no Python.
 O filtro por resultado é aplicado antes da paginação.
 
 Se o CSV foi cortado por limite do Storage, a avaliação cobre apenas a parte guardada

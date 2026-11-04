@@ -79,19 +79,23 @@ uma tabela de associação para cada uma delas.
 | --- | --- |
 | PostgreSQL | Usuários, hashes de sessão, análises, metadados de bases, texto dos documentos, páginas, palavras, regras, buscas, validações e mensagens. |
 | Storage | PDFs e CSVs; os nomes são derivados dos UUIDs. |
-| Memória da API | Tarefas em execução e cache de bases carregadas e tipadas. |
+| DuckDB local | Cache persistente dos registros CSV tipados, consultado dentro do processo Python. |
+| Memória da API | Tarefas, referências aos caches locais e contagens de consultas. |
 | Cache do navegador | Dados consultados pela interface, arquivos PDF temporariamente reutilizados e estados de requisição. |
 | localStorage | Preferências de aparência e de disposição dos painéis. |
 
-Os registros completos do CSV não viram uma tabela SQL. O motor lê o arquivo e filtra
-as linhas em Python. `Dataset.columns` guarda tipos, exemplos e significados; não é
-uma cópia de todas as linhas. O cache do servidor não substitui o Storage.
+Os registros do CSV são importados uma vez para uma tabela no DuckDB embarcado.
+Filtros e planos de conformidade viram SQL parametrizado executado nesse cache local.
+`Dataset.columns` guarda tipos, exemplos e significados. O cache persistente não
+substitui o Storage, que permite reconstruí-lo se necessário.
 
 ## Quatro responsabilidades relacionadas à IA
 
 1. `llm.extract_rules`: recebe texto dividido em frases e encontra regras.
-2. `llm.generate_queries`: propõe filtros para localizar registros.
-3. `validation_llm.interpret_columns` e `plan_rules`: interpretam colunas e propõem verificações.
+2. `llm.generate_queries`: usa os significados das colunas para propor filtros;
+   o backend salva a SQL e a executa somente ao selecionar a regra.
+3. `validation_llm.interpret_columns` interpreta as colunas antes das regras;
+   `plan_rules` é reservado à validação geral explicitamente solicitada pela API.
 4. `llm.stream_chat`: responde sobre o documento e suas regras.
 
 O motor de conformidade não pede à IA uma decisão para cada linha. Ele valida o plano
@@ -102,8 +106,10 @@ dependendo da IA e da revisão humana.
 
 - As rotas verificam entrada, sessão e propriedade. Os serviços contêm o processamento.
 - Pydantic define os contratos da API e dos planos; SQLAlchemy define a persistência.
-- `ingest.py` coordena as etapas. `compliance.py` calcula resultados sem acessar o banco.
-- `query_engine.py` valida filtros e carrega bases. Não executa SQL ou código da IA.
+- `ingest.py` coordena as etapas. `compliance.py` usa SQL para contagens e paginação,
+  explicando apenas as evidências da página em Python.
+- `query_engine.py` valida filtros e abre caches locais. `duckdb_sql.py` compila a
+  linguagem restrita de regras para SQL parametrizado; não executa SQL livre da IA.
 - Os conversores entregam sempre PDF, texto e posições de palavras, independentemente da origem.
 - A autenticação é própria: token aleatório em cookie, hash no banco e senha com scrypt.
   A opção de Supabase para banco e arquivos não torna o login um fluxo de Supabase Auth.

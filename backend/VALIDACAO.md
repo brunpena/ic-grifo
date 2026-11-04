@@ -1,5 +1,11 @@
 # Verificação das regras nas bases
 
+O fluxo padrão interpreta as colunas, extrai as regras e prepara consultas SQL.
+A seleção de uma regra executa a consulta no DuckDB em cache e preenche a tabela,
+sem chamar a IA. Não há validação geral automática na ingestão ou ao adicionar bases.
+A verificação de conformidade descrita abaixo continua disponível por pedido explícito
+à API `/documents/{id}/validation`.
+
 Para estudar a implementação com diagramas e exemplos completos, leia o [guia de validação](../docs/validacao.md), os [fluxogramas](../docs/fluxos.md) e o [mapa do backend](../docs/backend.md).
 
 Cada análise reúne documentos normativos e bases CSV. O processamento agora interpreta
@@ -10,10 +16,13 @@ não receberam uma associação com bases durante a extração.
 
 1. No envio do CSV, o parser detecta os tipos físicos. O Gemini acrescenta significado,
    evento (ex.: assinatura ou entrega), unidade, confiança e justificativa por coluna.
-   Os metadados ficam no JSON `datasets.columns`; as linhas continuam no storage.
+   Os metadados ficam no JSON `datasets.columns`; os registros tipados são importados
+   para um arquivo DuckDB local persistente. O CSV original continua no storage.
 2. A IA recebe as regras e os metadados das bases e propõe escopo e critérios de
    cumprimento. Os planos só usam as operações permitidas em `schemas/validation.py`.
-3. O motor Python confere as linhas aplicáveis, sem executar código ou SQL gerados.
+3. O backend valida o plano e o compila para SQL parametrizado no DuckDB embarcado.
+   Filtros, contagens e paginação são executados no banco; o Python explica somente
+   os registros da página. Nenhum SQL livre enviado pela IA é executado.
    As operações incluem valores, preenchimento, categorias, comparação entre colunas,
    diferenças de datas, datas limite em dias/meses/anos e percentuais.
 4. O resultado de cada regra fica em `rules.validation`, separado do status da revisão
@@ -38,8 +47,8 @@ operações não suportadas e ausência de evidências são explicitados no resu
 
 ## Atualização e limites
 
-A extração de um documento verifica as regras automaticamente. Uma base nova que termina
-de ser lida também inicia nova verificação dos documentos prontos da análise. Mudanças
+A extração prepara as consultas das regras. Uma base nova que termina de ser lida
+solicita nova preparação das consultas dos documentos da análise. Mudanças
 nas bases ou na interpretação das colunas invalidam resultados anteriores. Alterações
 no tipo/resumo de uma regra também exigem nova verificação. Reinícios deixam avaliações
 interrompidas pendentes para nova execução.
@@ -48,7 +57,7 @@ Prazos em dias úteis dependem de evidência adequada de dias úteis ou de calen
 localidade; nunca são calculados como dias corridos. Cruzamentos entre bases e critérios
 qualitativos sem evidência observável são informados como inconclusivos. A interpretação
 normativa continua sujeita à revisão humana. A IA recebe metadados e exemplos, não o CSV
-inteiro; o motor percorre todas as linhas do arquivo guardado.
+inteiro; o banco consulta todos os registros aplicáveis no cache persistente.
 
 O limite de armazenamento já existente pode cortar CSVs. O tamanho original passa a ser
 registrado e a interface informa bases parciais; elas impedem uma conclusão geral de

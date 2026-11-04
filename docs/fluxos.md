@@ -52,7 +52,7 @@ flowchart TD
     H --> K["CSV inválido: marca error"]
     I --> L["Falha da IA: mantém leitura com significado não confirmado"]
     L --> J
-    J --> M["Invalida resultados e solicita validação dos documentos"]
+    J --> M["Invalida resultados e solicita preparação das consultas"]
     F --> N["useAnalysis consulta a cada 1,5 s enquanto houver base em processing"]
 ```
 
@@ -64,9 +64,9 @@ O caminho do backend é `upload_dataset` →
 `storage.save_file` → `ingest.start_dataset_processing` →
 `process_dataset` → `rule_validation.interpret`.
 
-O processamento reaproveita os bytes do upload e as linhas lidas ficam em cache com
-limite de memória. O schema é publicado antes da interpretação por IA: isso libera
-o envio e a extração do documento, mas a validação aguarda as bases terminarem.
+O processamento reaproveita os bytes do upload e importa as linhas no DuckDB local
+persistente. O schema é publicado antes da interpretação por IA para liberar o envio
+do documento; a extração de regras aguarda os significados das colunas.
 
 O CSV pode ser cortado na última quebra de linha que cabe no limite do armazenamento.
 O tamanho original é preservado para identificar essa cobertura parcial. A presença
@@ -92,15 +92,15 @@ flowchart TD
     T --> E["Marca extracting_rules"]
     E --> L["Gemini extrai regras de blocos com frases numeradas"]
     L --> U["Deduplica e grava Rule"]
-    U --> Q["Com bases prontas: gera buscas relacionadas"]
-    Q --> V["Verifica todas as regras nas bases"]
-    U --> N["Sem bases: registra resultados inconclusivos"]
+    U --> Q["Com significados prontos: gera consultas para todas as regras"]
+    Q --> V["Valida e salva SQL e parâmetros, sem executar"]
+    U --> N["Sem bases: mantém regras disponíveis"]
     V --> OK["Document ready"]
     N --> OK
     T --> ER["Falha de leitura ou extração: Document error"]
 ```
 
-O original é salvo antes de devolver 202; conversão, extração e validação acontecem
+O original é salvo antes de devolver 202; conversão, extração e preparação acontecem
 em segundo plano. Um PDF sem texto recebe status `error`: o projeto não executa OCR.
 O PDF do visualizador fica disponível depois da conversão, quando há `page_count`.
 
@@ -142,9 +142,12 @@ um retângulo visual como prova da existência de uma regra.
 flowchart LR
     R["Regra"] --> Q["Filtro de busca StructuredQuery"]
     Q --> CQ["compile_query"]
-    CQ --> LIN["Índices de linhas relacionadas"]
+    CQ --> SQL["SQL parametrizada salva, sem executar"]
+    SQL --> CLICK["Usuário seleciona a regra"]
+    CLICK --> LIN["Consulta DuckDB em cache e busca uma página"]
     LIN --> BUSCA["RuleQuery: contagem e registros encontrados"]
-    R --> PL["ValidationPlan: escopo e critérios"]
+    R --> EX["Pedido explícito de validação geral via API"]
+    EX --> PL["ValidationPlan: escopo e critérios"]
     PL --> CV["compile_validation"]
     CV --> EV["evaluate_rows"]
     EV --> RES["Conforme, violação ou inconclusiva por registro"]
@@ -156,9 +159,9 @@ A busca responde **quais registros estão relacionados**. A validação responde
 **se esses registros cumprem a regra**. Uma busca que executou com `state = ok`
 não comprova conformidade.
 
-A geração automática inicial de buscas considera as regras ligadas a bases na
-extração. O comando manual de gerar buscas pode considerar as demais regras não
-rejeitadas. Buscas manuais são preservadas.
+A geração considera todas as regras não rejeitadas e os significados das colunas.
+As pesquisas só são executadas ao selecionar a regra ou paginar, sem chamar a IA.
+Buscas manuais são preservadas.
 
 A validação considera todas as regras extraídas; regras rejeitadas são registradas
 como ignoradas. Regras sem dados verificáveis recebem um resultado explicativo.

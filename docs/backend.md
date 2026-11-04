@@ -62,9 +62,12 @@ Use este mapa para localizar responsabilidades sem começar pelos arquivos gerad
 | [app/services/highlights.py](<../backend/app/services/highlights.py>) | rule_boxes transforma intervalos de texto em retângulos normalizados; page_range localiza o texto da página. |
 | [app/services/llm.py](<../backend/app/services/llm.py>) | Transporte Gemini REST, retries e reforço de requisição lenta; extração em blocos, geração de buscas e chat por streaming. |
 | [app/services/validation_llm.py](<../backend/app/services/validation_llm.py>) | interpret_columns propõe significados sem mudar tipos físicos; plan_rules propõe e valida planos de conformidade por regra e lote. |
-| [app/services/query_engine.py](<../backend/app/services/query_engine.py>) | Compila filtros seguros, normaliza valores, carrega linhas tipadas e executa seleção. Mantém cache de quatro bases. |
+| [app/services/query_engine.py](<../backend/app/services/query_engine.py>) | Valida filtros, normaliza valores e executa SQL no cache persistente. Carrega somente páginas e mantém referências a quatro bases. |
+| [app/services/duckdb_cache.py](<../backend/app/services/duckdb_cache.py>) | Classe CsvDuckDBCache: sincronização CSV, importação transacional, buscas parametrizadas e lock entre processos. |
+| [app/services/duckdb_sql.py](<../backend/app/services/duckdb_sql.py>) | Compila filtros e planos restritos em SQL parametrizado para o DuckDB. |
+| [app/services/text_normalization.py](<../backend/app/services/text_normalization.py>) | Normalização compartilhada de caixa, acentos e espaços nos filtros textuais. |
 | [app/services/rule_queries.py](<../backend/app/services/rule_queries.py>) | Gera e executa buscas, grava contagens/índices e preserva buscas manuais. analysis_datasets retorna apenas bases prontas. |
-| [app/services/compliance.py](<../backend/app/services/compliance.py>) | Motor sem banco: compile_check/compile_validation validam critérios; evaluate_rows calcula evidências; summarize agrega a regra. |
+| [app/services/compliance.py](<../backend/app/services/compliance.py>) | Valida critérios, consulta contagens e páginas no DuckDB, explica evidências e agrega os resultados da regra. |
 | [app/services/rule_validation.py](<../backend/app/services/rule_validation.py>) | Coordena significados, planos e resultados. validate_document avalia todas as regras; source_signature confere fontes; records reproduz evidências. |
 
 ## Conversores
