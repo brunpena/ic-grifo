@@ -27,6 +27,8 @@ os.environ["DUCKDB_CACHE_DIR"] = tempfile.mkdtemp(prefix="icgrifo-test-duckdb-")
 os.environ["GEMINI_API_KEY"] = ""
 os.environ["GEMINI_API_KEY_2"] = ""
 os.environ["GEMINI_API_KEY_3"] = ""
+# O modo de demonstração do .env não pode trocar as respostas que os testes simulam.
+os.environ["LLM_MOCK"] = "false"
 os.environ["CORS_ORIGINS"] = "http://localhost:3000,https://front.exemplo.com"
 
 import httpx  # noqa: E402

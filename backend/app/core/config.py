@@ -75,6 +75,9 @@ class Settings(BaseSettings):
     # (ver docs/v1.1.md). Os blocos terminam sempre em fim de frase.
     llm_chunk_chars: int = 12000
     llm_chunk_overlap: int = 400
+    # Demonstração: respostas prontas da IA (regras, buscas e validação) sem chamar o
+    # Gemini. Ver app/services/llm_mock.py.
+    llm_mock: bool = False
 
     # Embeddings
     embedding_provider: Literal["local", "api"] = "local"

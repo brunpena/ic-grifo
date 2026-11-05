@@ -124,6 +124,8 @@ def _configured_keys() -> list[str]:
 
 def ensure_configured() -> str:
     keys = _configured_keys()
+    if not keys and getattr(get_settings(), "llm_mock", False):
+        return "mock"
     if not keys:
         raise LlmUnavailableError("Configure GEMINI_API_KEY no .env do back-end para usar a IA.")
     return keys[0]
@@ -579,6 +581,10 @@ async def extract_rules(
     on_checkpoint: Callable[[dict], Awaitable[None]] | None = None,
 ) -> list[ExtractedRule]:
     """Extrai regras de todos os blocos, em paralelo (até LLM_MAX_CONCURRENCY ao mesmo tempo)."""
+    if getattr(get_settings(), "llm_mock", False):
+        from app.services import llm_mock
+
+        return await llm_mock.extract_rules(text, on_progress, datasets)
     ensure_configured()
     settings = get_settings()
     sentences = split_sentences(text)
@@ -818,6 +824,10 @@ async def generate_queries(
     rules: list[RulePrompt], datasets: list[DatasetPrompt]
 ) -> dict[int, GeneratedQuery]:
     """Buscas para todas as regras, em lotes paralelos (até LLM_MAX_CONCURRENCY)."""
+    if getattr(get_settings(), "llm_mock", False):
+        from app.services import llm_mock
+
+        return await llm_mock.generate_queries(rules, datasets)
     ensure_configured()
     semaphore = asyncio.Semaphore(get_settings().llm_max_concurrency)
     batches = [rules[i : i + QUERY_BATCH] for i in range(0, len(rules), QUERY_BATCH)]
@@ -862,6 +872,12 @@ def document_context(title: str, pages: list[tuple[int, str]], rules: list[tuple
 
 async def stream_chat(context: str, history: list[dict]) -> AsyncIterator[str]:
     """Gera a resposta em pedaços de texto (streaming por SSE da API do Gemini)."""
+    if getattr(get_settings(), "llm_mock", False) and not _configured_keys():
+        yield (
+            "No modo de demonstração as regras e buscas já estão prontas na tabela. "
+            "A conversa com o assistente precisa de uma chave do Gemini configurada."
+        )
+        return
     ensure_configured()
     payload = {
         "systemInstruction": {"parts": [{"text": f"{CHAT_SYSTEM}\n\n{context}"}]},

@@ -109,6 +109,10 @@ async def _json(system: str, data: dict) -> dict:
 
 async def interpret_columns(name: str, columns: list[dict]) -> list[dict]:
     """Preserva nomes/tipos inferidos pelo parser e acrescenta a interpretação semântica."""
+    if getattr(get_settings(), "llm_mock", False):
+        from app.services import llm_mock
+
+        return await llm_mock.interpret_columns(name, columns)
     llm.ensure_configured()
     context = [{"name": c["name"], "type": c["type"]} for c in columns]
 
@@ -176,6 +180,10 @@ async def plan_rules(
 ) -> dict[int, ValidationPlan]:
     if not rules:
         return {}
+    if getattr(get_settings(), "llm_mock", False):
+        from app.services import llm_mock
+
+        return await llm_mock.plan_rules(rules, datasets, reference_date)
     llm.ensure_configured()
     semaphore = asyncio.Semaphore(get_settings().llm_max_concurrency)
 

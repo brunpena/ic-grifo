@@ -47,6 +47,11 @@ async def interpret(name: str, columns: list[dict]) -> tuple[list[dict], str | N
 
 async def ensure_meanings(db: AsyncSession, datasets: list[Dataset], *, refresh: bool) -> None:
     pending = [d for d in datasets if refresh or any(not c.get("semantic") for c in d.columns)]
+    if getattr(get_settings(), "llm_mock", False):
+        from app.services import llm_mock
+
+        # Interpretações antigas (da IA real ou com falha) dão lugar às do mock.
+        pending = [d for d in datasets if refresh or llm_mock.needs_meanings(d.columns)]
     # Release the read transaction before waiting on the remote model.
     await db.commit()
     semaphore = asyncio.Semaphore(max(1, get_settings().llm_max_concurrency))
