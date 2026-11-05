@@ -6,10 +6,11 @@ import { type ReactNode, useEffect, useState } from "react";
 import { BrandLogo } from "@/components/brand-logo";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
-import { Spinner } from "@/components/ui/spinner";
+import { Skeleton } from "@/components/ui/skeleton";
 import { errorMessage } from "@/lib/api";
 import { useCurrentUser } from "@/lib/auth";
 import { DESKTOP_QUERY, useMediaQuery } from "@/lib/use-media-query";
+import { cn } from "@/lib/utils";
 import { AppHeader } from "./app-header";
 import { AppSidebar } from "./app-sidebar";
 
@@ -62,15 +63,7 @@ export function AppShell({ children }: { children: ReactNode }) {
     );
   }
 
-  if (!user) {
-    return (
-      <div className="flex min-h-dvh flex-1 flex-col items-center justify-center gap-4" aria-busy="true">
-        <BrandLogo size={48} />
-        <Spinner className="text-accent" />
-        <span className="sr-only">Carregando</span>
-      </div>
-    );
-  }
+  if (!user) return <ShellSkeleton collapsed={collapsed} />;
 
   const toggleSidebar = () => {
     if (isDesktop) {
@@ -105,6 +98,49 @@ export function AppShell({ children }: { children: ReactNode }) {
       <div className="flex min-w-0 flex-1 flex-col">
         <AppHeader sidebarOpen={isDesktop ? !collapsed : mobileOpen} onToggleSidebar={toggleSidebar} />
         <main className="relative min-h-0 flex-1 overflow-hidden">{children}</main>
+      </div>
+    </div>
+  );
+}
+
+/** Mesma estrutura da tela logada (menu, cabeçalho e conteúdo) enquanto a sessão é conferida. */
+function ShellSkeleton({ collapsed }: { collapsed: boolean }) {
+  return (
+    <div role="status" aria-busy className="flex h-dvh overflow-hidden">
+      <span className="sr-only">Carregando</span>
+      <aside
+        aria-hidden
+        className={cn(
+          "flex h-full shrink-0 flex-col gap-2 border-r border-border bg-surface px-3 max-lg:hidden dark:bg-brand-navy",
+          collapsed ? "w-[60px] items-center" : "w-60",
+        )}
+      >
+        <div className="flex h-14 items-center gap-2.5">
+          <BrandLogo size={28} />
+          {!collapsed && <Skeleton className="h-3 w-24" />}
+        </div>
+        {[1, 2, 3].map((n) => (
+          <Skeleton key={n} className={cn("h-9", collapsed ? "w-9" : "w-full")} />
+        ))}
+        <div className="mt-auto flex items-center gap-2.5 py-3">
+          <Skeleton className="size-8 shrink-0 rounded-full" />
+          {!collapsed && <Skeleton className="h-3 flex-1" />}
+        </div>
+      </aside>
+      <div aria-hidden className="flex min-w-0 flex-1 flex-col">
+        <div className="flex h-14 shrink-0 items-center gap-3 bg-surface px-3 dark:bg-brand-navy">
+          <Skeleton className="size-8" />
+          <Skeleton className="h-3 w-40" />
+          <Skeleton className="ml-auto size-8 rounded-full" />
+        </div>
+        <div className="flex flex-1 items-start justify-center overflow-hidden px-4 py-10">
+          <div className="flex w-full max-w-2xl flex-col gap-6">
+            <Skeleton className="mx-auto h-7 w-2/3" />
+            <Skeleton className="mx-auto h-3 w-1/2" />
+            <Skeleton className="h-36 w-full rounded-xl" />
+            <Skeleton className="h-24 w-full rounded-xl" />
+          </div>
+        </div>
       </div>
     </div>
   );

@@ -4,6 +4,7 @@ import { AlertCircle, Database, FileSpreadsheet, Trash2, X } from "lucide-react"
 import { useRef, useState } from "react";
 import { IconButton } from "@/components/ui/icon-button";
 import { ProgressBar } from "@/components/ui/progress-bar";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
 import { useToast } from "@/components/ui/toast";
 import { type Dataset, isCsvFile, useDeleteDataset, useUploadDataset } from "@/lib/analyses";
@@ -20,6 +21,9 @@ type DatasetUploaderProps = {
 };
 
 let nextUpload = 0;
+
+/** Colunas que ainda vão aparecer enquanto o servidor lê o cabeçalho e os tipos. */
+const COLUMN_PLACEHOLDERS = ["w-16", "w-24", "w-12", "w-20", "w-28", "w-14"];
 
 const plural = (n: number, one: string, many: string) => `${n.toLocaleString("pt-BR")} ${n === 1 ? one : many}`;
 
@@ -189,6 +193,11 @@ export function DatasetUploader({ datasets, ensureAnalysis, className }: Dataset
                       ? (d.status_message ?? "Não foi possível ler a base.")
                       : `${plural(d.row_count, "linha", "linhas")} · ${plural(d.columns.length, "coluna", "colunas")}`}
                 </span>
+                {d.status === "processing" && (
+                  <div aria-hidden className="mt-2 flex flex-wrap gap-1.5">
+                    {COLUMN_PLACEHOLDERS.map((width, i) => <Skeleton key={i} className={cn("h-5", width)} />)}
+                  </div>
+                )}
                 {d.original_size_bytes != null && d.original_size_bytes > d.size_bytes && (
                   <p className="mt-1 text-xs text-danger">Base parcial: o limite do armazenamento cortou o arquivo. A validação cobre somente as linhas guardadas.</p>
                 )}

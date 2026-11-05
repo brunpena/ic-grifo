@@ -3,6 +3,7 @@
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ColumnType } from "@/lib/analyses";
 import { api, type Schemas, unwrap } from "@/lib/api";
+import { rememberColumns } from "@/lib/column-cache";
 import type { DocumentInfo, Rule } from "@/lib/documents";
 
 export type StructuredQuery = Schemas["StructuredQuery-Input"];
@@ -152,6 +153,7 @@ export function useRuleRecords(ruleId: string | null, offset: number, limit: num
           params: { path: { rule_id: ruleId! }, query: { offset, limit } },
         }),
       );
+      rememberColumns(result.dataset_id, result.columns);
       if (result.query) {
         client.setQueriesData<Rule[]>({
           predicate: (q) => q.queryKey[0] === "documents" && q.queryKey[2] === "rules",

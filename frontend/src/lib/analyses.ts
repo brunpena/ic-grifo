@@ -2,6 +2,7 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, postFormWithProgress, type Schemas, type UploadProgress, unwrap } from "@/lib/api";
+import { rememberColumns } from "@/lib/column-cache";
 
 export type Analysis = Schemas["AnalysisDetailOut"];
 export type AnalysisSummary = Schemas["AnalysisOut"];
@@ -30,7 +31,12 @@ export function useAnalyses() {
 export function useAnalysis(id: string | null) {
   return useQuery({
     queryKey: analysisKeys.detail(id ?? ""),
-    queryFn: () => unwrap(api.GET("/api/v1/analyses/{analysis_id}", { params: { path: { analysis_id: id! } } })),
+    queryFn: async () => {
+      const analysis = await unwrap(api.GET("/api/v1/analyses/{analysis_id}", { params: { path: { analysis_id: id! } } }));
+      // O cabeçalho já vem do processamento inicial: guarda para os skeletons das tabelas.
+      for (const dataset of analysis.datasets) rememberColumns(dataset.id, dataset.columns.map((c) => c.name));
+      return analysis;
+    },
     enabled: !!id,
     // Acompanha as bases que o servidor ainda está lendo.
     refetchInterval: (query) => (query.state.data?.datasets.some((d) => d.status === "processing") ? 1500 : false),

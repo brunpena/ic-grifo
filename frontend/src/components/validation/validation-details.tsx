@@ -9,6 +9,14 @@ import { errorMessage } from "@/lib/api";
 import type { Rule } from "@/lib/documents";
 import { type RecordVerdict, useValidationRecords, VALIDATION_LABELS } from "@/lib/validation";
 import { ValidationBadge } from "./validation-badge";
+import { type LeadingColumn, PaginationSkeleton, RecordsTableSkeleton } from "@/components/records/records-skeleton";
+import { knownColumns } from "@/lib/column-cache";
+
+const VALIDATION_LEADING: LeadingColumn[] = [
+  { label: "Linha", skeletonClassName: "w-8" },
+  { label: "Resultado", skeletonClassName: "h-5 w-20" },
+  { label: "Evidência", cellClassName: "min-w-64", skeletonClassName: "w-56" },
+];
 
 export function ValidationDetails({ rule, onBack }: { rule: Rule; onBack: () => void }) {
   const validation = rule.validation!;
@@ -60,7 +68,13 @@ export function ValidationDetails({ rule, onBack }: { rule: Rule; onBack: () => 
             </div>
           ) : (
             <div className="min-h-0 flex-1 overflow-auto" aria-busy={records.isFetching}>
-              {!data ? <p role="status" className="p-4 text-sm text-foreground-muted">Carregando registros…</p> : data.total === 0 ? (
+              {!data ? (
+                <RecordsTableSkeleton
+                  columns={knownColumns(datasetId)}
+                  leading={VALIDATION_LEADING}
+                  className="overflow-visible"
+                />
+              ) : data.total === 0 ? (
                 <p className="p-4 text-sm text-foreground-muted">Nenhum registro para este resultado. Isso não comprova o cumprimento da regra.</p>
               ) : (
                 <table className="border-separate border-spacing-0 text-left text-[13px]">
@@ -83,6 +97,7 @@ export function ValidationDetails({ rule, onBack }: { rule: Rule; onBack: () => 
               )}
             </div>
           )}
+          {!data && !records.isError && <PaginationSkeleton />}
           {data && (
             <div className="flex shrink-0 items-center gap-2 border-t border-border px-3 py-2 text-xs text-foreground-muted">
               <span aria-live="polite">{data.total === 0 ? 0 : offset + 1}–{Math.min(offset + 100, data.total)} de {data.total.toLocaleString("pt-BR")}</span>

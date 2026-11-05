@@ -5,6 +5,7 @@ import {
   FileSearch,
   FileText,
   FileUp,
+  History,
   Link2,
   MousePointerClick,
   Search,
@@ -18,6 +19,7 @@ import { BrandLogo } from "@/components/brand-logo";
 import { ProcessingSteps } from "@/components/chat/processing-steps";
 import { DatasetUploader } from "@/components/datasets/dataset-uploader";
 import { DocumentSourceDialog, type DocumentSourceMode } from "@/components/documents/document-source-dialog";
+import { AnalysisHistory } from "@/components/history/analysis-history";
 import { CreateRulePopover } from "@/components/document/create-rule-popover";
 import { HighlightLayer, type PageRect } from "@/components/document/highlight-layer";
 import { PDF_TO_CSS, PdfDocumentPages, usePdfDocument } from "@/components/document/pdf-document";
@@ -60,6 +62,8 @@ import { cn } from "@/lib/utils";
 
 type MobileTab = "document" | "rules" | "table";
 
+const EMPTY_RULES: Rule[] = [];
+
 const rectsOn = (rule: Rule, page: number): PageRect[] =>
   rule.boxes.filter((b) => b.page === page).map(({ x, y, width, height }) => ({ x, y, width, height }));
 
@@ -74,6 +78,7 @@ export function AssistantView() {
   // Primeiro envio ainda sem resposta: o nome e, se for PDF, o arquivo para já exibir.
   const [pendingUpload, setPendingUpload] = useState<{ name: string; file: File | null } | null>(null);
   const [datasetsOpen, setDatasetsOpen] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
   const [sourceMode, setSourceMode] = useState<DocumentSourceMode | null>(null);
   // Análise em montagem: as bases vão antes do documento.
   const [analysisId, setAnalysisId] = useState<string | null>(null);
@@ -82,6 +87,8 @@ export function AssistantView() {
   const endAnalysis = useCloseAnalysis();
   const closedAnalyses = useRef(new Set<string>());
   const [documentId, setDocumentId] = useState<string | null>(null);
+  // Documento reaberto pelo histórico (não um envio novo): carrega já no espaço de trabalho.
+  const [reopenedId, setReopenedId] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
   const upload = useUploadDocument();
   const resumeDocument = useResumeDocument();
@@ -100,7 +107,8 @@ export function AssistantView() {
   const [searchIndex, setSearchIndex] = useState(0);
   const search = usePdfSearch(pdf.status === "ready" ? pdf.doc : null, searchOpen ? searchQuery : "");
   const ready = doc?.status === "ready";
-  const { data: rules = [] } = useRules(documentId, ready);
+  const rulesQuery = useRules(documentId, ready);
+  const rules = rulesQuery.data ?? EMPTY_RULES;
   const updateRule = useUpdateRule(documentId ?? "");
   const createRule = useCreateRule(documentId ?? "");
   const generateQueries = useGenerateQueries(documentId ?? "");
@@ -224,9 +232,11 @@ export function AssistantView() {
   };
 
   const openDocument = (target: DocumentInfo) => {
+    setHistoryOpen(false);
     if (target.id === documentId) return;
     setPendingUpload(null);
     setDocumentId(target.id);
+    setReopenedId(target.status === "ready" ? target.id : null);
     setAnalysisId(target.analysis_id);
     resetView();
   };
@@ -410,6 +420,15 @@ export function AssistantView() {
                 <p className="text-xs text-foreground-subtle">PDF, HTML ou TXT.</p>
               </section>
             ) : <p role="status" className="text-center text-sm text-foreground-muted">O envio do documento fica disponível após a leitura da base de dados.</p>}
+            {!analysisId && (
+              <section aria-labelledby="history" className="flex flex-col gap-3 rounded-xl border border-border bg-surface p-5">
+                <h2 id="history" className="flex items-center gap-2 font-medium">
+                  <History size={16} aria-hidden /> Histórico de análises
+                </h2>
+                <p className="text-sm text-foreground-muted">Reabra uma análise anterior com as regras, as consultas e a tabela já prontas.</p>
+                <AnalysisHistory onOpen={openDocument} className="max-h-80 overflow-y-auto" />
+              </section>
+            )}
           </div>
         </div>
         {sourceDialog}
@@ -436,7 +455,10 @@ export function AssistantView() {
 
   // Regerando as buscas: as regras continuam na tela, com um aviso.
   const generating = doc?.status === "extracting_rules" && rules.length > 0;
-  const showRules = ready || generating;
+  // Documento aberto pelo histórico: a situação ainda não chegou, mostra o espaço de trabalho em skeleton.
+  const opening = !!documentId && documentId === reopenedId && !doc;
+  const showRules = ready || generating || opening;
+  const rulesLoading = opening || (ready && rulesQuery.isPending);
 
   const resumeAction = doc?.status === "error" ? (
               <Button size="sm" variant="primary" disabled={resumeDocument.isPending}
@@ -597,6 +619,7 @@ export function AssistantView() {
           />
           <RulesTable
             className="flex-1"
+            loading={rulesLoading}
             rules={visibleRules.map((r) => ({
               ...r,
               page: r.page ?? undefined,
@@ -652,7 +675,8 @@ export function AssistantView() {
       rules={rules}
       selectedRuleId={selectedId}
       onSelectRule={(id) => (id ? goToRule(id) : setSelectedId(null))}
-      hasDatasets={datasets.length > 0}
+      hasDatasets={datasets.length > 0 || rulesLoading}
+      rulesLoading={rulesLoading}
       onEditQuery={(rule) => setEditingQueryId(rule.id)}
       onClose={onClose}
     />
@@ -663,6 +687,7 @@ export function AssistantView() {
       {fileInput}
       <div className="flex shrink-0 flex-wrap items-center gap-3 border-b border-border bg-surface px-4 py-3">
         <div className="min-w-0 flex-1"><WorkflowSteps current={showRules ? 3 : 2} /><p className="mt-1 truncate text-xs text-foreground-muted">{documentName}</p></div>
+        <Button size="sm" icon={<History size={16} aria-hidden />} onClick={() => setHistoryOpen(true)}>Histórico</Button>
         <Button size="sm" icon={<Database size={16} aria-hidden />} onClick={() => setDatasetsOpen(true)}>Bases de dados</Button>
         <Button size="sm" loading={endAnalysis.isPending} onClick={() => void closeDocument()}>Nova análise</Button>
       </div>
@@ -698,6 +723,15 @@ export function AssistantView() {
         className="max-h-[85dvh] w-[760px] overflow-y-auto"
       >
         <DatasetUploader datasets={analysis?.datasets ?? []} ensureAnalysis={ensureAnalysis} />
+      </Dialog>
+      <Dialog
+        open={historyOpen}
+        onOpenChange={setHistoryOpen}
+        title="Histórico de análises"
+        description="Seus documentos analisados, do mais recente ao mais antigo."
+        className="max-h-[85dvh] w-[560px] overflow-y-auto"
+      >
+        {historyOpen && <AnalysisHistory currentDocumentId={documentId} onOpen={openDocument} />}
       </Dialog>
       <QueryEditorDialog
         rule={rules.find((r) => r.id === editingQueryId) ?? null}

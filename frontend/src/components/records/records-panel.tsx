@@ -1,18 +1,19 @@
 "use client";
 
-import { AlertTriangle, ArrowLeft, ChevronLeft, ChevronRight, Database, FileSpreadsheet, Pencil, SearchX, X } from "lucide-react";
+import { AlertTriangle, ArrowLeft, Check, ChevronLeft, ChevronRight, Code, Copy, Database, FileSpreadsheet, Pencil, SearchX, X } from "lucide-react";
 import { useState } from "react";
 import { RuleTypeBadge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { IconButton } from "@/components/ui/icon-button";
 import { Select } from "@/components/ui/select";
-import { Skeleton } from "@/components/ui/skeleton";
 import { errorMessage } from "@/lib/api";
+import { knownColumns } from "@/lib/column-cache";
 import type { Rule } from "@/lib/documents";
 import { describeQuery, useRuleRecords } from "@/lib/queries";
 import { cn } from "@/lib/utils";
 import { ValidationDetails } from "@/components/validation/validation-details";
+import { PaginationSkeleton, RecordsTableSkeleton, RulesOverviewSkeleton } from "./records-skeleton";
 
 const PAGE_SIZE = 100;
 const number = (n: number) => n.toLocaleString("pt-BR");
@@ -24,6 +25,8 @@ type RecordsPanelProps = {
   /** Selecionar uma regra também rola o documento até o trecho dela. */
   onSelectRule: (ruleId: string | null) => void;
   hasDatasets: boolean;
+  /** As regras do documento ainda estão sendo carregadas. */
+  rulesLoading?: boolean;
   onEditQuery: (rule: Rule) => void;
   /** Esconde o painel (some quando não há como fechar, ex.: no celular). */
   onClose?: () => void;
@@ -36,6 +39,7 @@ export function RecordsPanel({
   selectedRuleId,
   onSelectRule,
   hasDatasets,
+  rulesLoading,
   onEditQuery,
   onClose,
   className,
@@ -81,7 +85,9 @@ export function RecordsPanel({
         )}
       </div>
 
-      {selected?.validation && searchFor === selected.id ? (
+      {rulesLoading && !rules.length ? (
+        <RulesOverviewSkeleton />
+      ) : selected?.validation && searchFor === selected.id ? (
         <ValidationDetails key={selected.id + selected.validation.checked_at} rule={selected} onBack={() => onSelectRule(null)} />
       ) : !hasDatasets && !rules.some((r) => r.validation) ? (
         <EmptyState
@@ -126,6 +132,7 @@ function RulesOverview({ rules, onSelectRule }: { rules: Rule[]; onSelectRule: (
 
 function RuleRecords({ rule, onBack, onEditQuery }: { rule: Rule; onBack: () => void; onEditQuery: (rule: Rule) => void }) {
   const [offset, setOffset] = useState(0);
+  const [showSql, setShowSql] = useState(false);
   const query = rule.query;
   const ok = !!query && query.state !== "erro";
   const records = useRuleRecords(rule.id, offset, PAGE_SIZE, ok);
@@ -150,10 +157,22 @@ function RuleRecords({ rule, onBack, onEditQuery }: { rule: Rule; onBack: () => 
               : "Esta regra ainda não tem busca nas bases."}
           </span>
         </div>
+        {query?.sql_display && (
+          <Button
+            size="sm"
+            variant="ghost"
+            icon={<Code size={14} strokeWidth={1.75} aria-hidden />}
+            aria-expanded={showSql}
+            onClick={() => setShowSql(!showSql)}
+          >
+            {showSql ? "Ocultar SQL" : "Ver SQL"}
+          </Button>
+        )}
         <Button size="sm" variant="ghost" icon={<Pencil size={14} strokeWidth={1.75} aria-hidden />} onClick={() => onEditQuery(rule)}>
           {query ? "Editar busca" : "Criar busca"}
         </Button>
       </div>
+      {showSql && query?.sql_display && <SqlPreview sql={query.sql_display} />}
 
       {!query ? (
         <EmptyState icon={SearchX} title="Sem busca" description="Crie a busca para ver os registros desta regra." className="flex-1" />
@@ -181,7 +200,12 @@ function RuleRecords({ rule, onBack, onEditQuery }: { rule: Rule; onBack: () => 
           }
           className="flex-1"
         />
-      ) : data && data.total === 0 ? (
+      ) : !data ? (
+        <>
+          <RecordsTableSkeleton columns={knownColumns(query.dataset_id)} />
+          <PaginationSkeleton />
+        </>
+      ) : data.total === 0 ? (
         <EmptyState
           icon={SearchX}
           title="Nenhum registro encontrado"
@@ -197,7 +221,7 @@ function RuleRecords({ rule, onBack, onEditQuery }: { rule: Rule; onBack: () => 
                   <th scope="col" className="sticky left-0 z-10 border-b border-border bg-surface-muted px-3 py-2 text-xs font-medium text-foreground-muted">
                     Linha
                   </th>
-                  {(data?.columns ?? []).map((c) => (
+                  {data.columns.map((c) => (
                     <th key={c} scope="col" className="border-b border-border px-3 py-2 text-xs font-medium whitespace-nowrap text-foreground-muted">
                       {c}
                     </th>
@@ -205,37 +229,28 @@ function RuleRecords({ rule, onBack, onEditQuery }: { rule: Rule; onBack: () => 
                 </tr>
               </thead>
               <tbody className={cn(records.isPlaceholderData && "opacity-60")}>
-                {data
-                  ? data.rows.map((row) => (
-                      <tr key={row.index} className="hover:bg-surface-hover">
-                        <td className="sticky left-0 border-b border-border bg-surface px-3 py-1.5 font-mono text-xs text-foreground-subtle tabular-nums">
-                          {number(row.index + 1)}
-                        </td>
-                        {row.values.map((cell, i) => (
-                          <td key={i} className="border-b border-border px-3 py-1.5 whitespace-nowrap">
-                            {cell === null ? (
-                              <span className="text-foreground-subtle">—</span>
-                            ) : (
-                              <span className="block max-w-64 truncate" title={cell}>
-                                {cell}
-                              </span>
-                            )}
-                          </td>
-                        ))}
-                      </tr>
-                    ))
-                  : Array.from({ length: 8 }, (_, i) => (
-                      <tr key={i} aria-hidden>
-                        <td className="border-b border-border px-3 py-2" colSpan={6}>
-                          <Skeleton className="h-3 w-full" />
-                        </td>
-                      </tr>
+                {data.rows.map((row) => (
+                  <tr key={row.index} className="hover:bg-surface-hover">
+                    <td className="sticky left-0 border-b border-border bg-surface px-3 py-1.5 font-mono text-xs text-foreground-subtle tabular-nums">
+                      {number(row.index + 1)}
+                    </td>
+                    {row.values.map((cell, i) => (
+                      <td key={i} className="border-b border-border px-3 py-1.5 whitespace-nowrap">
+                        {cell === null ? (
+                          <span className="text-foreground-subtle">—</span>
+                        ) : (
+                          <span className="block max-w-64 truncate" title={cell}>
+                            {cell}
+                          </span>
+                        )}
+                      </td>
                     ))}
+                  </tr>
+                ))}
               </tbody>
             </table>
           </div>
-          {data && (
-            <div className="flex h-10 shrink-0 items-center gap-2 border-t border-border px-3 text-xs text-foreground-muted">
+          <div className="flex h-10 shrink-0 items-center gap-2 border-t border-border px-3 text-xs text-foreground-muted">
               <span className="tabular-nums" aria-live="polite">
                 {number(offset + 1)}–{number(Math.min(offset + PAGE_SIZE, data.total))} de {number(data.total)}{" "}
                 {data.total === 1 ? "registro" : "registros"}
@@ -255,9 +270,35 @@ function RuleRecords({ rule, onBack, onEditQuery }: { rule: Rule; onBack: () => 
                 />
               </div>
             </div>
-          )}
         </>
       )}
+    </div>
+  );
+}
+
+/** Consulta SQL usada para buscar os registros da regra, com os nomes reais das colunas. */
+function SqlPreview({ sql }: { sql: string }) {
+  const [copied, setCopied] = useState(false);
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(sql);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // Sem permissão para a área de transferência: o texto continua selecionável.
+    }
+  };
+  return (
+    <div className="relative shrink-0 border-b border-border bg-surface-muted">
+      <pre aria-label="Consulta SQL da busca" className="max-h-48 overflow-auto px-3 py-2 pr-10 font-mono text-xs leading-relaxed whitespace-pre text-foreground">
+        {sql}
+      </pre>
+      <IconButton
+        aria-label={copied ? "SQL copiada" : "Copiar SQL"}
+        icon={copied ? <Check size={14} strokeWidth={1.75} aria-hidden /> : <Copy size={14} strokeWidth={1.75} aria-hidden />}
+        onClick={() => void copy()}
+        className="absolute top-1 right-1"
+      />
     </div>
   );
 }
