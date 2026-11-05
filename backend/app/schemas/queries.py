@@ -76,6 +76,10 @@ class RuleQueryOut(BaseModel):
     query: StructuredQuery
     sql: str | None = None
     sql_parameters: dict[str, Scalar] = Field(default_factory=dict)
+    sql_display: str | None = Field(
+        default=None,
+        description="SQL legível da busca (nomes reais das colunas e valores), só para exibição.",
+    )
     origin: QueryOrigin
     state: QueryState = Field(description="pendente (não rodou), ok ou erro (ver `error`).")
     error: str | None

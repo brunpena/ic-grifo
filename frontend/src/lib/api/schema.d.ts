@@ -1052,6 +1052,11 @@ export interface components {
                 [key: string]: string | number | boolean;
             };
             /**
+             * Sql Display
+             * @description SQL legível da busca (nomes reais das colunas e valores), só para exibição.
+             */
+            sql_display?: string | null;
+            /**
              * Origin
              * @enum {string}
              */

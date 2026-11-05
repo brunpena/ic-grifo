@@ -57,6 +57,7 @@ from app.services.converters import (
     UnsupportedFormatError,
 )
 from app.services.converters.text import title_from_text
+from app.services.duckdb_sql import readable_sql
 from app.services.highlights import page_range, rule_boxes
 from app.services.query_engine import QueryError
 from app.services.text_match import find_excerpt
@@ -90,13 +91,15 @@ def _query_out(q: RuleQuery, dataset_names: dict[uuid.UUID, str]) -> RuleQueryOu
     except ValidationError:
         # Não deveria acontecer (a busca é saneada antes de gravar), mas não derruba a lista.
         query = StructuredQuery(dataset=str(q.query.get("dataset") or "?"), conditions=[])
+    dataset_name = dataset_names.get(q.dataset_id) if q.dataset_id else None
     return RuleQueryOut(
         id=q.id,
         dataset_id=q.dataset_id,
-        dataset_name=dataset_names.get(q.dataset_id) if q.dataset_id else None,
+        dataset_name=dataset_name,
         query=query,
         sql=q.sql,
         sql_parameters=q.sql_parameters or {},
+        sql_display=readable_sql(query, dataset_name),
         origin=q.origin,
         state=q.state,
         error=q.error,

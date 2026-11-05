@@ -156,3 +156,69 @@ def validation_sql(
     used_names = set(re.findall(r"\$(p\d+)\b", sql))
     used = {key: value for key, value in builder.params.items() if key in used_names}
     return sql, used
+
+
+def _identifier(name: str) -> str:
+    return '"' + name.replace('"', '""') + '"'
+
+
+def _literal(value: Any) -> str:
+    if isinstance(value, bool):
+        return "TRUE" if value else "FALSE"
+    if isinstance(value, int | float):
+        return str(value)
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+def _like(value: Any, prefix: str, suffix: str) -> str:
+    return _literal(f"{prefix}{value}{suffix}")
+
+
+def _readable_condition(column: str, op: str, value: Any) -> str:
+    col = _identifier(column)
+    if op in ("is_null", "not_null"):
+        return f"{col} IS {'NOT ' if op == 'not_null' else ''}NULL"
+    if op in ("in", "not_in"):
+        values = value if isinstance(value, list) else [value]
+        keyword = "NOT IN" if op == "not_in" else "IN"
+        return f"{col} {keyword} ({', '.join(_literal(v) for v in values)})"
+    if op == "between" and isinstance(value, list) and len(value) == 2:
+        return f"{col} BETWEEN {_literal(value[0])} AND {_literal(value[1])}"
+    operators = {"eq": "=", "ne": "<>", "gt": ">", "gte": ">=", "lt": "<", "lte": "<="}
+    if op in operators:
+        return f"{col} {operators[op]} {_literal(value)}"
+    patterns = {
+        "contains": ("ILIKE", "%", "%"),
+        "not_contains": ("NOT ILIKE", "%", "%"),
+        "starts_with": ("ILIKE", "", "%"),
+        "ends_with": ("ILIKE", "%", ""),
+    }
+    keyword, prefix, suffix = patterns[op]
+    return f"{col} {keyword} {_like(value, prefix, suffix)}"
+
+
+def _readable_group(group: ConditionGroup, depth: int) -> str:
+    parts = [
+        f"({_readable_group(part, depth + 1)})"
+        if isinstance(part, ConditionGroup)
+        else _readable_condition(part.column, part.op, part.value)
+        for part in group.conditions
+    ]
+    if not parts:
+        return "TRUE"
+    separator = f"\n{'  ' * (depth + 1)}{group.logic.upper()} "
+    return separator.join(parts)
+
+
+def readable_sql(query: StructuredQuery, dataset_name: str | None = None) -> str:
+    """SQL equivalente à busca, para a pessoa ler: nomes reais das colunas e valores no lugar
+    dos parâmetros. Só é exibida; a execução usa sempre `query_sql`.
+
+    Comparações de texto no motor ignoram maiúsculas e acentos (por isso ILIKE).
+    """
+    table = _identifier(dataset_name or query.dataset)
+    lines = ["SELECT *", f"FROM {table}"]
+    if query.conditions:
+        lines.append(f"WHERE {_readable_group(query, 0)}")
+    lines.append("ORDER BY linha;")
+    return "\n".join(lines)

@@ -317,3 +317,40 @@ async def test_rules_become_queries_over_the_datasets(migrated_db, client, fake_
     assert (await client.delete(url)).status_code == 204
     garantia = (await client.get(f"/api/v1/documents/{doc['id']}/rules")).json()[0]
     assert garantia["query"] is None
+
+
+def test_readable_sql_uses_real_names_and_inline_values():
+    from app.services.duckdb_sql import readable_sql
+
+    query = StructuredQuery.model_validate(
+        {
+            "dataset": "contratos",
+            "conditions": [
+                {"column": "Valor", "op": "gt", "value": 17600},
+                {
+                    "logic": "or",
+                    "conditions": [
+                        {
+                            "column": "Modalidade",
+                            "op": "in",
+                            "value": ["Dispensa", "Inexigibilidade"],
+                        },
+                        {"column": "Fornecedor", "op": "contains", "value": "d'água"},
+                    ],
+                },
+                {"column": "Garantia", "op": "is_null"},
+            ],
+        }
+    )
+    assert readable_sql(query) == (
+        "SELECT *\n"
+        'FROM "contratos"\n'
+        'WHERE "Valor" > 17600\n'
+        "  AND (\"Modalidade\" IN ('Dispensa', 'Inexigibilidade')\n"
+        "    OR \"Fornecedor\" ILIKE '%d''água%')\n"
+        '  AND "Garantia" IS NULL\n'
+        "ORDER BY linha;"
+    )
+    assert readable_sql(StructuredQuery(dataset="x"), "Base X") == (
+        'SELECT *\nFROM "Base X"\nORDER BY linha;'
+    )
