@@ -57,12 +57,16 @@ Depois percorra [documents.ts](../frontend/src/lib/documents.ts)
 → [pdf_text.py](../backend/app/services/pdf_text.py)
 → [ingest.py](../backend/app/services/ingest.py), função `process_document`.
 
-Finalize com `extract_rules` em [llm.py](../backend/app/services/llm.py),
-`rule_boxes` em [highlights.py](../backend/app/services/highlights.py) e
+Finalize com o grifo: `onPageMouseUp` em
+[assistant-view.tsx](../frontend/src/components/assistant/assistant-view.tsx),
+[excerpt-panel.tsx](../frontend/src/components/excerpt/excerpt-panel.tsx),
+`analyze_excerpt` em [documents.py](../backend/app/api/v1/documents.py) e
+[llm.py](../backend/app/services/llm.py), `create_rule`, `rule_boxes` em
+[highlights.py](../backend/app/services/highlights.py) e
 [highlight-layer.tsx](../frontend/src/components/document/highlight-layer.tsx).
 
-A pergunta central é: como uma regra encontrada em texto se transforma em retângulos
-sobre uma página PDF? O [fluxograma de documentos](fluxos.md) ajuda a seguir a resposta.
+A pergunta central é: como um trecho grifado vira uma regra aprovada e, depois,
+retângulos sobre uma página PDF? O [fluxograma de documentos](fluxos.md) ajuda a seguir a resposta.
 
 ## 5. Compare busca e validação usando a mesma regra
 

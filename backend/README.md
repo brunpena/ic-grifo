@@ -1,6 +1,6 @@
 # IC Grifo — backend
 
-API FastAPI para converter documentos, extrair regras, consultar bases CSV e verificar
+API FastAPI para converter documentos, analisar trechos grifados, consultar bases CSV e verificar
 se os registros cumprem os critérios. Usa PostgreSQL/SQLAlchemy, DuckDB embarcado,
 PyMuPDF e Gemini.
 
@@ -92,18 +92,20 @@ Ao sair da tela ou fechar a aba, a interface também tenta enviar a chamada com
 
 A IA identifica o significado das colunas e traduz cada regra em filtros e critérios
 JSON. O compilador valida esses critérios e gera SQL parametrizado para o DuckDB.
-As consultas e seus parâmetros ficam salvos em `rule_queries.sql` e
-`rule_queries.sql_parameters`, sem executar pesquisas durante a geração.
+As regras nascem de trechos grifados: `POST /documents/{id}/excerpt-analysis` pede à
+IA a proposta (sem salvar) e `POST /documents/{id}/rules` grava a regra aprovada. As
+consultas e seus parâmetros ficam salvos em `rule_queries.sql` e
+`rule_queries.sql_parameters`, sem executar pesquisas na aprovação.
 Ao selecionar uma regra, `GET /api/v1/rules/{id}/records` executa sua consulta no
 DuckDB em cache e devolve somente a página solicitada, com a contagem total.
 Selecionar outra regra ou paginar não chama a IA. A tabela exibe a consulta da regra
 selecionada por padrão; não há avaliação automática de todas as linhas/regras.
 O modelo recebe metadados e exemplos por coluna, sem os registros completos, e não
-calcula o resultado da consulta. Consultas corrigidas manualmente são preservadas.
-O fluxo aguarda a interpretação das colunas antes de extrair e preparar as regras.
+calcula o resultado da consulta. Nenhuma consulta é gerada ou trocada automaticamente.
 A rota de validação geral continua disponível para pedidos explícitos via API.
 
-Aplique a migration `0009` antes de iniciar a API com esta versão:
+Aplique a migration `0010` (categoria e interpretação das regras) antes de iniciar a
+API com esta versão:
 
 ```powershell
 uv run alembic upgrade head

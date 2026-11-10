@@ -129,7 +129,6 @@ Use este mapa para localizar responsabilidades sem começar pelos arquivos gerad
 | [docker-compose.yml](<../backend/docker-compose.yml>) | API para deploy com banco e arquivos externos; ainda contém nomes antigos de configuração da IA. |
 | [docker-entrypoint.sh](<../backend/docker-entrypoint.sh>) | Aplica migrations e inicia Uvicorn em um processo. |
 | [scripts/init-test-db.sql](<../backend/scripts/init-test-db.sql>) | Cria icgrifo_test na primeira inicialização do volume PostgreSQL. |
-| [scripts/bench_extraction.py](<../backend/scripts/bench_extraction.py>) | Mede tempo e tokens de extração de um documento existente; chama a IA real e não grava os resultados no banco. |
 | [README.md](<../backend/README.md>) | Comandos e navegação da documentação do servidor. |
 | [VALIDACAO.md](<../backend/VALIDACAO.md>) | Resumo operacional da verificação de cumprimento. |
 
@@ -155,7 +154,8 @@ Estes arquivos delimitam os pacotes importáveis. Não iniciam rotas ou tarefas 
 | CSV | analyses.upload_dataset | ingest.process_dataset | DatasetOut |
 | Documento | documents._create_document | conversores e ingest.process_document | DocumentOut |
 | Grifos | documents.list_rules | highlights.rule_boxes | RuleOut |
-| Buscas | documents.generate_document_queries | rule_queries.generate_for_document | RuleOut após processamento |
+| Trecho grifado | documents.analyze_excerpt | llm.analyze_excerpt e rule_queries.count_matches | ExcerptAnalysisOut (nada salvo) |
+| Aprovação | documents.create_rule | rule_queries.prepare_query | RuleOut com categoria e busca |
 | Cumprimento | documents.validate_document | rule_validation.validate_document | RuleValidationOut em RuleOut |
 | Evidência | documents.validation_records | rule_validation.records | ValidationRecordsOut |
 | Conversa | documents.send_message | llm.stream_chat | SSE e MessageOut |

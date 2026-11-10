@@ -52,7 +52,7 @@ flowchart TD
     H --> K["CSV inválido: marca error"]
     I --> L["Falha da IA: mantém leitura com significado não confirmado"]
     L --> J
-    J --> M["Invalida resultados e solicita preparação das consultas"]
+    J --> M["Invalida resultados de validação anteriores"]
     F --> N["useAnalysis consulta a cada 1,5 s enquanto houver base em processing"]
 ```
 
@@ -66,7 +66,8 @@ O caminho do backend é `upload_dataset` →
 
 O processamento reaproveita os bytes do upload e importa as linhas no DuckDB local
 persistente. O schema é publicado antes da interpretação por IA para liberar o envio
-do documento; a extração de regras aguarda os significados das colunas.
+do documento. Uma base nova não gera nem troca buscas: as buscas só nascem da
+aprovação de um trecho grifado.
 
 O CSV pode ser cortado na última quebra de linha que cabe no limite do armazenamento.
 O tamanho original é preservado para identificar essa cobertura parcial. A presença
@@ -89,31 +90,72 @@ flowchart TD
     P --> G["Salva PDF e Document em processing"]
     H --> G
     G --> T["process_document grava texto, páginas e palavras"]
-    T --> E["Marca extracting_rules"]
-    E --> L["Gemini extrai regras de blocos com frases numeradas"]
-    L --> U["Deduplica e grava Rule"]
-    U --> Q["Com significados prontos: gera consultas para todas as regras"]
-    Q --> V["Valida e salva SQL e parâmetros, sem executar"]
-    U --> N["Sem bases: mantém regras disponíveis"]
-    V --> OK["Document ready"]
-    N --> OK
-    T --> ER["Falha de leitura ou extração: Document error"]
+    T --> OK["Document ready: pronto para grifar, sem regras"]
+    T --> ER["Falha de leitura: Document error"]
 ```
 
-O original é salvo antes de devolver 202; conversão, extração e preparação acontecem
-em segundo plano. Um PDF sem texto recebe status `error`: o projeto não executa OCR.
+O original é salvo antes de devolver 202; a conversão e a leitura acontecem em
+segundo plano. Nenhuma regra é extraída automaticamente: o documento fica `ready`
+assim que o texto e as posições das palavras estão salvos. Um PDF sem texto recebe
+status `error`: o projeto não executa OCR.
 O PDF do visualizador fica disponível depois da conversão, quando há `page_count`.
 
 Arquivos centrais:
 [documents.py](../backend/app/api/v1/documents.py),
 [registry.py](../backend/app/services/converters/registry.py),
 [pdf_text.py](../backend/app/services/pdf_text.py),
-[ingest.py](../backend/app/services/ingest.py) e
-[llm.py](../backend/app/services/llm.py).
+[ingest.py](../backend/app/services/ingest.py).
 
-Os blocos de texto têm sobreposição para não perder regras na fronteira.
-A IA devolve números de frases; o backend encontra os intervalos exatos no texto.
-O chat e as tabelas passam a usar as regras persistidas.
+## 3b. Grifo, conversa com a IA e aprovação da regra
+
+```mermaid
+sequenceDiagram
+    actor Pessoa
+    participant PDF as Visualizador
+    participant Painel as ExcerptPanel
+    participant API as documents.py
+    participant IA as llm.analyze_excerpt
+    participant Motor as rule_queries / DuckDB
+    participant DB as PostgreSQL
+    Pessoa->>PDF: Seleciona um trecho
+    PDF-->>Pessoa: Botão "Grifar e analisar com IA"
+    Pessoa->>Painel: Abre a conversa (trecho fica grifado em rascunho)
+    Painel->>API: POST /documents/id/excerpt-analysis
+    API->>DB: Localiza o trecho na página e lê as bases prontas
+    API->>IA: Trecho, texto da página, colunas e conversa
+    IA-->>API: É regra? Verificável? Tipo, resumo, interpretação e busca
+    API->>Motor: Valida a busca e conta os registros
+    API-->>Painel: Resposta, proposta, SQL legível e contagem (nada salvo)
+    loop Ajustes
+        Pessoa->>Painel: Edita a proposta ou pede um ajuste à IA
+        Painel->>API: excerpt-analysis com a conversa e a proposta atual
+        Painel->>API: query-preview para testar a busca editada
+    end
+    alt Aprovar
+        Pessoa->>Painel: Aprovar regra
+        Painel->>API: POST /documents/id/rules (categoria csv com busca, ou geral)
+        API->>DB: Rule validada, interpretação e RuleQuery com SQL preparada
+        API-->>Painel: RuleOut com os retângulos do grifo
+    else Descartar
+        Pessoa->>Painel: Fecha a subtela; nada é gravado
+    end
+```
+
+A IA trabalha só sobre o trecho grifado, com o texto da página como contexto. A
+conversa e a proposta ficam no navegador até a aprovação; o servidor não guarda
+rascunhos. Cada pedido de ajuste envia a proposta como está na tela, inclusive as
+edições à mão, para a IA partir dela.
+
+Regras que não se aplicam ao CSV não são descartadas: entram com `category = geral`,
+sem busca, e continuam disponíveis para consulta e como contexto da conversa. A
+validação geral as registra como `ignorada`. Criar uma busca para uma regra geral a
+torna `csv`; remover a busca a devolve para `geral`.
+
+Arquivos centrais:
+[excerpt-panel.tsx](../frontend/src/components/excerpt/excerpt-panel.tsx),
+[documents.py](../backend/app/api/v1/documents.py) (`analyze_excerpt`,
+`preview_query`, `create_rule`), [llm.py](../backend/app/services/llm.py) e
+[rule_queries.py](../backend/app/services/rule_queries.py).
 
 ## 4. Como o grifo aparece na página
 
@@ -132,9 +174,9 @@ O visualizador usa pdf.js para desenhar páginas e sua camada de texto. O backen
 PyMuPDF para extrair palavras. Como os grifos são frações da página, continuam ligados
 ao trecho ao mudar o zoom.
 
-Na criação manual, o navegador envia página, trecho e resumo. `create_rule` usa
-`page_range` e `find_excerpt` para localizar o texto no servidor; não aceita apenas
-um retângulo visual como prova da existência de uma regra.
+Na aprovação, o navegador envia página e trecho grifado. `create_rule` (e também
+`analyze_excerpt`) usa `page_range` e `find_excerpt` para localizar o texto no
+servidor; não aceita apenas um retângulo visual como prova da existência de uma regra.
 
 ## 5. Busca de registros e validação de cumprimento
 
@@ -159,11 +201,11 @@ A busca responde **quais registros estão relacionados**. A validação responde
 **se esses registros cumprem a regra**. Uma busca que executou com `state = ok`
 não comprova conformidade.
 
-A geração considera todas as regras não rejeitadas e os significados das colunas.
-As pesquisas só são executadas ao selecionar a regra ou paginar, sem chamar a IA.
-Buscas manuais são preservadas.
+A busca chega aprovada pela pessoa, proposta pela IA a partir do trecho grifado ou
+editada à mão. As pesquisas só são executadas ao selecionar a regra ou paginar, sem
+chamar a IA. Nenhuma busca é gerada ou substituída automaticamente.
 
-A validação considera todas as regras extraídas; regras rejeitadas são registradas
+A validação considera as regras `csv`; regras gerais e rejeitadas são registradas
 como ignoradas. Regras sem dados verificáveis recebem um resultado explicativo.
 O [exemplo completo](validacao.md) mostra os dois caminhos para a mesma obrigação.
 
@@ -234,14 +276,12 @@ Falhas podem chegar por evento `error` depois que a conexão SSE já foi aberta.
 flowchart TD
     A["lifespan inicia"] --> B["recover_interrupted"]
     B --> C["Bases em processing: agenda nova leitura do arquivo"]
-    B --> D["Documentos em extracting_rules: limpa validações interrompidas"]
-    D --> E{"O documento já tem regras?"}
-    E -->|Sim| F["Retoma buscas e validação"]
-    E -->|Não| G["Retoma extração pelo PDF ou original salvo"]
-    B --> H["Documentos em processing: retoma conversão do original"]
+    B --> D["Documentos em extracting_rules: descarta a validação interrompida"]
+    D --> F["Document ready; a pessoa valida de novo"]
+    B --> H["Documentos em processing: retoma conversão do original ou do PDF salvo"]
     C --> I["Processamento normal da base"]
 ```
 
 A recuperação usa os estados e arquivos persistidos. Páginas e palavras são
-substituídas ao retomar a extração, evitando duplicação. O processamento continua
+substituídas ao retomar a leitura, evitando duplicação. O processamento continua
 no mesmo processo da API, com um único worker.

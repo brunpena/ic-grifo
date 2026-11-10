@@ -34,7 +34,7 @@ flowchart TB
 | Base, `Dataset` | Arquivo CSV, schema físico e interpretação semântica das colunas. |
 | Documento, `Document` | Fonte normativa convertida para uma representação comum em PDF. |
 | Página e palavra, `Page` e `Word` | Estrutura visual que liga texto e coordenadas. |
-| Regra, `Rule` | Trecho normativo, tipo, resumo, origem e situação da revisão humana. |
+| Regra, `Rule` | Trecho grifado e aprovado: tipo, resumo, interpretação, categoria (`csv` ou `geral`) e origem. |
 | Busca, `RuleQuery` | Filtro estruturado que encontra os registros relacionados a uma regra. |
 | Plano, `ValidationPlan` | Escopo e critérios de cumprimento propostos pela IA. |
 | Resultado, `RuleValidationOut` | Conclusão e contagens calculadas sobre os registros. |
@@ -91,9 +91,14 @@ substitui o Storage, que permite reconstruí-lo se necessário.
 
 ## Quatro responsabilidades relacionadas à IA
 
-1. `llm.extract_rules`: recebe texto dividido em frases e encontra regras.
-2. `llm.generate_queries`: usa os significados das colunas para propor filtros;
-   o backend salva a SQL e a executa somente ao selecionar a regra.
+A IA não varre mais o documento nem gera buscas em lote: a extração automática foi
+descartada porque as regras devolvidas não eram aproveitáveis. Toda regra parte de um
+trecho grifado pela pessoa e só entra no banco depois da aprovação dela.
+
+1. `llm.analyze_excerpt`: recebe o trecho grifado, o texto da página e a conversa;
+   diz se é uma regra, se é verificável nas bases e propõe tipo, resumo,
+   interpretação e busca. O backend valida a busca, mostra a SQL e conta os registros,
+   sem salvar nada até a aprovação.
 3. `validation_llm.interpret_columns` interpreta as colunas antes das regras;
    `plan_rules` é reservado à validação geral explicitamente solicitada pela API.
 4. `llm.stream_chat`: responde sobre o documento e suas regras.
@@ -118,9 +123,10 @@ dependendo da IA e da revisão humana.
 
 | Campo | Exemplos | Responde a qual pergunta? |
 | --- | --- | --- |
-| `Document.status` | `processing`, `extracting_rules`, `ready`, `error` | A tarefa terminou? |
+| `Document.status` | `processing`, `extracting_rules`, `ready`, `error` | A leitura (ou a validação geral) terminou? |
+| `Rule.category` | `csv`, `geral` | A regra tem busca nas bases ou fica só registrada? |
 | `Dataset.status` | `processing`, `ready`, `error` | O CSV já pode ser lido? |
-| `Rule.status` | `pendente`, `validada`, `rejeitada` | A pessoa aprovou a regra extraída? |
+| `Rule.status` | `pendente`, `validada`, `rejeitada` | A regra continua aprovada? Nasce `validada`. |
 | `RuleQuery.state` | `pendente`, `ok`, `erro` | O filtro foi executado corretamente? |
 | `Rule.validation.status` | `conforme`, `violacao`, `inconclusiva` | Há evidência de cumprimento nos registros? |
 

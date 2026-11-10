@@ -109,7 +109,8 @@ porque a operação precisa de POST. Consultas comuns usam o cliente OpenAPI tip
 | [src/components/document/pdf-viewer.tsx](<../frontend/src/components/document/pdf-viewer.tsx>) | Estrutura de rolagem, cabeçalho, sobreposições e páginas; não lê o formato PDF. |
 | [src/components/document/pdf-toolbar.tsx](<../frontend/src/components/document/pdf-toolbar.tsx>) | Zoom, identificação da página e ações do visualizador. |
 | [src/components/document/highlight-layer.tsx](<../frontend/src/components/document/highlight-layer.tsx>) | Desenha grifos, regra ativa e retângulos de pesquisa normalizados. |
-| [src/components/document/create-rule-popover.tsx](<../frontend/src/components/document/create-rule-popover.tsx>) | Formulário de regra manual ancorado na seleção de texto. |
+| [src/components/document/excerpt-action-popover.tsx](<../frontend/src/components/document/excerpt-action-popover.tsx>) | Botão “Grifar e analisar com IA” ancorado na seleção de texto. |
+| [src/components/excerpt/excerpt-panel.tsx](<../frontend/src/components/excerpt/excerpt-panel.tsx>) | Subtela de conversa sobre o trecho grifado: classificação, revisão (tipo, resumo, interpretação, busca, SQL e contagem) e aprovação. |
 | [src/components/document/rule-legend.tsx](<../frontend/src/components/document/rule-legend.tsx>) | Legenda de tipos e controle do filtro por tipo. |
 | [src/components/document/search-bar.tsx](<../frontend/src/components/document/search-bar.tsx>) | Entrada e navegação das ocorrências da busca no PDF. |
 | [src/components/document/use-pdf-search.ts](<../frontend/src/components/document/use-pdf-search.ts>) | Obtém texto do PDF e retângulos das ocorrências para pesquisa visual. |
@@ -119,11 +120,12 @@ porque a operação precisa de POST. Consultas comuns usam o cliente OpenAPI tip
 | Arquivo | Responsabilidade e pontos de entrada |
 | --- | --- |
 | [src/components/rules/rules-table.tsx](<../frontend/src/components/rules/rules-table.tsx>) | Tabela com seleção, hover, revisão humana, busca e coluna opcional de validação. |
-| [src/components/rules/rules-header.tsx](<../frontend/src/components/rules/rules-header.tsx>) | Contagens, filtros, avisos e ações da lista. |
+| [src/components/rules/rules-header.tsx](<../frontend/src/components/rules/rules-header.tsx>) | Categorias (verificáveis no CSV e gerais), filtros, avisos e ações da lista. |
 | [src/components/rules/rule-chip.tsx](<../frontend/src/components/rules/rule-chip.tsx>) | Citação clicável que conecta mensagem e destaque de regra. |
 | [src/components/rules/types.ts](<../frontend/src/components/rules/types.ts>) | Tipos mínimos usados pelos componentes de regras. |
 | [src/components/queries/query-badge.tsx](<../frontend/src/components/queries/query-badge.tsx>) | Estado/contagem da busca e acesso ao editor. |
-| [src/components/queries/query-editor-dialog.tsx](<../frontend/src/components/queries/query-editor-dialog.tsx>) | Editor por formulário ou JSON; converte valores e envia o filtro ao backend. |
+| [src/components/queries/query-builder.tsx](<../frontend/src/components/queries/query-builder.tsx>) | Rascunho da busca por formulário ou JSON; converte valores. Usado no editor e na revisão do trecho. |
+| [src/components/queries/query-editor-dialog.tsx](<../frontend/src/components/queries/query-editor-dialog.tsx>) | Edita a busca de uma regra já aprovada e envia o filtro ao backend. |
 | [src/components/records/records-panel.tsx](<../frontend/src/components/records/records-panel.tsx>) | Visão geral de regras e alternância entre evidências da validação e registros da busca. |
 | [src/components/validation/validation-badge.tsx](<../frontend/src/components/validation/validation-badge.tsx>) | Rótulo do resultado e ValidationSummary com contagens gerais. |
 | [src/components/validation/validation-details.tsx](<../frontend/src/components/validation/validation-details.tsx>) | Explicação, dados faltantes, data e tabela de evidências paginada por base/resultado. |
@@ -141,8 +143,8 @@ porque a operação precisa de POST. Consultas comuns usam o cliente OpenAPI tip
 | [src/lib/api/schema.d.ts](<../frontend/src/lib/api/schema.d.ts>) | Tipos gerados do OpenAPI. Atualizar com gen:api, nunca à mão. |
 | [src/lib/auth.ts](<../frontend/src/lib/auth.ts>) | Sessão, login/cadastro/logout, perfil/senha, validação de next e formatação do nome. |
 | [src/lib/analyses.ts](<../frontend/src/lib/analyses.ts>) | Consultas de análises, criação, upload/remoção de CSVs e polling das bases em processamento. |
-| [src/lib/documents.ts](<../frontend/src/lib/documents.ts>) | Documentos/PDF, regras, histórico, atualização otimista da revisão e leitura de SSE. |
-| [src/lib/queries.ts](<../frontend/src/lib/queries.ts>) | Operadores, descrição de filtros, geração/edição/execução de buscas e paginação de registros. |
+| [src/lib/documents.ts](<../frontend/src/lib/documents.ts>) | Documentos/PDF, regras, análise do trecho grifado, prévia da busca, aprovação, histórico e leitura de SSE. |
+| [src/lib/queries.ts](<../frontend/src/lib/queries.ts>) | Operadores, descrição de filtros, edição/execução de buscas e paginação de registros. |
 | [src/lib/validation.ts](<../frontend/src/lib/validation.ts>) | Rótulos, comando de revalidação e consulta das evidências. |
 | [src/lib/theme.ts](<../frontend/src/lib/theme.ts>) | Leitura, aplicação e persistência do tema e preferência do sistema. |
 | [src/lib/use-persistent-state.ts](<../frontend/src/lib/use-persistent-state.ts>) | Estado React validado em localStorage e armazenamento dos painéis. |

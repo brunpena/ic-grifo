@@ -61,7 +61,7 @@ Uploads de CSV usam XMLHttpRequest para progresso; o chat usa fetch para ler SSE
 
 | Método e caminho | Função | Sucesso | Acesso | Efeito |
 | --- | --- | --- | --- | --- |
-| `POST /api/v1/documents` | [upload_document](<../backend/app/api/v1/documents.py>) | 202 | Sessão exigida | Envia um arquivo (PDF, HTML ou TXT); a extração de regras continua em segundo plano |
+| `POST /api/v1/documents` | [upload_document](<../backend/app/api/v1/documents.py>) | 202 | Sessão exigida | Envia um arquivo (PDF, HTML ou TXT); a leitura do texto continua em segundo plano |
 | `POST /api/v1/documents/text` | [create_text_document](<../backend/app/api/v1/documents.py>) | 202 | Sessão exigida | Cria um documento a partir de texto colado |
 | `POST /api/v1/documents/url` | [create_url_document](<../backend/app/api/v1/documents.py>) | 202 | Sessão exigida | Baixa um documento (PDF ou página HTML) a partir de um link |
 | `GET /api/v1/documents` | [list_documents](<../backend/app/api/v1/documents.py>) | 200 | Sessão exigida | Documentos do usuário, do mais recente ao mais antigo |
@@ -69,13 +69,14 @@ Uploads de CSV usam XMLHttpRequest para progresso; o chat usa fetch para ler SSE
 | `GET /api/v1/documents/{document_id}/file` | [get_document_file](<../backend/app/api/v1/documents.py>) | 200 | Sessão exigida | O PDF original |
 | `DELETE /api/v1/documents/{document_id}` | [delete_document](<../backend/app/api/v1/documents.py>) | 204 | Sessão exigida | Exclui o documento, as regras e a conversa |
 | `GET /api/v1/documents/{document_id}/rules` | [list_rules](<../backend/app/api/v1/documents.py>) | 200 | Sessão exigida | Regras do documento, na ordem do texto |
-| `POST /api/v1/documents/{document_id}/rules` | [create_rule](<../backend/app/api/v1/documents.py>) | 201 | Sessão exigida | Cria uma regra a partir de um trecho selecionado na página |
-| `PATCH /api/v1/rules/{rule_id}` | [update_rule](<../backend/app/api/v1/documents.py>) | 200 | Sessão exigida | Atualiza situação, tipo, resumo ou comentário |
+| `POST /api/v1/documents/{document_id}/excerpt-analysis` | [analyze_excerpt](<../backend/app/api/v1/documents.py>) | 200 | Sessão exigida | A IA analisa o trecho grifado (com a conversa até aqui) e propõe a regra; não salva nada |
+| `POST /api/v1/documents/{document_id}/query-preview` | [preview_query](<../backend/app/api/v1/documents.py>) | 200 | Sessão exigida | Valida a busca revisada e conta os registros; não salva nada |
+| `POST /api/v1/documents/{document_id}/rules` | [create_rule](<../backend/app/api/v1/documents.py>) | 201 | Sessão exigida | Aprova a regra revisada: categoria `csv` (com busca) ou `geral`; é a única forma de criar regras |
+| `PATCH /api/v1/rules/{rule_id}` | [update_rule](<../backend/app/api/v1/documents.py>) | 200 | Sessão exigida | Atualiza situação, tipo, resumo, interpretação ou comentário |
 | `DELETE /api/v1/rules/{rule_id}` | [delete_rule](<../backend/app/api/v1/documents.py>) | 204 | Sessão exigida | Exclui a regra |
-| `POST /api/v1/documents/{document_id}/queries` | [generate_document_queries](<../backend/app/api/v1/documents.py>) | 202 | Sessão exigida | Gera com a IA as buscas das regras nas bases da análise (em segundo plano) |
-| `PUT /api/v1/rules/{rule_id}/query` | [set_rule_query](<../backend/app/api/v1/documents.py>) | 200 | Sessão exigida | Define (ou corrige) a busca da regra e roda de novo |
+| `PUT /api/v1/rules/{rule_id}/query` | [set_rule_query](<../backend/app/api/v1/documents.py>) | 200 | Sessão exigida | Define (ou corrige) a busca da regra; a regra passa para `csv` |
 | `POST /api/v1/rules/{rule_id}/query/run` | [run_rule_query](<../backend/app/api/v1/documents.py>) | 200 | Sessão exigida | Roda de novo a busca da regra (ex.: depois de reenviar a base) |
-| `DELETE /api/v1/rules/{rule_id}/query` | [delete_rule_query](<../backend/app/api/v1/documents.py>) | 204 | Sessão exigida | Remove a busca da regra |
+| `DELETE /api/v1/rules/{rule_id}/query` | [delete_rule_query](<../backend/app/api/v1/documents.py>) | 204 | Sessão exigida | Remove a busca da regra; a regra passa para `geral` |
 | `GET /api/v1/rules/{rule_id}/records` | [list_rule_records](<../backend/app/api/v1/documents.py>) | 200 | Sessão exigida | Registros da base encontrados pela busca da regra, paginados |
 | `POST /api/v1/documents/{document_id}/validation` | [validate_document](<../backend/app/api/v1/documents.py>) | 202 | Sessão exigida | Interpreta as colunas e verifica todas as regras do documento nas bases |
 | `GET /api/v1/rules/{rule_id}/validation/records` | [validation_records](<../backend/app/api/v1/documents.py>) | 200 | Sessão exigida | Registros verificados, com resultado e evidência de cada linha |
@@ -197,12 +198,10 @@ A documentação gerada pelo FastAPI fornece os detalhes de todos os campos; os 
 explicam por que cada endpoint existe e qual parte do produto o utiliza.
 
 
-## Retomar a extracao por pacotes
+## Retomar a leitura de um documento
 
-`POST /api/v1/documents/{document_id}/resume` retoma um documento em `error`,
-sem novo upload. Exige o dono autenticado; retorna 202 com `DocumentOut` ou 409
-se o documento nao estiver interrompido. Cada pacote concluido fica persistido
-no banco (migration 0008), incluindo pacotes sem regras. Reinicios reutilizam os
-pacotes salvos; mudancas no texto, modelo, prompt, divisao ou bases invalidam o
-checkpoint. Respostas incompletas ficam pendentes. A interface oferece
-"Continuar processamento" tambem quando o PDF ja esta aberto.
+`POST /api/v1/documents/{document_id}/resume` lê de novo um documento em `error`,
+a partir do original ou do PDF já salvos, sem novo upload. Exige o dono autenticado;
+retorna 202 com `DocumentOut` ou 409 se o documento não estiver interrompido.
+Páginas e palavras são substituídas, sem duplicar. A interface oferece "Continuar
+processamento" também quando o PDF já está aberto.

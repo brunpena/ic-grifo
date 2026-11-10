@@ -1,6 +1,7 @@
 # Verificação das regras nas bases
 
-O fluxo padrão interpreta as colunas, extrai as regras e prepara consultas SQL.
+O fluxo padrão interpreta as colunas; as regras nascem de trechos grifados e
+aprovados pela pessoa, com a consulta SQL preparada na aprovação.
 A seleção de uma regra executa a consulta no DuckDB em cache e preenche a tabela,
 sem chamar a IA. Não há validação geral automática na ingestão ou ao adicionar bases.
 A verificação de conformidade descrita abaixo continua disponível por pedido explícito
@@ -9,8 +10,8 @@ A verificação de conformidade descrita abaixo continua disponível por pedido 
 Para estudar a implementação com diagramas e exemplos completos, leia o [guia de validação](../docs/validacao.md), os [fluxogramas](../docs/fluxos.md) e o [mapa do backend](../docs/backend.md).
 
 Cada análise reúne documentos normativos e bases CSV. O processamento agora interpreta
-com IA o significado das colunas e verifica todas as regras extraídas, inclusive as que
-não receberam uma associação com bases durante a extração.
+com IA o significado das colunas e verifica todas as regras verificáveis no CSV
+(`category = csv`). Regras gerais ficam registradas como `ignorada`.
 
 ## Fluxo
 

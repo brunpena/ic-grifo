@@ -142,7 +142,6 @@ Os valores efetivos estão em
 | CSV | `MAX_DATASET_MB` | Limite de upload; vazio significa sem esse limite de aplicação. O Storage pode impor outro. |
 | Gemini | `GEMINI_API_KEY`, `GEMINI_MODEL`, `GEMINI_THINKING_LEVEL` | Provedor e geração de respostas. |
 | Paralelismo | `LLM_MAX_CONCURRENCY`, `LLM_HEDGE_SECONDS` | Concorrência global por processo; reforço de chamada lenta somente com capacidade disponível. |
-| Blocos de texto | `LLM_CHUNK_CHARS`, `LLM_CHUNK_OVERLAP` | Tamanho e sobreposição da extração. |
 
 A chave do Storage fica no backend. Variáveis `NEXT_PUBLIC_*` fazem parte do
 cliente público; não devem conter chaves privadas.

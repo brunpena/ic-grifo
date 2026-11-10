@@ -1,8 +1,9 @@
 # IC Grifo
 
 O Grifo ajuda a estudar documentos normativos, como contratos, editais e regulamentos.
-Ele extrai regras, liga cada uma ao trecho original do documento e verifica seu
-cumprimento em bases CSV. A pessoa pode revisar as regras e conversar sobre o documento.
+A pessoa grifa no documento os trechos que são regras; a IA interpreta cada trecho,
+diz se ele pode ser verificado nas bases CSV e propõe a consulta. Nada entra no banco
+de regras sem a aprovação da pessoa, e cada regra fica ligada ao trecho de onde saiu.
 
 ## Comece pela documentação
 
@@ -25,7 +26,10 @@ O [índice da documentação](docs/README.md) também organiza a leitura por per
 flowchart LR
     CSV["Bases CSV"] --> COL["Tipos e significado das colunas"]
     DOC["PDF, HTML, texto ou link"] --> PDF["PDF e texto com coordenadas"]
-    PDF --> REG["Regras extraídas pelo Gemini"]
+    PDF --> GRIFO["Trecho grifado pela pessoa"]
+    GRIFO --> IA["Gemini interpreta e propõe a regra e a consulta"]
+    COL --> IA
+    IA --> REG["Regra aprovada: verificável no CSV ou geral"]
     COL --> PLAN["Plano de verificação"]
     REG --> PLAN
     PLAN --> MOTOR["Conferência dos registros em Python"]
@@ -33,7 +37,7 @@ flowchart LR
     REG --> REV["Revisão humana e conversa"]
 ```
 
-Há três conceitos diferentes: **revisão humana** da regra extraída, **busca** dos
+Há três conceitos diferentes: **aprovação humana** da regra grifada, **busca** dos
 registros aos quais ela se aplica e **validação** do cumprimento nesses registros.
 A documentação usa esses nomes de maneira consistente.
 
