@@ -3,19 +3,16 @@
 Substitui as chamadas ao Gemini por respostas fixas, montadas para a Portaria
 Normativa nº 21/2012 (Sisu) e a base `chamada_regular_sisu_2022_1.csv`:
 
-- extração de regras: localiza trechos conhecidos da portaria no texto do PDF;
+- análise de um trecho grifado: reconhece trechos conhecidos da portaria e devolve a
+  regra, a interpretação e a busca (StructuredQuery) quando ela é verificável;
 - interpretação das colunas da base;
-- geração das buscas (StructuredQuery) de cada regra;
 - planos de validação (escopo + critérios de cumprimento).
 
 Todo o resto do fluxo (validação das buscas, SQL no DuckDB, paginação, grifos)
-continua sendo o código real. Para outros documentos a extração devolve as regras
-cujos trechos forem encontrados no texto (possivelmente nenhuma).
+continua sendo o código real. Outros trechos recebem uma resposta genérica.
 """
 
 import asyncio
-import re
-from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 
 from app.core.config import get_settings
@@ -345,50 +342,11 @@ RULES: list[MockRule] = [
 ]
 
 
-def _pattern(phrase: str) -> re.Pattern:
-    return re.compile(r"\s+".join(re.escape(word) for word in phrase.split()))
-
-
-def _locate(text: str, rule: MockRule) -> tuple[int, int] | None:
-    start = _pattern(rule.start).search(text)
-    if start is None:
-        return None
-    end = _pattern(rule.end).search(text, start.start())
-    if end is None or end.end() - start.start() > 3000:
-        return None
-    return start.start(), end.end()
-
-
 def _sisu_dataset(names: list[str], datasets: list[llm.DatasetPrompt]) -> str | None:
     for dataset in datasets:
         if any(c["name"] == SISU_MARKER for c in dataset.columns):
             return dataset.name
     return names[0] if names else None
-
-
-async def extract_rules(
-    text: str,
-    on_progress: Callable[[int, int], Awaitable[None]] | None = None,
-    datasets: list[llm.DatasetPrompt] | None = None,
-) -> list[llm.ExtractedRule]:
-    datasets = datasets or []
-    target = _sisu_dataset([d.name for d in datasets], datasets)
-    steps = 4
-    for step in range(steps):
-        if on_progress:
-            await on_progress(step, steps)
-        # Pequena pausa para a tela mostrar o progresso, como na extração real.
-        await asyncio.sleep(0.8)
-    if on_progress:
-        await on_progress(steps, steps)
-    found: list[llm.ExtractedRule] = []
-    for rule in RULES:
-        span = _locate(text, rule)
-        if span is None:
-            continue
-        related = [target] if target and rule.conditions is not None else []
-        found.append(llm.ExtractedRule(rule.type, span[0], span[1], rule.summary, related))
-    return found
 
 
 def _normalize(value: str) -> str:
@@ -407,25 +365,62 @@ def _match(prompt: llm.RulePrompt) -> MockRule | None:
     return None
 
 
-async def generate_queries(
-    rules: list[llm.RulePrompt], datasets: list[llm.DatasetPrompt]
-) -> dict[int, llm.GeneratedQuery]:
-    await asyncio.sleep(1.0)
-    target = _sisu_dataset([d.name for d in datasets], datasets)
-    result: dict[int, llm.GeneratedQuery] = {}
-    for prompt in rules:
-        rule = _match(prompt)
-        if rule is None or rule.conditions is None or target is None:
-            reason = rule.reason if rule else "Nenhuma coluna da base avalia esta regra."
-            empty = {"dataset": "?", "logic": "and", "conditions": []}
-            result[prompt.ref] = llm.GeneratedQuery(dataset=None, query=empty, reason=reason)
-            continue
-        result[prompt.ref] = llm.GeneratedQuery(
-            dataset=target,
-            query={"dataset": target, "logic": rule.logic, "conditions": rule.conditions},
-            reason=rule.reason,
+def _excerpt_rule(excerpt: str) -> MockRule | None:
+    """A regra conhecida cujo começo (ou fim) está no trecho, ou que contém o trecho."""
+    text = _normalize(excerpt)
+    for rule in RULES:
+        start, end = _normalize(rule.start), _normalize(rule.end)
+        if start[:50] in text or end[-40:] in text or (len(text) >= 30 and text in start):
+            return rule
+    return None
+
+
+NORMATIVE = ("dever", "vedad", "obrigat", "proibid", "podera", "prazo", "sera ", "compete")
+
+
+async def analyze_excerpt(prompt: llm.ExcerptPrompt) -> llm.ExcerptAnswer:
+    await asyncio.sleep(0.8)
+    target = _sisu_dataset([d.name for d in prompt.datasets], prompt.datasets)
+    rule = _excerpt_rule(prompt.excerpt)
+    if rule is None:
+        normative = any(term in _normalize(prompt.excerpt) for term in NORMATIVE)
+        return llm.ExcerptAnswer(
+            reply=(
+                "No modo de demonstração só reconheço trechos da Portaria nº 21/2012. "
+                + (
+                    "O trecho parece ter força normativa, então o registrei como regra geral."
+                    if normative
+                    else "O trecho não parece descrever uma regra."
+                )
+            ),
+            is_rule=normative,
+            verifiable=False,
+            type="outro",
+            summary=" ".join(prompt.excerpt.split())[:150],
+            interpretation="Interpretação indisponível no modo de demonstração.",
+            reason="Trecho fora das respostas prontas da demonstração.",
+            query=None,
         )
-    return result
+    verifiable = rule.conditions is not None and target is not None
+    if verifiable:
+        reply = (
+            f"Este trecho é uma regra verificável na base {target}. {rule.reason} "
+            "Revise a busca antes de aprovar."
+        )
+        query = {"dataset": target, "logic": rule.logic, "conditions": rule.conditions}
+    else:
+        reply = f"Este trecho é uma regra, mas não dá para verificá-la nos dados: {rule.reason}"
+        query = None
+    return llm.ExcerptAnswer(
+        reply=reply,
+        is_rule=True,
+        verifiable=verifiable,
+        type=rule.type,
+        summary=rule.summary,
+        interpretation=rule.plan_explanation,
+        reason=rule.reason,
+        query=query,
+    )
 
 
 async def plan_rules(

@@ -47,30 +47,86 @@ def _answer(text: str, finish: str = "STOP") -> dict:
     return {"candidates": [{"content": {"parts": [{"text": text}]}, "finishReason": finish}]}
 
 
-async def test_extract_rules_parses_json_and_retries_rate_limit(gemini):
+def _prompt(**kwargs) -> llm.ExcerptPrompt:
+    values = {
+        "excerpt": "Contratos acima de R$ 50 mil exigem garantia.",
+        "page": 3,
+        "context": "CLÁUSULA 5. Contratos acima de R$ 50 mil exigem garantia.",
+        "datasets": [
+            llm.DatasetPrompt(
+                "contratos", 2, [{"name": "Valor", "type": "decimal", "examples": ["10"]}]
+            )
+        ],
+        "history": [],
+    }
+    return llm.ExcerptPrompt(**{**values, **kwargs})
+
+
+async def test_analyze_excerpt_parses_json_and_retries_rate_limit(gemini):
     responses, requests = gemini
-    text = "Objeto. Pagar em até 10 dias; caso atrase, multa. Fim."
-    sentences = llm.split_sentences(text)
-    rules = {
-        "rules": [
-            {"type": "condicao", "first": 3, "last": 2, "summary": " Multa por atraso "},
-            {"type": "inventado", "first": 2, "last": 2, "summary": "y"},
-            {"type": "prazo", "first": 1, "last": 9, "summary": "fora do bloco"},
-        ]
+    answer = {
+        "reply": "É uma condição verificável.",
+        "is_rule": True,
+        "verifiable": True,
+        "type": "inventado",
+        "summary": "  Exigir   garantia acima de 50 mil ",
+        "interpretation": "Contratos com Valor acima de 50 mil.",
+        "reason": "A coluna Valor existe.",
+        "dataset": "contratos",
+        "logic": "talvez",
+        "conditions": [
+            {"column": "Valor", "op": "gt", "value": "50000"},
+            {"column": "Valor", "op": "DROP TABLE", "value": "1"},
+        ],
     }
     responses += [
         httpx.Response(429, json={"error": {"details": [{"retryDelay": "3s"}]}}),
-        httpx.Response(200, json=_answer(json.dumps(rules))),
+        httpx.Response(200, json=_answer(json.dumps(answer))),
     ]
-    found = await llm.extract_rules_from_chunk(text, sentences, range(1, 3))
-    assert found == [llm.ExtractedRule("condicao", 8, 49, "Multa por atraso")]
-    assert text[8:49] == "Pagar em até 10 dias; caso atrase, multa."
+    history = [
+        {"role": "user", "content": "Analise o trecho grifado."},
+        {"role": "assistant", "content": "É uma condição."},
+        {"role": "user", "content": "Considere só acima de 60 mil."},
+    ]
+    current = {"category": "csv", "type": "condicao", "summary": "x", "query": None}
+    found = await llm.analyze_excerpt(_prompt(history=history, current=current))
+    assert found.verifiable and found.type == "outro"
+    assert found.summary == "Exigir garantia acima de 50 mil"
+    assert found.query == {
+        "dataset": "contratos",
+        "logic": "and",
+        "conditions": [{"column": "Valor", "op": "gt", "value": "50000"}],
+    }
     assert len(requests) == 2
     assert requests[-1].headers["x-goog-api-key"] == "chave-teste"
     assert requests[-1].url.path.endswith(":generateContent")
     body = json.loads(requests[-1].content)
-    assert "[2] Pagar em até 10 dias;" in body["contents"][0]["parts"][0]["text"]
+    assert [c["role"] for c in body["contents"]] == ["user", "model", "user"]
+    first = body["contents"][0]["parts"][0]["text"]
+    assert '<base nome="contratos" linhas="2">' in first
+    assert '<contexto pagina="3">' in first and "<trecho_grifado>" in first
+    last = body["contents"][-1]["parts"][0]["text"]
+    assert "<proposta_atual>" in last and last.endswith("Considere só acima de 60 mil.")
     assert body["generationConfig"]["thinkingConfig"] == {"thinkingLevel": "low"}
+
+
+async def test_non_verifiable_excerpt_has_no_query(gemini):
+    responses, _ = gemini
+    answer = {
+        "reply": "Não há coluna sobre a assinatura do termo.",
+        "is_rule": True,
+        "verifiable": False,
+        "type": "obrigacao",
+        "summary": "Assinar o termo",
+        "interpretation": "",
+        "reason": "Sem coluna de assinatura.",
+        "dataset": "contratos",
+        "logic": "and",
+        "conditions": [{"column": "Valor", "op": "gt", "value": "1"}],
+    }
+    responses.append(httpx.Response(200, json=_answer(json.dumps(answer))))
+    found = await llm.analyze_excerpt(_prompt())
+    assert not found.verifiable and found.query is None and found.type == "obrigacao"
 
 
 async def test_daily_quota_is_not_retried(gemini):
@@ -78,7 +134,7 @@ async def test_daily_quota_is_not_retried(gemini):
     error = {"error": {"details": [{"quotaId": "GenerateRequestsPerDayPerProjectPerModel"}]}}
     responses.append(httpx.Response(429, json=error))
     with pytest.raises(llm.LlmApiError, match="cota diária"):
-        await llm.extract_rules_from_chunk("Texto.", llm.split_sentences("Texto."), range(1))
+        await llm.analyze_excerpt(_prompt())
     assert len(requests) == 1
 
 
@@ -87,7 +143,7 @@ async def test_invalid_key_gives_friendly_message(gemini):
     error = {"error": {"message": "API key not valid. Please pass a valid key."}}
     responses.append(httpx.Response(400, json=error))
     with pytest.raises(llm.LlmApiError, match="GEMINI_API_KEY"):
-        await llm.extract_rules_from_chunk("Texto.", llm.split_sentences("Texto."), range(1))
+        await llm.analyze_excerpt(_prompt())
 
 
 async def test_stream_chat_yields_text_and_maps_roles(gemini):
@@ -112,7 +168,7 @@ async def test_stream_chat_yields_text_and_maps_roles(gemini):
 async def test_missing_key_is_reported(monkeypatch):
     monkeypatch.setattr(get_settings(), "gemini_api_key", SecretStr(""))
     with pytest.raises(llm.LlmUnavailableError, match="GEMINI_API_KEY"):
-        await llm.extract_rules("texto")
+        await llm.analyze_excerpt(_prompt())
 
 
 async def test_slow_request_is_hedged(monkeypatch):
@@ -131,26 +187,6 @@ async def test_slow_request_is_hedged(monkeypatch):
     response = await llm._post_hedged(Client(), "chave-teste", {})
     assert response.status_code == 200
     assert calls == 2
-
-
-async def test_failed_chunk_cancels_the_others(monkeypatch):
-    monkeypatch.setattr(get_settings(), "gemini_api_key", SecretStr("chave-teste"))
-    monkeypatch.setattr(get_settings(), "llm_chunk_chars", 20)
-    monkeypatch.setattr(get_settings(), "llm_max_concurrency", 4)
-    pending: list[asyncio.Task] = []
-
-    async def extract(text, sentences, ids, datasets=None):
-        if ids.start == 0:
-            await asyncio.sleep(0)
-            raise llm.LlmApiError("cota")
-        pending.append(asyncio.current_task())
-        await asyncio.Event().wait()
-
-    monkeypatch.setattr(llm, "extract_rules_from_chunk", extract)
-    with pytest.raises(llm.LlmApiError):
-        await llm.extract_rules("Primeira frase longa. Segunda frase longa. Terceira frase.")
-    await asyncio.sleep(0)
-    assert pending and all(t.cancelled() for t in pending)
 
 
 @pytest.mark.parametrize("stream", [False, True])
@@ -283,58 +319,8 @@ def test_quota_logs_identify_slots_without_exposing_credentials(monkeypatch, cap
     assert "private-credential" not in str(record.__dict__)
 
 
-async def test_resume_only_sends_missing_packages(monkeypatch):
-    monkeypatch.setattr(get_settings(), "gemini_api_key", SecretStr("test"))
-    monkeypatch.setattr(get_settings(), "llm_chunk_chars", 20)
-    monkeypatch.setattr(get_settings(), "llm_chunk_overlap", 0)
-    monkeypatch.setattr(get_settings(), "llm_max_concurrency", 1)
-    text = "Primeira frase longa. Segunda frase longa. Terceira frase longa."
-    calls, saved, progress = [], {}, []
-    fail = True
-
-    async def extract(text, sentences, ids, datasets):
-        calls.append(ids.start)
-        if fail and ids.start > 0:
-            raise llm.LlmApiError("overloaded")
-        # An empty successful package must also be remembered.
-        return (
-            []
-            if ids.start == 0
-            else [
-                llm.ExtractedRule(
-                    "prazo",
-                    sentences[ids.start].start,
-                    sentences[ids.start].end,
-                    "Prazo",
-                )
-            ]
-        )
-
-    async def save(value):
-        saved.clear()
-        saved.update(json.loads(json.dumps(value)))
-
-    async def report(done, total):
-        progress.append((done, total))
-
-    monkeypatch.setattr(llm, "extract_rules_from_chunk", extract)
-    with pytest.raises(llm.LlmApiError):
-        await llm.extract_rules(text, on_checkpoint=save)
-    assert len(saved["completed"]) == 1
-    calls.clear()
-    fail = False
-    rules = await llm.extract_rules(text, checkpoint=saved, on_checkpoint=save, on_progress=report)
-    assert 0 not in calls and len(calls) == 2 and len(rules) == 2
-    assert progress[0] == (1, 3) and progress[-1] == (3, 3)
-    calls.clear()
-    assert await llm.extract_rules(text, checkpoint=saved) == rules
-    assert calls == []
-    await llm.extract_rules(text + " Quarta frase longa.", checkpoint=saved)
-    assert 0 in calls
-
-
-async def test_incomplete_package_is_not_success(gemini):
+async def test_incomplete_answer_is_not_success(gemini):
     responses, _ = gemini
-    responses.append(httpx.Response(200, json=_answer('{"rules": []}', "MAX_TOKENS")))
-    with pytest.raises(llm.LlmApiError, match="Resposta incompleta"):
-        await llm.extract_rules_from_chunk("Texto.", llm.split_sentences("Texto."), range(1))
+    responses.append(httpx.Response(200, json=_answer('{"reply": "Parcial', "MAX_TOKENS")))
+    with pytest.raises(llm.LlmApiError, match="inválida"):
+        await llm.analyze_excerpt(_prompt())

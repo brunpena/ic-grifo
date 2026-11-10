@@ -8,8 +8,6 @@ import pytest
 
 from app.main import app
 from app.services import llm, safe_fetch
-from app.services.ingest import dedupe_rules
-from app.services.llm import ExtractedRule, numbered, split_chunks, split_sentences
 from app.services.pdf_text import PdfReadError, extract_pdf
 from app.services.text_match import find_excerpt
 
@@ -60,63 +58,42 @@ def test_find_excerpt_tolerates_whitespace_and_dashes():
     assert find_excerpt(text, "algo que não existe") is None
 
 
-def test_split_sentences_keeps_offsets():
-    text = "CLÁUSULA 1\n\nA contratada deverá\npagar em 30 dias; caso atrase, haverá multa.  Fim"
-    sentences = split_sentences(text)
-    assert [text[x.start : x.end] for x in sentences] == [
-        "CLÁUSULA 1",
-        "A contratada deverá\npagar em 30 dias;",
-        "caso atrase, haverá multa.",
-        "Fim",
-    ]
-    assert numbered(text, sentences, range(1, 3)) == (
-        "[2] A contratada deverá pagar em 30 dias;\n[3] caso atrase, haverá multa."
-    )
-
-
-def test_split_chunks_cover_sentences_with_overlap():
-    text = " ".join(f"Frase número {i} com algum texto." for i in range(200))
-    sentences = split_sentences(text)
-    chunks = split_chunks(sentences, size=1000, overlap=200)
-    assert chunks[0].start == 0 and chunks[-1].stop == len(sentences)
-    for a, b in zip(chunks, chunks[1:], strict=False):
-        assert a.start < b.start < a.stop  # há sobreposição e o bloco seguinte avança
-        assert sum(sentences[i].end - sentences[i].start for i in a) <= 1000
-
-
-def test_dedupe_rules_drops_duplicates_from_overlapping_chunks():
-    rule = ExtractedRule("obrigacao", 7, 44, "Pagar em 30 dias")
-    kept = dedupe_rules(
-        [ExtractedRule("prazo", 50, 60, "x"), rule, ExtractedRule("obrigacao", 7, 44, "Pagar")]
-    )
-    assert kept == [rule, ExtractedRule("prazo", 50, 60, "x")]
-
-
 # ----- fluxo completo, com a IA simulada -----
 
 
 @pytest.fixture
 def fake_llm(monkeypatch):
-    async def extract(text, on_progress=None, datasets=None, **kwargs):
-        if on_progress:
-            await on_progress(1, 1)
+    prompts: list[llm.ExcerptPrompt] = []
 
-        def rule(type_: str, excerpt: str, summary: str) -> ExtractedRule:
-            start = text.index(excerpt)
-            return ExtractedRule(type_, start, start + len(excerpt), summary)
-
-        return [
-            rule("prazo", "em até 10 dias úteis", "Relatório em até 10 dias úteis"),
-            rule("proibicao", "É vedada a subcontratação do objeto", "Sem subcontratar"),
-        ]
+    async def analyze(prompt):
+        prompts.append(prompt)
+        return llm.ExcerptAnswer(
+            reply="É um prazo, mas não há base para verificá-lo.",
+            is_rule=True,
+            verifiable=False,
+            type="prazo",
+            summary="Relatório em até 10 dias úteis",
+            interpretation="O relatório mensal deve ser entregue em até 10 dias úteis.",
+            reason="Nenhuma base registra a entrega do relatório.",
+            query=None,
+        )
 
     async def chat(context, history):
         assert "[Página 1]" in context and "R1" in context
         for part in ["O prazo é de 10 dias úteis ", "[R1]", "."]:
             yield part
 
-    monkeypatch.setattr(llm, "extract_rules", extract)
+    monkeypatch.setattr(llm, "analyze_excerpt", analyze)
     monkeypatch.setattr(llm, "stream_chat", chat)
+    return prompts
+
+
+async def approve(client: httpx.AsyncClient, doc_id: str, excerpt: str, **fields) -> dict:
+    """Aprova uma regra de um trecho grifado (única forma de criar regras)."""
+    body = {"type": "obrigacao", "summary": excerpt[:40], "page": 1, "excerpt": excerpt}
+    resp = await client.post(f"/api/v1/documents/{doc_id}/rules", json={**body, **fields})
+    assert resp.status_code == 201, resp.text
+    return resp.json()
 
 
 async def _login(client: httpx.AsyncClient) -> None:
@@ -141,7 +118,7 @@ async def _wait_ready(client: httpx.AsyncClient, doc_id: str) -> dict:
 
 
 @pytest.mark.db
-async def test_upload_extract_rules_and_chat(migrated_db, client, fake_llm):
+async def test_upload_highlight_approve_and_chat(migrated_db, client, fake_llm):
     await _login(client)
     resp = await client.post(
         "/api/v1/documents", files={"file": ("contrato.pdf", make_pdf(), "application/pdf")}
@@ -150,35 +127,79 @@ async def test_upload_extract_rules_and_chat(migrated_db, client, fake_llm):
     doc = resp.json()
     assert doc["status"] == "processing"
 
+    # Sem extração automática: o documento fica pronto para grifar, sem regras.
     doc = await _wait_ready(client, doc["id"])
     assert doc["status"] == "ready" and doc["page_count"] == 2
+    url = f"/api/v1/documents/{doc['id']}"
+    assert (await client.get(f"{url}/rules")).json() == []
 
-    rules = (await client.get(f"/api/v1/documents/{doc['id']}/rules")).json()
-    assert [r["type"] for r in rules] == ["prazo", "proibicao"]
-    box = rules[0]["boxes"][0]
-    assert rules[0]["page"] == 1 and box["page"] == 1
-    assert 0 < box["x"] < 1 and 0 < box["y"] < 1 and 0 < box["width"] < 1
-
-    resp = await client.patch(f"/api/v1/rules/{rules[0]['id']}", json={"status": "validada"})
-    assert resp.json()["status"] == "validada"
-
-    # Regra manual a partir de um trecho selecionado na página 2.
+    # A IA analisa só o trecho grifado; nada é salvo.
     resp = await client.post(
-        f"/api/v1/documents/{doc['id']}/rules",
+        f"{url}/excerpt-analysis", json={"page": 1, "excerpt": "em até 10 dias úteis"}
+    )
+    assert resp.status_code == 200, resp.text
+    analysis = resp.json()
+    assert analysis["reply"].startswith("É um prazo")
+    proposal = analysis["proposal"]
+    assert proposal["category"] == "geral" and proposal["query"] is None
+    assert fake_llm[0].excerpt == "em até 10 dias úteis" and fake_llm[0].page == 1
+    assert "CLÁUSULA PRIMEIRA" in fake_llm[0].context
+    assert (await client.get(f"{url}/rules")).json() == []
+    resp = await client.post(
+        f"{url}/excerpt-analysis",
         json={
-            "type": "obrigacao",
-            "summary": "Entregar relatório",
-            "page": 2,
-            "excerpt": "A contratada deverá  entregar o relatório mensal",
+            "page": 1,
+            "excerpt": "em até 10 dias úteis",
+            "messages": [{"role": "assistant", "content": "oi"}],
         },
     )
-    assert resp.status_code == 201
-    assert resp.json()["page"] == 2 and resp.json()["origin"] == "manual"
+    assert resp.status_code == 422 and resp.json()["error"]["code"] == "invalid_messages"
     resp = await client.post(
-        f"/api/v1/documents/{doc['id']}/rules",
+        f"{url}/excerpt-analysis", json={"page": 1, "excerpt": "trecho que não existe"}
+    )
+    assert resp.status_code == 422 and resp.json()["error"]["code"] == "excerpt_not_found"
+
+    # A aprovação cria a regra, já validada e ligada ao trecho.
+    prazo = await approve(
+        client,
+        doc["id"],
+        "em até 10 dias úteis",
+        type=proposal["type"],
+        summary=proposal["summary"],
+        interpretation=proposal["interpretation"],
+        category="geral",
+        origin="ia",
+    )
+    assert prazo["status"] == "validada" and prazo["category"] == "geral"
+    assert prazo["origin"] == "ia" and prazo["query"] is None
+    assert prazo["interpretation"].startswith("O relatório mensal")
+    box = prazo["boxes"][0]
+    assert prazo["page"] == 1 and box["page"] == 1
+    assert 0 < box["x"] < 1 and 0 < box["y"] < 1 and 0 < box["width"] < 1
+
+    manual = await approve(
+        client, doc["id"], "A contratada deverá  entregar o relatório mensal", page=2
+    )
+    assert manual["page"] == 2 and manual["origin"] == "manual"
+    resp = await client.post(
+        f"{url}/rules",
         json={"type": "obrigacao", "summary": "x", "page": 1, "excerpt": "trecho que não existe"},
     )
     assert resp.status_code == 422
+    # Regra verificável sem busca não é aceita.
+    resp = await client.post(
+        f"{url}/rules",
+        json={
+            "type": "proibicao",
+            "summary": "Sem subcontratar",
+            "page": 1,
+            "excerpt": "É vedada a subcontratação do objeto",
+            "category": "csv",
+        },
+    )
+    assert resp.status_code == 422 and resp.json()["error"]["code"] == "invalid_query"
+    rules = (await client.get(f"{url}/rules")).json()
+    assert [r["id"] for r in rules] == [prazo["id"], manual["id"]]
 
     # Conversa por SSE.
     events = []
@@ -194,7 +215,7 @@ async def test_upload_extract_rules_and_chat(migrated_db, client, fake_llm):
     assert [e for e, _ in events][-1] == "done"
     final = events[-1][1]
     assert final["content"] == "O prazo é de 10 dias úteis."
-    assert [c["id"] for c in final["citations"]] == [rules[0]["id"]]
+    assert [c["id"] for c in final["citations"]] == [prazo["id"]]
 
     history = (await client.get(f"/api/v1/documents/{doc['id']}/messages")).json()
     assert [m["role"] for m in history] == ["user", "assistant"]
@@ -249,8 +270,8 @@ async def test_text_and_link_documents_share_an_analysis(
     pasted = resp.json()
     assert pasted["source_type"] == "text" and pasted["title"] == PARAGRAPHS[0]
     assert (await _wait_ready(client, pasted["id"]))["status"] == "ready"
-    rules = (await client.get(f"/api/v1/documents/{pasted['id']}/rules")).json()
-    assert rules and rules[0]["boxes"]  # o grifo funciona no PDF diagramado
+    rule = await approve(client, pasted["id"], "É vedada a subcontratação do objeto")
+    assert rule["boxes"]  # o grifo funciona no PDF diagramado
     pdf = await client.get(f"/api/v1/documents/{pasted['id']}/file")
     assert pdf.content.startswith(b"%PDF-")
 

@@ -1,8 +1,7 @@
-"""Buscas das regras nas bases: geração pela IA, validação, execução e gravação.
+"""Buscas das regras nas bases: validação, prévia, execução e gravação.
 
-A busca gerada pela IA que não passa na validação é guardada mesmo assim, com
-`state = "erro"` e a mensagem, para a pessoa poder corrigir na tela. Buscas editadas à
-mão (`origin = "manual"`) nunca são substituídas pela IA.
+A busca chega já aprovada pela pessoa (proposta pela IA a partir do trecho grifado ou
+editada à mão). Nenhuma busca é gerada ou substituída automaticamente.
 """
 
 import asyncio
@@ -14,10 +13,10 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from pydantic import ValidationError
-from sqlalchemy import delete, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Dataset, Document, Rule, RuleQuery
+from app.db.models import Dataset, RuleQuery
 from app.schemas.queries import RecordRow, RecordsOut, StructuredQuery
 from app.services import llm
 from app.services.duckdb_sql import query_sql
@@ -72,6 +71,17 @@ class Execution:
     # A busca com nomes de coluna exatos e valores no tipo da coluna (é o que se grava).
     normalized: StructuredQuery
     rows: Sequence[int]
+
+
+async def count_matches(
+    query: StructuredQuery, datasets: list[Dataset]
+) -> tuple[CompiledQuery, int]:
+    """Prévia da busca na revisão: valida e conta os registros, sem gravar nada."""
+    compiled = compile_query(query, dataset_refs(datasets))
+    dataset = next(d for d in datasets if d.id == compiled.dataset.id)
+    loaded = await load_dataset(dataset.id, dataset.size_bytes, dataset.columns)
+    rows = await asyncio.to_thread(search, compiled, loaded.typed_rows, prefetch_limit=0)
+    return compiled, len(rows)
 
 
 async def run_query(query: StructuredQuery, datasets: list[Dataset]) -> Execution:
@@ -172,93 +182,3 @@ async def execute_page(
         offset=offset,
         rows=rows,
     )
-
-
-@dataclass
-class GenerationResult:
-    generated: int = 0
-    # Regras para as quais a IA disse que nenhuma base serve.
-    without_dataset: int = 0
-    failed: int = 0
-
-
-async def generate_for_document(
-    db: AsyncSession, document_id: uuid.UUID, *, overwrite: bool, only_related: bool
-) -> GenerationResult:
-    """Gera e prepara as consultas SQL sem executar buscas nos registros.
-
-    `only_related`: só as regras que a extração ligou a alguma base.
-    `overwrite`: refaz também as buscas que a IA já tinha gerado (nunca as manuais).
-    """
-    result = GenerationResult()
-    document = await db.get(Document, document_id)
-    if document is None:
-        return result
-    datasets = await analysis_datasets(db, document.analysis_id)
-    if not datasets:
-        return result
-    # A geração usa os significados já interpretados; só interpreta os que faltam.
-    from app.services.rule_validation import ensure_meanings
-
-    await ensure_meanings(db, datasets, refresh=False)
-    rules = (
-        await db.scalars(
-            select(Rule)
-            .where(Rule.document_id == document_id, Rule.status != "rejeitada")
-            .order_by(Rule.char_start)
-        )
-    ).all()
-    existing = {
-        q.rule_id: q
-        for q in await db.scalars(
-            select(RuleQuery).where(RuleQuery.rule_id.in_([r.id for r in rules]))
-        )
-    }
-    pending = [
-        r
-        for r in rules
-        if (not only_related or r.dataset_ids)
-        and (r.id not in existing or (overwrite and existing[r.id].origin == "ia"))
-    ]
-    if not pending:
-        return result
-
-    prompts = [
-        llm.RulePrompt(ref=i + 1, type=r.type, summary=r.summary, excerpt=r.excerpt)
-        for i, r in enumerate(pending)
-    ]
-    # Objetos permanecem disponíveis (expire_on_commit=False), mas a conexão é liberada.
-    await db.commit()
-    generated = await llm.generate_queries(prompts, dataset_prompts(datasets))
-
-    remove_ids: list[uuid.UUID] = []
-    for prompt, rule in zip(prompts, pending, strict=True):
-        answer = generated.get(prompt.ref)
-        if answer is None:
-            continue
-        current = existing.get(rule.id)
-        if answer.dataset is None:
-            result.without_dataset += 1
-            if current is not None:
-                remove_ids.append(current.id)
-            continue
-        if current is None:
-            current = RuleQuery(rule_id=rule.id, query={}, origin="ia", matched_rows=[])
-            db.add(current)
-        set_query(current, answer.query, "ia")
-        try:
-            prepare_query(current, datasets)
-        except (QueryError, ValidationError) as exc:
-            mark_failed(current, str(exc))
-            current.executed_at = None
-        if current.state == "pendente":
-            result.generated += 1
-        else:
-            result.failed += 1
-            logger.info(
-                "rule_query_invalid", extra={"rule_id": str(rule.id), "error": current.error}
-            )
-    if remove_ids:
-        await db.execute(delete(RuleQuery).where(RuleQuery.id.in_(remove_ids)))
-    await db.commit()
-    return result

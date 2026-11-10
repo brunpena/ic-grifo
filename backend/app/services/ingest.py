@@ -1,4 +1,6 @@
-"""Processamento de um documento enviado (texto, palavras e regras) e leitura das bases.
+"""Processamento de um documento enviado (texto e palavras) e leitura das bases.
+
+As regras não são extraídas aqui: nascem de trechos grifados e aprovados pela pessoa.
 
 Roda como tarefa assíncrona dentro do processo da API (um único worker, ver
 docker-entrypoint.sh). O status do documento mostra a etapa atual para o front.
@@ -8,12 +10,12 @@ import asyncio
 import logging
 import uuid
 
-from sqlalchemy import delete, exists, insert, select, update
+from sqlalchemy import delete, insert, select, update
 
 from app.core.logging import log_step
 from app.db.models import Analysis, Dataset, Document, Page, Rule, Word
 from app.db.session import SessionLocal
-from app.services import document_upload, llm, rule_queries, rule_validation, storage
+from app.services import document_upload, rule_validation, storage
 from app.services.converters import ConversionError, SourceFile
 from app.services.datasets import DatasetError, parse_csv
 from app.services.pdf_text import ExtractedDocument, PdfReadError, extract_pdf
@@ -26,14 +28,6 @@ logger = logging.getLogger(__name__)
 _tasks: set[asyncio.Task] = set()
 _tasks_by_owner: dict[tuple[str, uuid.UUID], set[asyncio.Task]] = {}
 _validation_requested: set[uuid.UUID] = set()
-_queries_requested: set[uuid.UUID] = set()
-
-
-QUERIES_MESSAGE = "Gerando as buscas nas bases de dados"
-QUERIES_INTERRUPTED = (
-    "As regras foram encontradas, mas a geração das buscas foi interrompida. "
-    "Use “Gerar buscas” para tentar de novo."
-)
 
 
 def _start(coro, *, owner: tuple[str, uuid.UUID] | None = None) -> None:
@@ -57,7 +51,6 @@ async def stop_analysis_work(document_ids: list[uuid.UUID], dataset_ids: list[uu
     """Encerra as tarefas deste uso antes de apagar os bancos que elas poderiam recriar."""
     owners = {*(("document", i) for i in document_ids), *(("dataset", i) for i in dataset_ids)}
     _validation_requested.difference_update(document_ids)
-    _queries_requested.difference_update(document_ids)
     while pending := {
         task for owner in owners for task in _tasks_by_owner.get(owner, ()) if not task.done()
     }:
@@ -135,24 +128,6 @@ async def process_dataset(dataset_id: uuid.UUID, data: bytes | None = None) -> N
         async with SessionLocal() as db:
             await rule_validation.invalidate_analysis(db, analysis_id)
             await db.commit()
-            ready_ids = list(
-                await db.scalars(
-                    select(Document.id).where(
-                        Document.analysis_id == analysis_id,
-                        Document.status.in_(("ready", "processing", "extracting_rules")),
-                    )
-                )
-            )
-        for document_id in ready_ids:
-            request_query_generation(document_id)
-
-
-def request_query_generation(document_id: uuid.UUID) -> None:
-    """Base nova: prepara consultas, sem validar registros ou concorrer com a extração."""
-    _queries_requested.add(document_id)
-    if any(not task.done() for task in _tasks_by_owner.get(("document", document_id), ())):
-        return
-    start_query_generation(document_id, overwrite=True)
 
 
 def start_validation(
@@ -214,44 +189,6 @@ async def _run_validation(document_id: uuid.UUID, *, refresh_columns: bool = Fal
             await db.commit()
 
 
-def start_query_generation(document_id: uuid.UUID, *, overwrite: bool) -> None:
-    """Gera de novo as buscas (pedido da pessoa), com o documento em `extracting_rules`."""
-    _start(
-        _generate_queries(document_id, overwrite=overwrite, only_related=False),
-        owner=("document", document_id),
-    )
-
-
-async def _generate_queries(document_id: uuid.UUID, *, overwrite: bool, only_related: bool) -> None:
-    """Etapa das buscas. Uma falha aqui não perde as regras: o documento fica pronto, com
-    o motivo em `status_message`."""
-    await _set_status(document_id, "extracting_rules", QUERIES_MESSAGE)
-    message: str | None = None
-    try:
-        if not await _wait_for_datasets(document_id):
-            return
-        _queries_requested.discard(document_id)
-        with log_step(logger, "generate_queries", document_id=str(document_id)) as info:
-            async with SessionLocal() as db:
-                result = await rule_queries.generate_for_document(
-                    db, document_id, overwrite=overwrite, only_related=only_related
-                )
-            info.update(vars(result))
-        if result.failed == 1:
-            message = "1 busca gerada pela IA não passou na validação. Corrija na regra."
-        elif result.failed:
-            message = (
-                f"{result.failed} buscas geradas pela IA não passaram na validação. "
-                "Corrija nas regras."
-            )
-    except (llm.LlmUnavailableError, llm.LlmApiError) as exc:
-        message = f"As regras foram encontradas, mas a IA não gerou as buscas: {exc}"
-    except Exception:
-        logger.exception("generate_queries_failed", extra={"document_id": str(document_id)})
-        message = "As regras foram encontradas, mas não foi possível gerar as buscas."
-    await _set_status(document_id, "ready", message)
-
-
 async def _wait_for_datasets(document_id: uuid.UUID) -> bool:
     """A extração pode sobrepor a interpretação; os vereditos aguardam as bases."""
     waiting = False
@@ -285,14 +222,10 @@ async def _set_status(document_id: uuid.UUID, status: str, message: str | None =
             .values(status=status, status_message=message)
         )
         await db.commit()
-    if status == "ready" and document_id in _queries_requested:
-        _queries_requested.discard(document_id)
-        start_query_generation(document_id, overwrite=True)
-    elif status == "ready" and document_id in _validation_requested:
+    if status == "ready" and document_id in _validation_requested:
         start_validation(document_id)
     elif status == "error":
         _validation_requested.discard(document_id)
-        _queries_requested.discard(document_id)
 
 
 async def process_document(
@@ -302,14 +235,16 @@ async def process_document(
     source: SourceFile | None = None,
     title: str | None = None,
 ) -> None:
-    """Converte o original recebido, grava palavras e extrai regras em segundo plano."""
+    """Converte o original recebido e grava páginas e palavras, em segundo plano.
+
+    O documento fica `ready` assim que o texto está salvo: a pessoa já pode grifar.
+    """
     try:
         converted = None
         async with SessionLocal() as db:
             doc = await db.get(Document, document_id)
             if doc is None:
                 return
-            checkpoint = doc.extraction_checkpoint
             storage_path = doc.storage_path
             analysis_id, initial_title = doc.analysis_id, doc.title
         if extracted is None:
@@ -333,7 +268,7 @@ async def process_document(
                 full_text=extracted.full_text,
                 page_count=len(extracted.pages),
                 storage_path=storage_path,
-                status="extracting_rules",
+                status="ready",
                 status_message=None,
             )
             if converted is not None:
@@ -381,113 +316,25 @@ async def process_document(
                     ],
                 )
             await db.commit()
-
-        full_text = extracted.full_text
-        extracted = None
-        converted = None
-
-        async def save_checkpoint(value: dict) -> None:
-            async with SessionLocal() as db:
-                await db.execute(
-                    update(Document)
-                    .where(Document.id == document_id)
-                    .values(
-                        extraction_checkpoint=value,
-                    )
-                )
-                await db.commit()
-
-        async def progress(done: int, total: int) -> None:
-            await _set_status(
-                document_id, "extracting_rules", f"Pacotes concluidos: {done} de {total}"
-            )
-
-        if not await _wait_for_datasets(document_id):
-            return
-        async with SessionLocal() as db:
-            analysis_id = await db.scalar(
-                select(Document.analysis_id).where(Document.id == document_id)
-            )
-            datasets = await rule_queries.analysis_datasets(db, analysis_id) if analysis_id else []
-        dataset_ids = {d.name: d.id for d in datasets}
-
-        with log_step(logger, "extract_rules", document_id=str(document_id)) as info:
-            found = await llm.extract_rules(
-                full_text,
-                on_progress=progress,
-                datasets=rule_queries.dataset_prompts(datasets),
-                checkpoint=checkpoint,
-                on_checkpoint=save_checkpoint,
-            )
-            rules = dedupe_rules(found)
-            info["found"] = len(found)
-            info["kept"] = len(rules)
-
-        async with SessionLocal() as db:
-            db.add_all(
-                Rule(
-                    document_id=document_id,
-                    type=r.type,
-                    summary=r.summary[:200],
-                    excerpt=full_text[r.start : r.end],
-                    char_start=r.start,
-                    char_end=r.end,
-                    origin="ia",
-                    dataset_ids=[dataset_ids[n] for n in r.datasets if n in dataset_ids],
-                )
-                for r in rules
-            )
-            await db.commit()
-
-        if datasets:
-            await _generate_queries(document_id, overwrite=False, only_related=False)
-        else:
-            await _set_status(document_id, "ready")
     except (PdfReadError, StorageError, ConversionError) as exc:
-        await _set_status(document_id, "error", str(exc))
-    except llm.LlmUnavailableError as exc:
-        await _set_status(document_id, "error", str(exc))
-    except llm.LlmApiError as exc:
-        logger.warning("process_document_llm_failed", extra={"document_id": str(document_id)})
         await _set_status(document_id, "error", str(exc))
     except Exception:
         logger.exception("process_document_failed", extra={"document_id": str(document_id)})
         await _set_status(
-            document_id, "error", "Não foi possível analisar o documento. Tente enviar de novo."
+            document_id, "error", "Não foi possível ler o documento. Tente enviar de novo."
         )
-
-
-def dedupe_rules(found: list[llm.ExtractedRule]) -> list[llm.ExtractedRule]:
-    """Descarta repetições (os blocos se sobrepõem) e ordena pela posição no texto."""
-    kept: list[llm.ExtractedRule] = []
-    for rule in sorted(found, key=lambda r: (r.start, r.end)):
-        duplicate = any(
-            other.type == rule.type
-            and min(rule.end, other.end) - max(rule.start, other.start)
-            > 0.5 * min(rule.end - rule.start, other.end - other.start)
-            for other in kept
-        )
-        if not duplicate:
-            kept.append(rule)
-            continue
-        # A mesma regra vista em dois blocos: junta as bases que cada um marcou.
-        for other in kept:
-            if other.type == rule.type and other.start <= rule.end and rule.start <= other.end:
-                other.datasets = list(dict.fromkeys([*other.datasets, *rule.datasets]))
-                break
-    return kept
 
 
 async def recover_interrupted() -> None:
-    """Retoma os originais e PDFs persistidos sem exigir novo upload após reinício."""
+    """Retoma os originais e PDFs persistidos sem exigir novo upload após reinício.
+
+    `extracting_rules` agora só aparece durante a validação geral: interrompida, ela é
+    descartada e o documento volta a ficar pronto.
+    """
     async with SessionLocal() as db:
         pending = (await db.scalars(select(Dataset.id).where(Dataset.status == "processing"))).all()
-        documents = (
-            await db.execute(
-                select(Document.id, exists().where(Rule.document_id == Document.id)).where(
-                    Document.status.in_(("processing", "extracting_rules"))
-                )
-            )
+        processing = (
+            await db.scalars(select(Document.id).where(Document.status == "processing"))
         ).all()
         await db.execute(
             update(Rule)
@@ -498,14 +345,13 @@ async def recover_interrupted() -> None:
             )
             .values(validation=None)
         )
+        await db.execute(
+            update(Document)
+            .where(Document.status == "extracting_rules")
+            .values(status="ready", status_message=None)
+        )
         await db.commit()
     for dataset_id in pending:
         start_dataset_processing(dataset_id)
-    for document_id, has_rules in documents:
-        if has_rules:
-            _start(
-                _generate_queries(document_id, overwrite=False, only_related=False),
-                owner=("document", document_id),
-            )
-        else:
-            start_processing(document_id)
+    for document_id in processing:
+        start_processing(document_id)

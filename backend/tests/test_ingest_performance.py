@@ -8,32 +8,27 @@ from sqlalchemy import func, select, update
 
 from app.db.models import Document, Page, Word
 from app.db.session import SessionLocal
-from app.services import ingest, llm, storage, validation_llm
+from app.services import ingest, storage, validation_llm
 from tests.test_documents import _login, _wait_ready, make_pdf
 
 
 @pytest.mark.db
-async def test_rule_extraction_waits_for_column_meanings(migrated_db, client, monkeypatch):
+async def test_document_is_ready_to_highlight_while_columns_are_interpreted(
+    migrated_db, client, monkeypatch
+):
     await _login(client)
     analysis = (await client.post("/api/v1/analyses", json={})).json()
-    interpreting, release, extracted = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    interpreting, release = asyncio.Event(), asyncio.Event()
 
     async def meanings(name, columns):
         interpreting.set()
         await release.wait()
         return [{**c, "semantic": {"meaning": c["name"], "confidence": "high"}} for c in columns]
 
-    async def rules(text, on_progress=None, datasets=None, **kwargs):
-        assert len(datasets) == 1 and datasets[0].columns[0]["name"] == "value"
-        assert datasets[0].columns[0]["semantic"]["confidence"] == "high"
-        extracted.set()
-        return []
-
     async def unexpected_read(name):
         raise AssertionError(f"Upload bytes should be reused: {name}")
 
     monkeypatch.setattr(validation_llm, "interpret_columns", meanings)
-    monkeypatch.setattr(llm, "extract_rules", rules)
     monkeypatch.setattr(storage, "read_file", unexpected_read)
     response = await client.post(
         f"/api/v1/analyses/{analysis['id']}/datasets",
@@ -52,14 +47,11 @@ async def test_rule_extraction_waits_for_column_meanings(migrated_db, client, mo
         )
         assert response.status_code == 202
         doc_id = response.json()["id"]
-        assert not extracted.is_set()
-        current = (await client.get(f"/api/v1/documents/{doc_id}")).json()
-        assert current["status"] in ("processing", "extracting_rules")
+        # A leitura do documento não espera a IA: ele fica pronto para grifar.
+        assert (await _wait_ready(client, doc_id))["status"] == "ready"
     finally:
         release.set()
-    ready = await _wait_ready(client, doc_id)
-    assert ready["status"] == "ready"
-    assert extracted.is_set()
+    assert (await client.get(f"/api/v1/documents/{doc_id}/rules")).json() == []
 
 
 @pytest.mark.db
@@ -67,11 +59,6 @@ async def test_restart_resumes_source_and_reuses_pdf_without_duplicate_words(
     migrated_db, client, monkeypatch
 ):
     await _login(client)
-
-    async def no_rules(*args, **kwargs):
-        return []
-
-    monkeypatch.setattr(llm, "extract_rules", no_rules)
     with monkeypatch.context() as patch:
         patch.setattr(ingest, "start_processing", lambda *args, **kwargs: None)
         response = await client.post(
@@ -112,52 +99,28 @@ async def test_restart_resumes_source_and_reuses_pdf_without_duplicate_words(
 
 
 @pytest.mark.db
-async def test_resume_persists_packages_and_only_sends_missing(migrated_db, client, monkeypatch):
-    from pydantic import SecretStr
-
-    from app.core.config import get_settings
-    from app.db.models import Rule
-
+async def test_resume_reads_the_saved_document_again(migrated_db, client):
     await _login(client)
-    monkeypatch.setattr(get_settings(), "gemini_api_key", SecretStr("fake"))
-    monkeypatch.setattr(get_settings(), "llm_chunk_chars", 60)
-    monkeypatch.setattr(get_settings(), "llm_chunk_overlap", 0)
-    monkeypatch.setattr(get_settings(), "llm_max_concurrency", 1)
-    calls = []
-    fail = True
-
-    async def extract(text, sentences, ids, datasets):
-        calls.append(ids.start)
-        if fail and ids.start > 0:
-            raise llm.LlmApiError("Gemini overloaded")
-        return [llm.ExtractedRule(
-            "prazo", sentences[ids.start].start, sentences[ids.start].end, "Pacote",
-        )]
-
-    async def no_validation(*args, **kwargs):
-        pass
-
-    monkeypatch.setattr(llm, "extract_rules_from_chunk", extract)
-    monkeypatch.setattr(ingest, "_run_validation", no_validation)
     response = await client.post(
         "/api/v1/documents", files={"file": ("rules.pdf", make_pdf(1), "application/pdf")}
     )
-    assert response.status_code == 202
     doc_id = response.json()["id"]
-    assert (await _wait_ready(client, doc_id))["status"] == "error"
+    assert (await _wait_ready(client, doc_id))["status"] == "ready"
+    assert (await client.post(f"/api/v1/documents/{doc_id}/resume")).status_code == 409
     async with SessionLocal() as db:
-        doc = await db.get(Document, uuid.UUID(doc_id))
-        assert len(doc.extraction_checkpoint["completed"]) == 1
-    fail = False
-    calls.clear()
+        await db.execute(
+            update(Document)
+            .where(Document.id == uuid.UUID(doc_id))
+            .values(status="error", status_message="Falha simulada")
+        )
+        await db.commit()
     response = await client.post(f"/api/v1/documents/{doc_id}/resume")
     assert response.status_code == 202
     assert (await _wait_ready(client, doc_id))["status"] == "ready"
-    assert calls and 0 not in calls
     async with SessionLocal() as db:
-        doc = await db.get(Document, uuid.UUID(doc_id))
-        count = await db.scalar(select(func.count()).select_from(Rule).where(
-            Rule.document_id == uuid.UUID(doc_id),
-        ))
-        assert count == len(doc.extraction_checkpoint["completed"])
-    assert (await client.post(f"/api/v1/documents/{doc_id}/resume")).status_code == 409
+        assert (
+            await db.scalar(
+                select(func.count()).select_from(Page).where(Page.document_id == uuid.UUID(doc_id))
+            )
+            == 1
+        )

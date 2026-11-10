@@ -5,11 +5,13 @@ import uuid
 
 import httpx
 import pytest
+from sqlalchemy import update
 
+from app.db.models import Rule
+from app.db.session import SessionLocal
 from app.main import app
 from app.schemas.validation import ValidationPlan
 from app.services import llm, validation_llm
-from app.services.llm import ExtractedRule
 
 CSV = (
     b"Contrato;Assinatura;Entrega;Valor;Garantia\n"
@@ -35,20 +37,6 @@ def validation_ai(monkeypatch):
             {**c, "semantic": {"meaning": c["name"], "confidence": "high", "reason": "Teste"}}
             for c in columns
         ]
-
-    async def extract(text, on_progress=None, datasets=None, **kwargs):
-        result = []
-        for marker, kind in [
-            ("Entrega", "prazo"),
-            ("Garantia", "condicao"),
-            ("Manter", "obrigacao"),
-            ("Resposta", "prazo"),
-        ]:
-            start = text.index(marker)
-            end = text.index(".", start) + 1
-            # Nenhuma associação da extração: a validação deve avaliar mesmo assim.
-            result.append(ExtractedRule(kind, start, end, marker, []))
-        return result
 
     async def plans(rules, datasets, reference_date):
         calls.append([r.summary for r in rules])
@@ -91,14 +79,29 @@ def validation_ai(monkeypatch):
 
     monkeypatch.setattr(validation_llm, "interpret_columns", interpret)
     monkeypatch.setattr(validation_llm, "plan_rules", plans)
-    monkeypatch.setattr(llm, "extract_rules", extract)
     monkeypatch.setattr(llm, "ensure_configured", lambda: "test-key")
-
-    async def no_queries(rules, datasets):
-        return {r.ref: llm.GeneratedQuery(None, {}, "Sem consulta neste teste") for r in rules}
-
-    monkeypatch.setattr(llm, "generate_queries", no_queries)
     return calls
+
+
+RULES = [
+    ("Entrega", "prazo"),
+    ("Garantia", "condicao"),
+    ("Manter", "obrigacao"),
+    ("Resposta", "prazo"),
+]
+
+
+async def approve_all(client, doc_id, *, category="csv", dataset="base"):
+    """Aprova as quatro regras do texto, como se a pessoa as tivesse grifado."""
+    for marker, kind in RULES:
+        start = TEXT.index(marker)
+        excerpt = TEXT[start : TEXT.index(".", start) + 1]
+        body = {"type": kind, "summary": marker, "page": 1, "excerpt": excerpt}
+        if category == "csv":
+            # A busca não importa aqui: a validação geral usa o plano da IA.
+            body |= {"category": "csv", "query": {"dataset": dataset, "conditions": []}}
+        resp = await client.post(f"/api/v1/documents/{doc_id}/rules", json=body)
+        assert resp.status_code == 201, resp.text
 
 
 async def ready(client, path):
@@ -143,14 +146,15 @@ async def test_general_validation_covers_all_rules_and_all_matching_rows(
         )
     ).json()
     await ready(client, f"/api/v1/documents/{doc['id']}")
+    await approve_all(client, doc["id"], dataset="contratos")
     url = f"/api/v1/documents/{doc['id']}/rules"
-    assert validation_ai == []  # O fluxo normal prepara consultas, sem planos adicionais.
+    assert validation_ai == []  # A aprovação prepara consultas, sem planos adicionais.
     assert (await client.post(f"/api/v1/documents/{doc['id']}/validation")).status_code == 202
     await ready(client, f"/api/v1/documents/{doc['id']}")
     rules = (await client.get(url)).json()
     assert validation_ai == [["Entrega", "Garantia", "Manter", "Resposta"]]
     deadline, guarantee, secrecy, business = rules
-    assert all(r["query"] is None for r in rules)
+    assert all(r["query"]["state"] == "pendente" for r in rules)
     assert deadline["validation"]["status"] == guarantee["validation"]["status"] == "violacao"
     assert deadline["validation"]["passed_count"] == 1
     assert deadline["validation"]["failed_count"] == 1
@@ -210,6 +214,22 @@ async def test_rule_without_datasets_is_explicitly_inconclusive(migrated_db, cli
     await register(client)
     doc = (await client.post("/api/v1/documents/text", json={"content": TEXT})).json()
     await ready(client, f"/api/v1/documents/{doc['id']}")
+    await approve_all(client, doc["id"], category="geral")
+    # Uma regra geral nunca é verificada nos dados.
+    assert (await client.post(f"/api/v1/documents/{doc['id']}/validation")).status_code == 202
+    await ready(client, f"/api/v1/documents/{doc['id']}")
+    rules = (await client.get(f"/api/v1/documents/{doc['id']}/rules")).json()
+    assert all(r["validation"]["status"] == "ignorada" for r in rules)
+    for rule in rules:
+        resp = await client.put(
+            f"/api/v1/rules/{rule['id']}/query", json={"dataset": "x", "conditions": []}
+        )
+        assert resp.status_code == 422  # sem bases, não há busca possível
+    async with SessionLocal() as db:
+        await db.execute(
+            update(Rule).where(Rule.document_id == uuid.UUID(doc["id"])).values(category="csv")
+        )
+        await db.commit()
     assert (await client.post(f"/api/v1/documents/{doc['id']}/validation")).status_code == 202
     await ready(client, f"/api/v1/documents/{doc['id']}")
     rules = (await client.get(f"/api/v1/documents/{doc['id']}/rules")).json()
@@ -218,10 +238,10 @@ async def test_rule_without_datasets_is_explicitly_inconclusive(migrated_db, cli
 
 
 @pytest.mark.db
-async def test_dataset_finishing_queues_queries_and_legacy_validation_is_explicit(
+async def test_dataset_finishing_during_validation_invalidates_and_revalidation_is_explicit(
     migrated_db, client, validation_ai, monkeypatch
 ):
-    from app.services import ingest
+    from app.services import rule_validation
 
     await register(client)
     analysis = (await client.post("/api/v1/analyses", json={})).json()
@@ -240,20 +260,21 @@ async def test_dataset_finishing_queues_queries_and_legacy_validation_is_explici
             await release.wait()
         return await planner(rules, datasets, reference_date)
 
-    original_start = ingest.request_query_generation
+    original_invalidate = rule_validation.invalidate_analysis
 
-    def observe(document_id, **kwargs):
+    async def observe(db, analysis_id):
         queued.set()
-        original_start(document_id, **kwargs)
+        await original_invalidate(db, analysis_id)
 
     monkeypatch.setattr(validation_llm, "plan_rules", hold_first)
-    monkeypatch.setattr(ingest, "request_query_generation", observe)
+    monkeypatch.setattr(rule_validation, "invalidate_analysis", observe)
     doc = (
         await client.post(
             "/api/v1/documents/text", json={"analysis_id": analysis["id"], "content": TEXT}
         )
     ).json()
     await ready(client, f"/api/v1/documents/{doc['id']}")
+    await approve_all(client, doc["id"])
     assert (await client.post(f"/api/v1/documents/{doc['id']}/validation")).status_code == 202
     try:
         await asyncio.wait_for(started.wait(), 5)
@@ -307,6 +328,7 @@ async def test_semantic_change_during_evaluation_cannot_publish_an_old_approval(
         )
     ).json()
     await ready(client, f"/api/v1/documents/{doc['id']}")
+    await approve_all(client, doc["id"])
     assert (await client.post(f"/api/v1/documents/{doc['id']}/validation")).status_code == 202
     await ready(client, f"/api/v1/documents/{doc['id']}")
     rules = (await client.get(f"/api/v1/documents/{doc['id']}/rules")).json()

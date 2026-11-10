@@ -1,16 +1,15 @@
-"""Chamadas ao Gemini (API REST do Google AI Studio): extração de regras e conversa."""
+"""Chamadas ao Gemini (API REST do Google AI Studio): análise de trechos grifados e conversa."""
 
 import asyncio
-import hashlib
 import json
 import logging
 import random
 import re
 import time
 from collections import deque
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass
 from weakref import WeakKeyDictionary
 
 import httpx
@@ -312,73 +311,8 @@ async def _generate(payload: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Extração de regras
+# Bases de dados no prompt
 # ---------------------------------------------------------------------------
-
-EXTRACTION_SYSTEM = """Você analisa trechos de documentos normativos em português \
-(contratos, editais, regulamentos) e identifica as regras que eles contêm.
-
-O trecho vem dividido em frases numeradas, uma por linha: "[12] texto da frase". \
-Algumas frases são pedaços de uma frase maior, cortada em ";" ou ":".
-
-Uma regra é uma frase ou oração com força normativa:
-- obrigacao: algo que alguém deve fazer ("deverá", "é obrigado a", "compete à contratada").
-- proibicao: algo que não pode ser feito ("é vedado", "não poderá", "fica proibido").
-- prazo: um limite de tempo ou data ("em até 10 dias úteis", "vigência de 12 meses").
-- condicao: uma consequência que depende de um fato ("caso haja atraso, será aplicada multa").
-- outro: outra disposição normativa que não se encaixa acima (competência, definição vinculante).
-
-Para cada regra:
-- first e last: números da primeira e da última frase que formam a regra (iguais \
-quando ela cabe em uma frase só). Use o menor intervalo contínuo que expressa a regra \
-inteira; nunca junte frases distantes.
-- summary: resumo curto em português, até 80 caracteres, começando por verbo ou \
-substantivo (ex.: "Entregar relatório mensal em até 10 dias úteis").
-- type: um dos tipos acima. Se a frase traz um prazo para cumprir uma obrigação, \
-prefira "prazo" quando o tempo é o ponto central e "obrigacao" quando é a ação.
-
-Ignore títulos, sumários, cabeçalhos, rodapés, numeração e texto puramente \
-descritivo. Não invente regras: se o trecho não tiver nenhuma, devolva uma lista vazia."""
-
-# Formato de schema da API do Gemini (subconjunto do OpenAPI).
-EXTRACTION_SCHEMA = {
-    "type": "OBJECT",
-    "properties": {
-        "rules": {
-            "type": "ARRAY",
-            "items": {
-                "type": "OBJECT",
-                "properties": {
-                    "type": {"type": "STRING", "enum": list(RULE_TYPES)},
-                    "first": {"type": "INTEGER"},
-                    "last": {"type": "INTEGER"},
-                    "summary": {"type": "STRING"},
-                },
-                "required": ["type", "first", "last", "summary"],
-                "propertyOrdering": ["type", "first", "last", "summary"],
-            },
-        }
-    },
-    "required": ["rules"],
-}
-
-# Uma regra com mais frases do que isso é quase sempre um intervalo errado.
-MAX_RULE_SENTENCES = 8
-
-# Fim de frase (ou de oração em ";" e ":") seguido de espaço, ou fim de parágrafo.
-_SENTENCE_END = re.compile(r"[.;:!?](?=\s)|\n[ \t]*\n")
-
-
-@dataclass
-class ExtractedRule:
-    """Regra com a posição (offsets em code points) no texto completo do documento."""
-
-    type: str
-    start: int
-    end: int
-    summary: str
-    # Nomes das bases de dados que têm relação com a regra (só quando há bases).
-    datasets: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -428,304 +362,8 @@ def describe_datasets(datasets: list[DatasetPrompt]) -> str:
 
 
 @dataclass
-class Sentence:
-    start: int
-    end: int
-
-
-def split_sentences(text: str) -> list[Sentence]:
-    """Frases do texto, com offsets. Os números delas são o que a IA devolve."""
-    sentences: list[Sentence] = []
-    start = 0
-    for match in [*_SENTENCE_END.finditer(text), None]:
-        end = match.end() if match else len(text)
-        piece = text[start:end]
-        stripped = piece.strip()
-        if stripped:
-            first = start + len(piece) - len(piece.lstrip())
-            sentences.append(Sentence(first, first + len(stripped)))
-        start = end
-    return sentences
-
-
-def split_chunks(sentences: list[Sentence], size: int, overlap: int) -> list[range]:
-    """Agrupa as frases em blocos de até `size` caracteres, repetindo ~`overlap` no início
-    do bloco seguinte (uma regra de várias frases pode cair na divisa)."""
-    chunks: list[range] = []
-    first = 0
-    while first < len(sentences):
-        last, length = first, 0
-        while last < len(sentences):
-            sentence = sentences[last]
-            length += sentence.end - sentence.start
-            if length > size and last > first:
-                break
-            last += 1
-        chunks.append(range(first, last))
-        if last >= len(sentences):
-            break
-        back, covered = last, 0
-        while back > first + 1 and covered < overlap:
-            back -= 1
-            covered += sentences[back].end - sentences[back].start
-        first = back
-    return chunks
-
-
-def numbered(text: str, sentences: list[Sentence], ids: range) -> str:
-    """Frases do bloco, uma por linha e numeradas a partir de 1 no documento inteiro."""
-    return "\n".join(
-        f"[{i + 1}] {' '.join(text[sentences[i].start : sentences[i].end].split())}" for i in ids
-    )
-
-
-def _extraction_schema(dataset_names: list[str]) -> dict:
-    """Com bases na análise, cada regra diz também com quais bases ela tem relação."""
-    if not dataset_names:
-        return EXTRACTION_SCHEMA
-    item = EXTRACTION_SCHEMA["properties"]["rules"]["items"]
-    with_datasets = {
-        **item,
-        "properties": {
-            **item["properties"],
-            "datasets": {"type": "ARRAY", "items": {"type": "STRING", "enum": dataset_names}},
-        },
-        "required": [*item["required"], "datasets"],
-        "propertyOrdering": [*item["propertyOrdering"], "datasets"],
-    }
-    return {**EXTRACTION_SCHEMA, "properties": {"rules": {"type": "ARRAY", "items": with_datasets}}}
-
-
-def _extraction_system(datasets: list[DatasetPrompt]) -> str:
-    if not datasets:
-        return EXTRACTION_SYSTEM
-    return f"""{EXTRACTION_SYSTEM}
-
-As regras serão verificadas contra as bases de dados abaixo. Em `datasets`, liste as \
-bases cujos registros a regra pode avaliar: a regra fala de algo que aparece nas colunas \
-(valores, datas, prazos, categorias, situação). Use lista vazia quando a regra não tem \
-relação com nenhuma base. Isso não muda quais regras você extrai.
-
-<bases>
-{describe_datasets(datasets)}
-</bases>"""
-
-
-async def extract_rules_from_chunk(
-    text: str, sentences: list[Sentence], ids: range, datasets: list[DatasetPrompt] | None = None
-) -> list[ExtractedRule]:
-    settings = get_settings()
-    datasets = datasets or []
-    dataset_names = [d.name for d in datasets]
-    config: dict = {
-        "temperature": 0,
-        "maxOutputTokens": 16000,
-        "responseMimeType": "application/json",
-        "responseSchema": _extraction_schema(dataset_names),
-    }
-    if settings.gemini_thinking_level:
-        config["thinkingConfig"] = {"thinkingLevel": settings.gemini_thinking_level}
-    data = await _generate(
-        {
-            "systemInstruction": {"parts": [{"text": _extraction_system(datasets)}]},
-            "contents": [
-                {
-                    "role": "user",
-                    "parts": [{"text": f"<trecho>\n{numbered(text, sentences, ids)}\n</trecho>"}],
-                }
-            ],
-            "generationConfig": config,
-        }
-    )
-    answer, finish = _text(data)
-    if finish != "STOP":
-        logger.warning("llm_finish", extra={"chunk_first": ids.start, "reason": finish})
-    try:
-        rules = json.loads(answer)["rules"]
-    except (json.JSONDecodeError, KeyError, TypeError):
-        logger.warning("llm_invalid_json", extra={"chunk_first": ids.start})
-        raise LlmApiError(
-            "Resposta incompleta da IA. Continue para tentar este pacote novamente."
-        ) from None
-    if finish != "STOP" or not isinstance(rules, list):
-        raise LlmApiError("Resposta incompleta da IA. Continue para tentar este pacote novamente.")
-    result: list[ExtractedRule] = []
-    for r in rules:
-        if r.get("type") not in RULE_TYPES or not str(r.get("summary") or "").strip():
-            continue
-        try:
-            first, last = sorted((int(r["first"]) - 1, int(r["last"]) - 1))
-        except (KeyError, TypeError, ValueError):
-            continue
-        if first not in ids or last not in ids or last - first >= MAX_RULE_SENTENCES:
-            logger.info("rule_out_of_range", extra={"first": first + 1, "last": last + 1})
-            continue
-        related = [n for n in r.get("datasets") or [] if n in dataset_names]
-        result.append(
-            ExtractedRule(
-                r["type"],
-                sentences[first].start,
-                sentences[last].end,
-                r["summary"].strip(),
-                list(dict.fromkeys(related)),
-            )
-        )
-    return result
-
-
-async def extract_rules(
-    text: str,
-    on_progress: Callable[[int, int], Awaitable[None]] | None = None,
-    datasets: list[DatasetPrompt] | None = None,
-    checkpoint: dict | None = None,
-    on_checkpoint: Callable[[dict], Awaitable[None]] | None = None,
-) -> list[ExtractedRule]:
-    """Extrai regras de todos os blocos, em paralelo (até LLM_MAX_CONCURRENCY ao mesmo tempo)."""
-    if getattr(get_settings(), "llm_mock", False):
-        from app.services import llm_mock
-
-        return await llm_mock.extract_rules(text, on_progress, datasets)
-    ensure_configured()
-    settings = get_settings()
-    sentences = split_sentences(text)
-    chunks = split_chunks(sentences, settings.llm_chunk_chars, settings.llm_chunk_overlap)
-    signature = hashlib.sha256(
-        json.dumps(
-            {
-                "version": 1,
-                "text": text,
-                "datasets": [asdict(d) for d in datasets or []],
-                "chunks": [(c.start, c.stop) for c in chunks],
-                "model": settings.gemini_model,
-                "thinking": settings.gemini_thinking_level,
-                "prompt": _extraction_system(datasets or []),
-            },
-            sort_keys=True,
-            ensure_ascii=False,
-        ).encode()
-    ).hexdigest()
-    completed = (
-        dict((checkpoint or {}).get("completed", {}))
-        if ((checkpoint or {}).get("signature") == signature)
-        else {}
-    )
-    semaphore = asyncio.Semaphore(settings.llm_max_concurrency)
-    done = len(completed)
-    lock = asyncio.Lock()
-
-    async def run(ids: range) -> list[ExtractedRule]:
-        nonlocal done
-        package_id = f"{ids.start}:{ids.stop}"
-        if package_id in completed:
-            return [ExtractedRule(**r) for r in completed[package_id]]
-        async with semaphore:
-            rules = await extract_rules_from_chunk(text, sentences, ids, datasets)
-            async with lock:
-                completed[package_id] = [asdict(r) for r in rules]
-                if on_checkpoint:
-                    await on_checkpoint({"signature": signature, "completed": dict(completed)})
-                done += 1
-                if on_progress:
-                    await on_progress(done, len(chunks))
-        return rules
-
-    if on_progress:
-        await on_progress(done, len(chunks))
-
-    # Each completed package is durable before another package takes its slot.
-    tasks = [asyncio.ensure_future(run(c)) for c in chunks]
-    try:
-        results = await asyncio.gather(*tasks)
-    except BaseException:
-        for task in tasks:
-            task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
-        raise
-    return [item for batch in results for item in batch]
-
-
-# ---------------------------------------------------------------------------
-# Regra → busca estruturada
-# ---------------------------------------------------------------------------
-
-QUERY_OPERATORS = (
-    "eq", "ne", "gt", "gte", "lt", "lte", "between", "in", "not_in", "contains",
-    "not_contains", "starts_with", "ends_with", "is_null", "not_null",
-)  # fmt: skip
-# Regras por chamada: cabe folgado na resposta e poupa a cota diária.
-QUERY_BATCH = 25
-
-QUERY_SYSTEM = """Você transforma regras de documentos normativos em buscas sobre \
-bases de dados em CSV. As buscas nunca são SQL: são condições sobre colunas.
-Use os significados, eventos, unidades e confiança já interpretados de cada coluna.
-O backend compila sua resposta em SQL parametrizado e só consulta o DuckDB quando
-a pessoa seleciona a regra. Não execute consultas nem estime registros encontrados.
-Não trate assinatura, publicação, realização ou vencimento como datas equivalentes.
-Se as colunas necessárias forem ambíguas ou faltarem evidências para relacioná-las à
-regra, retorne dataset null e explique em reason, sem inventar interpretações.
-
-Para cada regra, monte a busca que encontra os registros AOS QUAIS A REGRA SE APLICA \
-(o escopo da regra), não os que a violam. Exemplo: "contratos acima de R$ 50 mil exigem \
-garantia" → registros com Valor > 50000. A consulta apresenta os registros relacionados;
-encontrar um registro não é uma conclusão automática de conformidade ou violação.
-
-Formato de cada busca:
-- dataset: nome exato de uma das bases, ou null quando nenhuma base tem colunas para \
-avaliar a regra (nesse caso, conditions vazio).
-- logic: "and" (todas as condições) ou "or" (qualquer uma).
-- conditions: lista de {column, op, value, values}. column é o nome exato da coluna.
-- Operadores: eq (igual), ne (diferente), gt, gte, lt, lte (comparações), between \
-(values = [mínimo, máximo]), in e not_in (values = lista), contains, not_contains, \
-starts_with, ends_with (texto), is_null e not_null (sem valor).
-- Comparações gt/gte/lt/lte/between só em colunas de número, data ou data e hora. \
-Colunas sim/não aceitam só eq e ne.
-- value sempre como texto: números com ponto decimal e sem milhar ("50000.00"), datas \
-em AAAA-MM-DD, sim/não como "true" ou "false". Em colunas com lista de valores, use \
-exatamente um dos valores listados.
-- Uma regra que se aplica a todos os registros da base fica com conditions vazio.
-- reason: uma frase curta explicando a busca ou por que nenhuma base serve.
-
-Não invente colunas nem valores que não estão nas bases."""
-
-QUERY_SCHEMA = {
-    "type": "OBJECT",
-    "properties": {
-        "queries": {
-            "type": "ARRAY",
-            "items": {
-                "type": "OBJECT",
-                "properties": {
-                    "rule": {"type": "INTEGER"},
-                    "dataset": {"type": "STRING", "nullable": True},
-                    "logic": {"type": "STRING", "enum": ["and", "or"]},
-                    "conditions": {
-                        "type": "ARRAY",
-                        "items": {
-                            "type": "OBJECT",
-                            "properties": {
-                                "column": {"type": "STRING"},
-                                "op": {"type": "STRING", "enum": list(QUERY_OPERATORS)},
-                                "value": {"type": "STRING", "nullable": True},
-                                "values": {"type": "ARRAY", "items": {"type": "STRING"}},
-                            },
-                            "required": ["column", "op"],
-                            "propertyOrdering": ["column", "op", "value", "values"],
-                        },
-                    },
-                    "reason": {"type": "STRING"},
-                },
-                "required": ["rule", "dataset", "logic", "conditions", "reason"],
-                "propertyOrdering": ["rule", "dataset", "logic", "conditions", "reason"],
-            },
-        }
-    },
-    "required": ["queries"],
-}
-
-
-@dataclass
 class RulePrompt:
-    """Uma regra enviada para virar busca. `ref` é o número usado na resposta."""
+    """Uma regra enviada à IA (plano de validação). `ref` é o número usado na resposta."""
 
     ref: int
     type: str
@@ -733,16 +371,137 @@ class RulePrompt:
     excerpt: str
 
 
+# ---------------------------------------------------------------------------
+# Trecho grifado → proposta de regra (conversa guiada pela pessoa)
+# ---------------------------------------------------------------------------
+
+QUERY_OPERATORS = (
+    "eq", "ne", "gt", "gte", "lt", "lte", "between", "in", "not_in", "contains",
+    "not_contains", "starts_with", "ends_with", "is_null", "not_null",
+)  # fmt: skip
+
+# Texto da página em volta do trecho, para a IA entender o contexto sem ler o documento todo.
+EXCERPT_CONTEXT_CHARS = 6000
+
+EXCERPT_SYSTEM = """Você é o Grifo, assistente que ajuda uma pessoa a transformar \
+trechos de documentos normativos (editais, portarias, contratos, regulamentos) em \
+regras verificáveis. A pessoa grifou um trecho do documento; você analisa SOMENTE esse \
+trecho, usando o texto da página apenas como contexto. Nada do que você propõe é salvo \
+sem a aprovação dela.
+
+Em toda resposta, devolva:
+- reply: sua mensagem para a pessoa, em português, curta e direta (até 5 frases). \
+Explique a interpretação, por que a regra pode ou não ser verificada nos dados e o que \
+a busca encontra. Responda perguntas e aplique os ajustes pedidos.
+- is_rule: true se o trecho tem força normativa (obrigação, proibição, prazo, condição \
+ou outra disposição vinculante); false se é só título, ementa, definição sem efeito ou \
+texto descritivo.
+- verifiable: true somente se as colunas das bases permitem encontrar os registros aos \
+quais a regra se aplica. Se faltam colunas, se elas são ambíguas ou se a regra trata de \
+algo que não está nos registros (assinatura de termo, publicação, vigência), false.
+- type: obrigacao, proibicao, prazo, condicao ou outro.
+- summary: resumo da regra em uma frase (até 150 caracteres), no infinitivo quando couber.
+- interpretation: como a regra deve ser lida, quem ela atinge e quais colunas (se houver) \
+representam cada elemento dela.
+- reason: uma frase dizendo por que é ou não verificável nos dados.
+- dataset, logic, conditions: a busca, só quando verifiable = true; caso contrário \
+dataset null e conditions vazio.
+
+A busca encontra os registros AOS QUAIS A REGRA SE APLICA (o escopo da regra), não os \
+que a violam. Exemplo: "contratos acima de R$ 50 mil exigem garantia" → registros com \
+Valor > 50000. As buscas nunca são SQL livre: são condições sobre colunas que o \
+backend compila em SQL parametrizado.
+- dataset: nome exato de uma das bases.
+- logic: "and" (todas as condições) ou "or" (qualquer uma).
+- conditions: lista de {column, op, value, values}. column é o nome exato da coluna.
+- Operadores: eq, ne, gt, gte, lt, lte, between (values = [mínimo, máximo]), in e \
+not_in (values = lista), contains, not_contains, starts_with, ends_with (texto), \
+is_null e not_null (sem valor).
+- gt/gte/lt/lte/between só em colunas de número, data ou data e hora. Colunas sim/não \
+aceitam só eq e ne.
+- value sempre como texto: números com ponto decimal e sem milhar ("50000.00"), datas \
+em AAAA-MM-DD, sim/não como "true" ou "false". Em colunas com lista de valores, use \
+exatamente um dos valores listados.
+- Uma regra que se aplica a todos os registros da base fica com conditions vazio.
+
+Use os significados, eventos e unidades já interpretados das colunas. Não trate \
+assinatura, publicação, realização ou vencimento como datas equivalentes. Não invente \
+colunas nem valores. Quando houver uma <proposta_atual>, parta dela: a pessoa pode tê-la \
+editado à mão. Mantenha o que ela não pediu para mudar."""
+
+EXCERPT_SCHEMA = {
+    "type": "OBJECT",
+    "properties": {
+        "reply": {"type": "STRING"},
+        "is_rule": {"type": "BOOLEAN"},
+        "verifiable": {"type": "BOOLEAN"},
+        "type": {"type": "STRING", "enum": list(RULE_TYPES)},
+        "summary": {"type": "STRING"},
+        "interpretation": {"type": "STRING"},
+        "reason": {"type": "STRING"},
+        "dataset": {"type": "STRING", "nullable": True},
+        "logic": {"type": "STRING", "enum": ["and", "or"]},
+        "conditions": {
+            "type": "ARRAY",
+            "items": {
+                "type": "OBJECT",
+                "properties": {
+                    "column": {"type": "STRING"},
+                    "op": {"type": "STRING", "enum": list(QUERY_OPERATORS)},
+                    "value": {"type": "STRING", "nullable": True},
+                    "values": {"type": "ARRAY", "items": {"type": "STRING"}},
+                },
+                "required": ["column", "op"],
+                "propertyOrdering": ["column", "op", "value", "values"],
+            },
+        },
+    },
+    "required": [
+        "reply", "is_rule", "verifiable", "type", "summary", "interpretation", "reason",
+        "dataset", "logic", "conditions",
+    ],
+    "propertyOrdering": [
+        "reply", "is_rule", "verifiable", "type", "summary", "interpretation", "reason",
+        "dataset", "logic", "conditions",
+    ],
+}  # fmt: skip
+
+
 @dataclass
-class GeneratedQuery:
-    """A busca como a IA devolveu; ainda precisa passar pela validação do schema."""
+class ExcerptPrompt:
+    """O trecho grifado e o que a IA precisa para analisá-lo."""
 
-    dataset: str | None
-    query: dict
+    excerpt: str
+    page: int
+    # Texto da página (ou de parte dela) em volta do trecho.
+    context: str
+    datasets: list[DatasetPrompt]
+    # Conversa até aqui: [{role: user|assistant, content}], terminando na pessoa.
+    history: list[dict]
+    # Proposta atual (possivelmente editada pela pessoa), no formato de `ExcerptAnswer`.
+    current: dict | None = None
+
+
+@dataclass
+class ExcerptAnswer:
+    """A resposta da IA como veio; a busca ainda passa pela validação do schema."""
+
+    reply: str
+    is_rule: bool
+    verifiable: bool
+    type: str
+    summary: str
+    interpretation: str
     reason: str
+    # Busca no formato de StructuredQuery, ou None quando a regra não é verificável.
+    query: dict | None
 
 
-def _query_from_answer(item: dict) -> GeneratedQuery:
+def query_from_answer(item: dict) -> dict | None:
+    """Converte {dataset, logic, conditions} da IA em StructuredQuery (sem validar colunas)."""
+    dataset = str(item.get("dataset") or "").strip()
+    if not dataset:
+        return None
     conditions = []
     for c in item.get("conditions") or []:
         op = c.get("op")
@@ -756,94 +515,88 @@ def _query_from_answer(item: dict) -> GeneratedQuery:
             value = None if c.get("value") is None else str(c.get("value"))
         column = str(c.get("column")).strip()[:200]
         conditions.append({"column": column, "op": op, "value": value})
-    dataset = item.get("dataset") or None
-    return GeneratedQuery(
-        dataset=dataset,
-        query={
-            "dataset": str(dataset or "?"),
-            "logic": "or" if item.get("logic") == "or" else "and",
-            "conditions": conditions,
-        },
-        reason=str(item.get("reason") or "").strip(),
+    return {
+        "dataset": dataset[:200],
+        "logic": "or" if item.get("logic") == "or" else "and",
+        "conditions": conditions,
+    }
+
+
+def _excerpt_answer(item: dict) -> ExcerptAnswer:
+    verifiable = bool(item.get("verifiable")) and bool(item.get("is_rule", True))
+    kind = item.get("type") if item.get("type") in RULE_TYPES else "outro"
+    return ExcerptAnswer(
+        reply=str(item.get("reply") or "").strip(),
+        is_rule=bool(item.get("is_rule", True)),
+        verifiable=verifiable,
+        type=kind,
+        summary=" ".join(str(item.get("summary") or "").split())[:200],
+        interpretation=str(item.get("interpretation") or "").strip()[:4000],
+        reason=str(item.get("reason") or "").strip()[:1000],
+        query=query_from_answer(item) if verifiable else None,
     )
 
 
-async def generate_queries_batch(
-    rules: list[RulePrompt], datasets: list[DatasetPrompt]
-) -> dict[int, GeneratedQuery]:
+def _excerpt_contents(prompt: ExcerptPrompt) -> list[dict]:
+    bases = describe_datasets(prompt.datasets) if prompt.datasets else "(nenhuma base pronta)"
+    opening = (
+        f"<bases>\n{bases}\n</bases>\n\n"
+        f'<contexto pagina="{prompt.page}">\n{prompt.context}\n</contexto>\n\n'
+        f"<trecho_grifado>\n{prompt.excerpt}\n</trecho_grifado>"
+    )
+    history = prompt.history or [{"role": "user", "content": "Analise o trecho grifado."}]
+    contents = []
+    for i, message in enumerate(history):
+        text = message["content"]
+        if i == 0:
+            text = f"{opening}\n\n{text}"
+        if i == len(history) - 1 and prompt.current is not None:
+            current = json.dumps(prompt.current, ensure_ascii=False)
+            text = f"<proposta_atual>\n{current}\n</proposta_atual>\n\n{text}"
+        contents.append(
+            {
+                "role": "model" if message["role"] == "assistant" else "user",
+                "parts": [{"text": text}],
+            }
+        )
+    return contents
+
+
+async def analyze_excerpt(prompt: ExcerptPrompt) -> ExcerptAnswer:
+    """Classifica o trecho grifado e propõe a regra (e a busca, se verificável)."""
+    if getattr(get_settings(), "llm_mock", False) and not _configured_keys():
+        from app.services import llm_mock
+
+        return await llm_mock.analyze_excerpt(prompt)
     settings = get_settings()
     config: dict = {
         "temperature": 0,
-        "maxOutputTokens": 16000,
+        "maxOutputTokens": 8000,
         "responseMimeType": "application/json",
-        "responseSchema": QUERY_SCHEMA,
+        "responseSchema": EXCERPT_SCHEMA,
     }
     if settings.gemini_thinking_level:
         config["thinkingConfig"] = {"thinkingLevel": settings.gemini_thinking_level}
-    listing = "\n".join(
-        f"[{r.ref}] ({r.type}) {r.summary} — “{' '.join(r.excerpt.split())}”" for r in rules
-    )
     data = await _generate(
         {
-            "systemInstruction": {"parts": [{"text": QUERY_SYSTEM}]},
-            "contents": [
-                {
-                    "role": "user",
-                    "parts": [
-                        {
-                            "text": f"<bases>\n{describe_datasets(datasets)}\n</bases>\n\n"
-                            f"<regras>\n{listing}\n</regras>"
-                        }
-                    ],
-                }
-            ],
+            "systemInstruction": {"parts": [{"text": EXCERPT_SYSTEM}]},
+            "contents": _excerpt_contents(prompt),
             "generationConfig": config,
         }
     )
     answer, finish = _text(data)
+    if finish in BLOCKED:
+        raise LlmApiError("A IA não conseguiu analisar este trecho.")
     if finish != "STOP":
-        logger.warning("llm_finish", extra={"step": "queries", "reason": finish})
+        logger.warning("llm_finish", extra={"step": "excerpt", "reason": finish})
     try:
-        items = json.loads(answer)["queries"]
-    except (json.JSONDecodeError, KeyError, TypeError):
-        logger.warning("llm_invalid_json", extra={"step": "queries"})
-        return {}
-    refs = {r.ref for r in rules}
-    result: dict[int, GeneratedQuery] = {}
-    for item in items:
-        try:
-            ref = int(item["rule"])
-        except (KeyError, TypeError, ValueError):
-            continue
-        if ref in refs and ref not in result:
-            result[ref] = _query_from_answer(item)
-    return result
-
-
-async def generate_queries(
-    rules: list[RulePrompt], datasets: list[DatasetPrompt]
-) -> dict[int, GeneratedQuery]:
-    """Buscas para todas as regras, em lotes paralelos (até LLM_MAX_CONCURRENCY)."""
-    if getattr(get_settings(), "llm_mock", False):
-        from app.services import llm_mock
-
-        return await llm_mock.generate_queries(rules, datasets)
-    ensure_configured()
-    semaphore = asyncio.Semaphore(get_settings().llm_max_concurrency)
-    batches = [rules[i : i + QUERY_BATCH] for i in range(0, len(rules), QUERY_BATCH)]
-
-    async def run(batch: list[RulePrompt]) -> dict[int, GeneratedQuery]:
-        async with semaphore:
-            return await generate_queries_batch(batch, datasets)
-
-    tasks = [asyncio.ensure_future(run(b)) for b in batches]
-    try:
-        results = await asyncio.gather(*tasks)
-    except BaseException:
-        for task in tasks:
-            task.cancel()
-        raise
-    return {ref: query for batch in results for ref, query in batch.items()}
+        item = json.loads(answer)
+        if not isinstance(item, dict):
+            raise TypeError
+    except (json.JSONDecodeError, TypeError) as exc:
+        logger.warning("llm_invalid_json", extra={"step": "excerpt"})
+        raise LlmApiError("A IA devolveu uma resposta inválida. Tente de novo.") from exc
+    return _excerpt_answer(item)
 
 
 # ---------------------------------------------------------------------------

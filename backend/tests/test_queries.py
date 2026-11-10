@@ -6,7 +6,6 @@ import pytest
 from app.schemas.queries import StructuredQuery
 from app.services import llm
 from app.services.datasets import parse_csv, parse_value
-from app.services.llm import ExtractedRule, GeneratedQuery
 from app.services.query_engine import DatasetRef, QueryError, compile_query, run
 
 CSV = (
@@ -121,7 +120,7 @@ def test_unknown_dataset_and_deep_groups(dataset):
 
 
 def test_ai_answer_is_sanitized_before_validation():
-    answer = llm._query_from_answer(
+    answer = llm.query_from_answer(
         {
             "dataset": "contratos",
             "logic": "talvez",
@@ -134,7 +133,7 @@ def test_ai_answer_is_sanitized_before_validation():
             ],
         }
     )
-    query = StructuredQuery.model_validate(answer.query)
+    query = StructuredQuery.model_validate(answer)
     assert query.logic == "and"
     assert [(c.op, c.value) for c in query.conditions] == [
         ("gt", "5"),
@@ -149,10 +148,7 @@ def test_dataset_context_for_the_prompt(dataset):
     assert '<base nome="contratos" linhas="4">' in text
     assert "- Valor (decimal) ex.: 1.234,56" in text
     assert "- Modalidade (texto) valores: Dispensa | Inexigibilidade | Pregão" in text
-    schema = llm._extraction_schema(["contratos"])
-    item = schema["properties"]["rules"]["items"]
-    assert item["properties"]["datasets"]["items"]["enum"] == ["contratos"]
-    assert llm._extraction_schema([]) is llm.EXTRACTION_SCHEMA
+    assert llm.query_from_answer({"dataset": None, "conditions": []}) is None
 
 
 # ----- fluxo completo, com a IA simulada -----
@@ -167,54 +163,49 @@ TEXT = (
 
 @pytest.fixture
 def fake_ai(monkeypatch):
-    calls = []
+    prompts = []
 
-    async def extract(text, on_progress=None, datasets=None, **kwargs):
-        names = [d.name for d in datasets or []]
-        start = text.index("Contratos acima")
-        end = text.index("valor.") + len("valor.")
-        other = text.index("A contratada")
-        return [
-            ExtractedRule("condicao", start, end, "Garantia acima de 50 mil", names[:1]),
-            ExtractedRule("obrigacao", other, len(text), "Manter sigilo", []),
-        ]
+    async def analyze(prompt):
+        prompts.append(prompt)
+        if "Contratos acima" in prompt.excerpt:
+            assert prompt.datasets[0].columns[0]["semantic"]["confidence"] == "high"
+            return llm.ExcerptAnswer(
+                reply="Regra verificável na base contratos.",
+                is_rule=True,
+                verifiable=True,
+                type="condicao",
+                summary="Garantia acima de 50 mil",
+                interpretation="Contratos com Valor acima de 50 mil exigem garantia.",
+                reason="A coluna Valor permite o escopo.",
+                query={
+                    "dataset": "contratos",
+                    "logic": "and",
+                    "conditions": [{"column": "Valor", "op": "gt", "value": "50000"}],
+                },
+            )
+        return llm.ExcerptAnswer(
+            reply="Não há coluna sobre sigilo.",
+            is_rule=True,
+            verifiable=True,
+            type="obrigacao",
+            summary="Manter sigilo",
+            interpretation="",
+            reason="",
+            query={
+                "dataset": "contratos",
+                "logic": "and",
+                "conditions": [{"column": "Sigilo", "op": "eq", "value": "sim"}],
+            },
+        )
 
-    async def generate(rules, datasets):
-        calls.append([r.summary for r in rules])
-        result = {}
-        for r in rules:
-            if "Garantia" in r.summary:
-                result[r.ref] = GeneratedQuery(
-                    "contratos",
-                    {
-                        "dataset": "contratos",
-                        "logic": "and",
-                        "conditions": [{"column": "Valor", "op": "gt", "value": "50000"}],
-                    },
-                    "Contratos acima de 50 mil",
-                )
-            else:
-                result[r.ref] = GeneratedQuery(None, {}, "Nenhuma base tem sigilo")
-        return result
-
-    from app.schemas.validation import ValidationPlan
     from app.services import validation_llm
 
     async def meanings(name, columns):
         return [{**c, "semantic": {"meaning": c["name"], "confidence": "high"}} for c in columns]
 
-    async def plans(rules, datasets, reference_date):
-        return {
-            r.ref: ValidationPlan(explanation="Sem evidência suficiente", missing_data=["Critério"])
-            for r in rules
-        }
-
     monkeypatch.setattr(validation_llm, "interpret_columns", meanings)
-    monkeypatch.setattr(validation_llm, "plan_rules", plans)
-    monkeypatch.setattr(llm, "extract_rules", extract)
-    monkeypatch.setattr(llm, "generate_queries", generate)
-    monkeypatch.setattr(llm, "ensure_configured", lambda: "chave")
-    return calls
+    monkeypatch.setattr(llm, "analyze_excerpt", analyze)
+    return prompts
 
 
 async def _login(client):
@@ -239,7 +230,7 @@ async def _wait_ready(client, doc_id):
 
 
 @pytest.mark.db
-async def test_rules_become_queries_over_the_datasets(migrated_db, client, fake_ai):
+async def test_highlighted_rule_becomes_an_approved_query(migrated_db, client, fake_ai):
     await _login(client)
     analysis = (await client.post("/api/v1/analyses", json={})).json()
     dataset = (
@@ -260,63 +251,134 @@ async def test_rules_become_queries_over_the_datasets(migrated_db, client, fake_
         )
     ).json()
     assert (await _wait_ready(client, doc["id"]))["status"] == "ready"
-    # Todas as regras são consideradas, com os significados já interpretados.
-    assert fake_ai == [["Garantia acima de 50 mil", "Manter sigilo"]]
+    url = f"/api/v1/documents/{doc['id']}"
+    excerpt = "Contratos acima de R$ 50.000,00 exigem garantia de 5% do valor."
 
-    garantia, sigilo = (await client.get(f"/api/v1/documents/{doc['id']}/rules")).json()
-    assert garantia["dataset_ids"] == [dataset["id"]] and sigilo["query"] is None
+    # A proposta vem validada contra o schema, com a SQL legível e a contagem.
+    resp = await client.post(f"{url}/excerpt-analysis", json={"page": 1, "excerpt": excerpt})
+    assert resp.status_code == 200, resp.text
+    proposal = resp.json()["proposal"]
+    assert proposal["category"] == "csv" and proposal["query_error"] is None
+    assert proposal["query"]["conditions"][0]["value"] == 50000
+    assert proposal["match_count"] == 2 and '"Valor" > 50000' in proposal["sql_display"]
+    assert (await client.get(f"{url}/rules")).json() == []
+
+    # Uma busca inválida da IA chega com o erro, para a pessoa corrigir antes de aprovar.
+    sigilo = "A contratada deverá manter sigilo sobre as informações."
+    resp = await client.post(f"{url}/excerpt-analysis", json={"page": 1, "excerpt": sigilo})
+    bad = resp.json()["proposal"]
+    assert bad["category"] == "csv" and "Sigilo" in bad["query_error"]
+    assert bad["match_count"] is None and bad["sql_display"] is None
+
+    # Prévia da busca editada na revisão.
+    edited = {
+        "dataset": "contratos",
+        "conditions": [
+            {"column": "Valor", "op": "gt", "value": 50000},
+            {"column": "Garantia", "op": "is_null"},
+        ],
+    }
+    preview = await client.post(f"{url}/query-preview", json=edited)
+    assert preview.status_code == 200 and preview.json()["match_count"] == 0
+    invalid = await client.post(
+        f"{url}/query-preview",
+        json={"dataset": "contratos", "conditions": [{"column": "X", "op": "eq", "value": 1}]},
+    )
+    assert invalid.status_code == 422 and invalid.json()["error"]["code"] == "invalid_query"
+
+    # Aprovação: a regra entra com a busca preparada (sem executar).
+    resp = await client.post(
+        f"{url}/rules",
+        json={
+            "type": proposal["type"],
+            "summary": proposal["summary"],
+            "page": 1,
+            "excerpt": excerpt,
+            "category": "csv",
+            "origin": "ia",
+            "interpretation": proposal["interpretation"],
+            "query": proposal["query"],
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    garantia = resp.json()
+    assert garantia["dataset_ids"] == [dataset["id"]] and garantia["category"] == "csv"
     query = garantia["query"]
     assert query["state"] == "pendente" and query["origin"] == "ia"
     assert query["match_count"] is None and query["executed_at"] is None
     assert query["sql"] and list(query["sql_parameters"].values()) == [50000]
     assert query["dataset_name"] == "contratos" and query["verdict"] is None
-    assert query["query"]["conditions"][0]["value"] == 50000
+
+    # Não verificável: registrada como regra geral, sem busca.
+    resp = await client.post(
+        f"{url}/rules",
+        json={
+            "type": "obrigacao",
+            "summary": "Manter sigilo",
+            "page": 1,
+            "excerpt": sigilo,
+            "category": "geral",
+        },
+    )
+    sigilo_rule = resp.json()
+    assert sigilo_rule["category"] == "geral" and sigilo_rule["query"] is None
+    # Uma busca inválida não é aprovada.
+    resp = await client.post(
+        f"{url}/rules",
+        json={
+            "type": "obrigacao",
+            "summary": "Manter sigilo",
+            "page": 1,
+            "excerpt": sigilo,
+            "category": "csv",
+            "query": bad["query"],
+        },
+    )
+    assert resp.status_code == 422 and resp.json()["error"]["code"] == "invalid_query"
 
     records = (await client.get(f"/api/v1/rules/{garantia['id']}/records?limit=1")).json()
     assert records["total"] == 2 and records["columns"][0] == "Número"
     assert [r["index"] for r in records["rows"]] == [1] and records["rows"][0]["values"][0] == "002"
 
     # Correção manual: uma busca inválida volta 422 e não muda nada.
-    url = f"/api/v1/rules/{garantia['id']}/query"
+    query_url = f"/api/v1/rules/{garantia['id']}/query"
     bad = await client.put(
-        url, json={"dataset": "contratos", "conditions": [{"column": "X", "op": "eq", "value": 1}]}
+        query_url,
+        json={"dataset": "contratos", "conditions": [{"column": "X", "op": "eq", "value": 1}]},
     )
     assert bad.status_code == 422 and bad.json()["error"]["code"] == "invalid_query"
-    resp = await client.put(
-        url,
-        json={
-            "dataset": "contratos",
-            "conditions": [
-                {"column": "Valor", "op": "gt", "value": 50000},
-                {"column": "Garantia", "op": "is_null"},
-            ],
-        },
-    )
+    resp = await client.put(query_url, json=edited)
     assert resp.status_code == 200
     manual = resp.json()["query"]
     assert manual["origin"] == "manual" and manual["match_count"] is None
     assert manual["state"] == "pendente"
     assert (await client.get(f"/api/v1/rules/{garantia['id']}/records")).json()["total"] == 0
 
-    # Regerar com a IA, mesmo sobrescrevendo, não mexe na busca manual.
-    resp = await client.post(f"/api/v1/documents/{doc['id']}/queries", json={"overwrite": True})
-    assert resp.status_code == 202
-    await _wait_ready(client, doc["id"])
-    assert fake_ai[-1] == ["Manter sigilo"]
-    garantia = (await client.get(f"/api/v1/documents/{doc['id']}/rules")).json()[0]
+    # Uma nova base não gera nem troca buscas aprovadas.
+    other = (
+        await client.post(
+            f"/api/v1/analyses/{analysis['id']}/datasets",
+            files={"file": ("outra.csv", CSV, "text/csv")},
+        )
+    ).json()
+    for _ in range(100):
+        if (await client.get(f"/api/v1/datasets/{other['id']}")).json()["status"] != "processing":
+            break
+        await asyncio.sleep(0.05)
+    garantia = (await client.get(f"{url}/rules")).json()[0]
     assert garantia["query"]["origin"] == "manual"
+    assert len(fake_ai) == 2
 
     # Sem a base, a busca fica com erro e os registros deixam de ser servidos.
     await client.delete(f"/api/v1/datasets/{dataset['id']}")
-    garantia = (await client.get(f"/api/v1/documents/{doc['id']}/rules")).json()[0]
+    garantia = (await client.get(f"{url}/rules")).json()[0]
     assert garantia["query"]["state"] == "erro" and "removida" in garantia["query"]["error"]
     assert (await client.get(f"/api/v1/rules/{garantia['id']}/records")).status_code == 409
-    resp = await client.post(f"/api/v1/documents/{doc['id']}/queries", json={})
-    assert resp.status_code == 409 and resp.json()["error"]["code"] == "no_datasets"
 
-    assert (await client.delete(url)).status_code == 204
-    garantia = (await client.get(f"/api/v1/documents/{doc['id']}/rules")).json()[0]
-    assert garantia["query"] is None
+    # Sem busca, a regra passa para as regras gerais.
+    assert (await client.delete(query_url)).status_code == 204
+    garantia = (await client.get(f"{url}/rules")).json()[0]
+    assert garantia["query"] is None and garantia["category"] == "geral"
 
 
 def test_readable_sql_uses_real_names_and_inline_values():

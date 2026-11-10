@@ -63,7 +63,7 @@ class Settings(BaseSettings):
     gemini_api_key_3: SecretStr = SecretStr("")
     # Alias que acompanha o Flash mais recente, disponível no plano gratuito.
     gemini_model: str = "gemini-flash-latest"
-    # Raciocínio na extração de regras ("low", "medium", "high"; vazio = padrão do modelo).
+    # Raciocínio da IA ("low", "medium", "high"; vazio = padrão do modelo).
     # O padrão do Flash é pensar bastante, o que deixa cada bloco várias vezes mais lento.
     gemini_thinking_level: str = "low"
     # O plano gratuito tem cota de requisições por minuto e por dia (por modelo).
@@ -71,11 +71,7 @@ class Settings(BaseSettings):
     # Segundos sem resposta até mandar a mesma requisição de novo (0 = desligado).
     # Cada reforço gasta uma requisição a mais da cota.
     llm_hedge_seconds: float = 0
-    # Blocos maiores gastam menos requisições, mas a IA passa a deixar regras de fora
-    # (ver docs/v1.1.md). Os blocos terminam sempre em fim de frase.
-    llm_chunk_chars: int = 12000
-    llm_chunk_overlap: int = 400
-    # Demonstração: respostas prontas da IA (regras, buscas e validação) sem chamar o
+    # Demonstração: respostas prontas da IA (trechos grifados, colunas e validação) sem chamar o
     # Gemini. Ver app/services/llm_mock.py.
     llm_mock: bool = False
 

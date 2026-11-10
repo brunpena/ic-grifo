@@ -29,7 +29,6 @@ def isolated_state(tmp_path, monkeypatch):
     monkeypatch.setattr(ingest, "_tasks", set())
     monkeypatch.setattr(ingest, "_tasks_by_owner", {})
     monkeypatch.setattr(ingest, "_validation_requested", set())
-    monkeypatch.setattr(ingest, "_queries_requested", set())
 
 
 async def test_close_removes_only_owned_analysis_cache_and_keeps_originals(
@@ -117,12 +116,10 @@ async def test_stop_cancels_only_tasks_of_the_closed_analysis(isolated_state):
         ingest._start(work(owner), owner=owner)
     await asyncio.sleep(0)
     ingest._validation_requested.update((document_id, other_id))
-    ingest._queries_requested.update((document_id, other_id))
     await ingest.stop_analysis_work([document_id], [dataset_id])
     assert len(started) == 3
     assert set(finished) == set(owners[:2])
     assert ingest._validation_requested == {other_id}
-    assert ingest._queries_requested == {other_id}
     assert set(ingest._tasks_by_owner) == {owners[2]}
     await ingest.stop_analysis_work([other_id], [])
 

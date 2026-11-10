@@ -10,7 +10,8 @@ from app.core.config import get_settings
 from app.db.models import RuleQuery
 from app.db.session import get_session
 from app.main import app
-from app.services import ingest, llm, query_engine, rule_queries
+from app.schemas.queries import StructuredQuery
+from app.services import llm, query_engine, rule_queries
 from app.services.datasets import parse_csv
 
 CSV = (
@@ -52,60 +53,33 @@ def prepared(dataset):
     return query
 
 
-async def test_generation_uses_meanings_and_saves_sql_without_running_records(monkeypatch):
+def test_preparation_saves_parameterized_sql_without_running_records(monkeypatch):
     _, dataset = source()
-    rules = [
-        SimpleNamespace(
-            id=uuid.uuid4(),
-            type="obrigacao",
-            summary="Garantia",
-            excerpt="Contratos acima de 50 mil exigem garantia",
-            dataset_ids=[],
-        )
-    ]
-
-    class Session:
-        get = AsyncMock(return_value=SimpleNamespace(analysis_id=dataset.analysis_id))
-        commit = AsyncMock()
-
-        def __init__(self):
-            self.scalars = AsyncMock(side_effect=[SimpleNamespace(all=lambda: rules), []])
-            self.added = []
-
-        def add(self, value):
-            self.added.append(value)
-
-    db = Session()
-    monkeypatch.setattr(rule_queries, "analysis_datasets", AsyncMock(return_value=[dataset]))
-
-    async def generate(items, bases):
-        assert all(c.get("semantic") for c in bases[0].columns)
-        return {
-            items[0].ref: llm.GeneratedQuery(
-                dataset.name,
-                {
-                    "dataset": dataset.name,
-                    "conditions": [{"column": "Valor", "op": "gt", "value": 50000}],
-                },
-                "Contratos acima de 50 mil",
-            )
-        }
 
     def no_execution(*args, **kwargs):
         raise AssertionError("Preparar consultas não pode abrir o cache ou executar registros")
 
-    monkeypatch.setattr(llm, "generate_queries", generate)
     monkeypatch.setattr(rule_queries, "run_query", no_execution)
     monkeypatch.setattr(rule_queries, "load_dataset", no_execution)
-    result = await rule_queries.generate_for_document(
-        db, uuid.uuid4(), overwrite=False, only_related=False
-    )
-    assert result.generated == 1
-    query = db.added[0]
+    query = prepared(dataset)
     assert query.state == "pendente" and query.executed_at is None
     assert query.match_count is None and query.matched_rows == []
     assert "SELECT _row_id" in query.sql and "50000" not in query.sql
     assert list(query.sql_parameters.values()) == [50000]
+
+
+async def test_preview_counts_matches_without_saving(tmp_path, monkeypatch):
+    monkeypatch.setattr(get_settings(), "duckdb_cache_dir", tmp_path)
+    parsed, dataset = source()
+    await query_engine.prime_dataset(dataset.id, len(CSV), dataset.columns, parsed)
+    query = StructuredQuery.model_validate(
+        {"dataset": "CONTRATOS", "conditions": [{"column": "valor", "op": "gt", "value": "50000"}]}
+    )
+    compiled, count = await rule_queries.count_matches(query, [dataset])
+    assert count == 2
+    assert compiled.normalized.dataset == "contratos"
+    assert compiled.normalized.conditions[0].column == "Valor"
+    assert compiled.normalized.conditions[0].value == 50000
 
 
 async def test_select_runs_in_cached_database_without_ai_and_keeps_sql_parameterized(
@@ -166,26 +140,3 @@ async def test_records_endpoint_accepts_prepared_query_and_returns_current_execu
     finally:
         app.dependency_overrides.pop(get_session, None)
         app.dependency_overrides.pop(require_user, None)
-
-
-async def test_normal_generation_does_not_trigger_a_second_ai_validation(monkeypatch):
-    doc_id = uuid.uuid4()
-    monkeypatch.setattr(ingest, "_set_status", AsyncMock())
-    monkeypatch.setattr(ingest, "_wait_for_datasets", AsyncMock(return_value=True))
-    legacy = AsyncMock()
-    monkeypatch.setattr(ingest, "_run_validation", legacy)
-
-    class Session:
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *args):
-            pass
-
-    monkeypatch.setattr(ingest, "SessionLocal", Session)
-    generate = AsyncMock(return_value=rule_queries.GenerationResult(generated=2))
-    monkeypatch.setattr(rule_queries, "generate_for_document", generate)
-    await ingest._generate_queries(doc_id, overwrite=False, only_related=False)
-    generate.assert_awaited_once()
-    legacy.assert_not_awaited()
-    assert ingest._set_status.call_args.args[1] == "ready"

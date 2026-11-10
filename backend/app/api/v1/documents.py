@@ -31,11 +31,14 @@ from app.schemas.common import error_responses
 from app.schemas.documents import (
     CitedRule,
     DocumentOut,
-    GenerateQueriesIn,
+    ExcerptAnalysisIn,
+    ExcerptAnalysisOut,
     MessageIn,
     MessageOut,
+    QueryPreviewOut,
     RuleCreateIn,
     RuleOut,
+    RuleProposal,
     RuleUpdateIn,
     TextDocumentIn,
     UrlDocumentIn,
@@ -138,6 +141,8 @@ async def _rules_out(db: SessionDep, document_id: uuid.UUID, rules: list[Rule]) 
             excerpt=r.excerpt,
             comment=r.comment,
             origin=r.origin,
+            category=r.category,
+            interpretation=r.interpretation,
             page=boxes[r.id][0]["page"] if boxes.get(r.id) else None,
             boxes=boxes.get(r.id, []),
             dataset_ids=r.dataset_ids or [],
@@ -322,25 +327,21 @@ async def list_documents(user: UserDep, db: SessionDep) -> list[DocumentOut]:
 @router.post(
     "/documents/{document_id}/resume",
     status_code=202,
-    summary="Continua o processamento sem reenviar pacotes concluidos",
+    summary="Lê de novo o documento interrompido, sem reenviar o arquivo",
 )
 async def resume_document(document_id: uuid.UUID, user: UserDep, db: SessionDep) -> DocumentOut:
     doc = await _owned_document(db, document_id, user)
     claimed = await db.scalar(
         update(Document)
         .where(Document.id == doc.id, Document.status == "error")
-        .values(status="processing", status_message="Retomando pacotes pendentes")
+        .values(status="processing", status_message="Retomando a leitura do documento")
         .returning(Document.id)
     )
     if claimed is None:
         raise ConflictError("Somente documentos interrompidos podem ser retomados.")
-    has_rules = await db.scalar(select(Rule.id).where(Rule.document_id == doc.id).limit(1))
     await db.commit()
     await db.refresh(doc)
-    if has_rules:
-        ingest.start_query_generation(doc.id, overwrite=False)
-    else:
-        ingest.start_processing(doc.id)
+    ingest.start_processing(doc.id)
     return DocumentOut.model_validate(doc)
 
 
@@ -396,29 +397,69 @@ async def list_rules(document_id: uuid.UUID, user: UserDep, db: SessionDep) -> l
     return await _rules_out(db, document_id, list(rules))
 
 
-@router.post(
-    "/documents/{document_id}/rules",
-    status_code=status.HTTP_201_CREATED,
-    summary="Cria uma regra a partir de um trecho selecionado na página",
-    responses=error_responses(404, 409, 422),
-)
-async def create_rule(
-    document_id: uuid.UUID, body: RuleCreateIn, user: UserDep, db: SessionDep
-) -> RuleOut:
+async def _ready_document(db: SessionDep, document_id: uuid.UUID, user: User) -> Document:
     doc = await _owned_document(db, document_id, user)
     if doc.status != "ready" or not doc.full_text:
         raise AppError(
             "Aguarde o documento terminar de ser lido.", code="not_ready", status_code=409
         )
-    bounds = await page_range(db, document_id, body.page)
-    span = bounds and find_excerpt(doc.full_text[: bounds[1]], body.excerpt, bounds[0])
+    return doc
+
+
+async def _locate_excerpt(
+    db: SessionDep, doc: Document, page: int, excerpt: str
+) -> tuple[int, int, tuple[int, int]]:
+    """Posição do trecho grifado em `full_text` e o intervalo da página onde ele está."""
+    bounds = await page_range(db, doc.id, page)
+    span = bounds and find_excerpt(doc.full_text[: bounds[1]], excerpt, bounds[0])
     if not span:
         raise AppError(
             "Não encontrei esse trecho no texto da página. Tente selecionar de novo.",
             code="excerpt_not_found",
             status_code=422,
         )
-    start, end = span
+    return span[0], span[1], bounds
+
+
+def _invalid_query(exc: Exception) -> AppError:
+    return AppError(str(exc), code="invalid_query", status_code=422)
+
+
+@router.post(
+    "/documents/{document_id}/rules",
+    status_code=status.HTTP_201_CREATED,
+    summary="Aprova e salva a regra de um trecho grifado (com a busca, se verificável)",
+    description=(
+        "É a única forma de uma regra entrar no banco: a pessoa revisou a proposta. "
+        "Em `category = csv` a busca é validada contra o schema da base e a SQL é "
+        "preparada (sem executar); em `geral` a regra fica registrada sem busca."
+    ),
+    responses=error_responses(404, 409, 422),
+)
+async def create_rule(
+    document_id: uuid.UUID, body: RuleCreateIn, user: UserDep, db: SessionDep
+) -> RuleOut:
+    doc = await _ready_document(db, document_id, user)
+    start, end, _ = await _locate_excerpt(db, doc, body.page, body.excerpt)
+    rule_query: RuleQuery | None = None
+    if body.category == "csv":
+        if body.query is None:
+            raise AppError(
+                "Uma regra verificável no CSV precisa de uma busca.",
+                code="invalid_query",
+                status_code=422,
+            )
+        datasets = await rule_queries.analysis_datasets(db, doc.analysis_id)
+        rule_query = RuleQuery(
+            query=body.query.model_dump(mode="json"),
+            origin=body.origin,
+            state="pendente",
+            matched_rows=[],
+        )
+        try:
+            rule_queries.prepare_query(rule_query, datasets)
+        except QueryError as exc:
+            raise _invalid_query(exc) from exc
     rule = Rule(
         document_id=document_id,
         type=body.type,
@@ -426,9 +467,17 @@ async def create_rule(
         excerpt=doc.full_text[start:end],
         char_start=start,
         char_end=end,
-        origin="manual",
+        origin=body.origin,
+        status="validada",
+        category=body.category,
+        interpretation=body.interpretation,
+        dataset_ids=[rule_query.dataset_id] if rule_query and rule_query.dataset_id else [],
     )
     db.add(rule)
+    await db.flush()
+    if rule_query is not None:
+        rule_query.rule_id = rule.id
+        db.add(rule_query)
     await db.commit()
     await db.refresh(rule)
     return (await _rules_out(db, document_id, [rule]))[0]
@@ -487,38 +536,6 @@ async def _rule_datasets(db: SessionDep, rule: Rule) -> list[Dataset]:
     return await rule_queries.analysis_datasets(db, analysis_id)
 
 
-@router.post(
-    "/documents/{document_id}/queries",
-    status_code=status.HTTP_202_ACCEPTED,
-    summary="Gera com a IA as buscas das regras nas bases da análise (em segundo plano)",
-    description=(
-        "Considera todas as regras não rejeitadas, inclusive as que a extração não ligou a "
-        "nenhuma base (útil quando as bases chegaram depois do documento). O documento fica "
-        "em `extracting_rules` até terminar."
-    ),
-    responses=error_responses(404, 409, 503),
-)
-async def generate_document_queries(
-    document_id: uuid.UUID, body: GenerateQueriesIn, user: UserDep, db: SessionDep
-) -> DocumentOut:
-    doc = await _owned_document(db, document_id, user)
-    if doc.status != "ready":
-        raise ConflictError("Aguarde o documento terminar de ser analisado.", code="not_ready")
-    if not await rule_queries.analysis_datasets(db, doc.analysis_id):
-        raise ConflictError(
-            "Envie ao menos uma base de dados (CSV) para gerar as buscas.", code="no_datasets"
-        )
-    try:
-        llm.ensure_configured()
-    except llm.LlmUnavailableError as exc:
-        raise AppError(str(exc), code="llm_unavailable", status_code=503) from exc
-    doc.status, doc.status_message = "extracting_rules", ingest.QUERIES_MESSAGE
-    await db.commit()
-    await db.refresh(doc)
-    ingest.start_query_generation(document_id, overwrite=body.overwrite)
-    return DocumentOut.model_validate(doc)
-
-
 @router.put(
     "/rules/{rule_id}/query",
     summary="Define (ou corrige) e prepara a SQL da regra, sem executar",
@@ -547,6 +564,7 @@ async def set_rule_query(
     rule_queries.prepare_query(rule_query, datasets)
     if compiled.dataset.id not in (rule.dataset_ids or []):
         rule.dataset_ids = [*(rule.dataset_ids or []), compiled.dataset.id]
+    rule.category = "csv"
     await db.commit()
     await db.refresh(rule)
     return (await _rules_out(db, rule.document_id, [rule]))[0]
@@ -572,12 +590,14 @@ async def run_rule_query(rule_id: uuid.UUID, user: UserDep, db: SessionDep) -> R
 @router.delete(
     "/rules/{rule_id}/query",
     status_code=status.HTTP_204_NO_CONTENT,
-    summary="Remove a busca da regra",
+    summary="Remove a busca da regra (ela passa para as regras gerais)",
     responses=error_responses(404),
 )
 async def delete_rule_query(rule_id: uuid.UUID, user: UserDep, db: SessionDep) -> Response:
     rule = await _owned_rule(db, rule_id, user)
     await db.execute(delete(RuleQuery).where(RuleQuery.rule_id == rule.id))
+    rule.category = "geral"
+    rule.validation = None
     await db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
@@ -609,6 +629,130 @@ async def list_rule_records(
     await db.commit()
     result.query = _query_out(rule_query, {result.dataset_id: result.dataset_name})
     return result
+
+
+# ---------------------------------------------------------------------------
+# Trecho grifado: conversa com a IA e prévia da busca (nada é salvo aqui)
+# ---------------------------------------------------------------------------
+
+
+def _excerpt_context(page_text: str, offset: int, start: int, end: int) -> str:
+    """Texto da página em volta do trecho, limitado para não estourar o prompt."""
+    budget = llm.EXCERPT_CONTEXT_CHARS
+    if len(page_text) <= budget:
+        return page_text
+    middle = (start + end) // 2 - offset
+    left = max(0, min(middle - budget // 2, len(page_text) - budget))
+    return page_text[left : left + budget]
+
+
+async def _proposal_query(
+    query: StructuredQuery | None, datasets: list[Dataset]
+) -> tuple[StructuredQuery | None, str | None, int | None, str | None]:
+    """Valida e conta a busca proposta. Inválida, ela volta como está, com o erro."""
+    if query is None:
+        return None, None, None, None
+    try:
+        compiled, count = await rule_queries.count_matches(query, datasets)
+    except QueryError as exc:
+        return query, None, None, str(exc)
+    sql = readable_sql(compiled.normalized, compiled.dataset.name)
+    return compiled.normalized, sql, count, None
+
+
+@router.post(
+    "/documents/{document_id}/excerpt-analysis",
+    summary="A IA analisa o trecho grifado e propõe a regra (sem salvar)",
+    description=(
+        "Classifica o trecho como regra verificável nas bases (`csv`) ou não (`geral`) e, "
+        "se verificável, propõe a busca, já validada e contada nos registros. Envie a "
+        "conversa em `messages` para pedir ajustes; a proposta só entra no banco pela "
+        "aprovação (POST /documents/{id}/rules)."
+    ),
+    responses=error_responses(404, 409, 422, 503),
+)
+async def analyze_excerpt(
+    document_id: uuid.UUID, body: ExcerptAnalysisIn, user: UserDep, db: SessionDep
+) -> ExcerptAnalysisOut:
+    doc = await _ready_document(db, document_id, user)
+    start, end, (page_start, page_end) = await _locate_excerpt(db, doc, body.page, body.excerpt)
+    if body.messages and body.messages[-1].role != "user":
+        raise AppError(
+            "A conversa deve terminar com uma mensagem sua.",
+            code="invalid_messages",
+            status_code=422,
+        )
+    datasets = await rule_queries.analysis_datasets(db, doc.analysis_id)
+    page_text = doc.full_text[page_start:page_end]
+    # A conexão não fica presa enquanto a IA responde.
+    await db.commit()
+    prompt = llm.ExcerptPrompt(
+        excerpt=doc.full_text[start:end],
+        page=body.page,
+        context=_excerpt_context(page_text, page_start, start, end),
+        datasets=rule_queries.dataset_prompts(datasets),
+        history=[m.model_dump() for m in body.messages],
+        current=body.current.model_dump(mode="json") if body.current else None,
+    )
+    try:
+        answer = await llm.analyze_excerpt(prompt)
+    except llm.LlmUnavailableError as exc:
+        raise AppError(str(exc), code="llm_unavailable", status_code=503) from exc
+    except llm.LlmApiError as exc:
+        raise AppError(str(exc), code="llm_error", status_code=503) from exc
+
+    raw = None
+    if answer.query is not None:
+        try:
+            raw = StructuredQuery.model_validate(answer.query)
+        except ValidationError:
+            raw = None
+    query, sql, count, error = await _proposal_query(raw, datasets)
+    if answer.query is not None and raw is None:
+        error = "A busca proposta pela IA está num formato inválido. Monte-a no editor."
+    verifiable = answer.verifiable and answer.query is not None
+    return ExcerptAnalysisOut(
+        reply=answer.reply or answer.reason,
+        proposal=RuleProposal(
+            is_rule=answer.is_rule,
+            category="csv" if verifiable else "geral",
+            type=answer.type,
+            summary=answer.summary or " ".join(body.excerpt.split())[:150],
+            interpretation=answer.interpretation,
+            reason=answer.reason,
+            query=query if verifiable else None,
+            sql_display=sql if verifiable else None,
+            match_count=count if verifiable else None,
+            query_error=error if verifiable else None,
+        ),
+    )
+
+
+@router.post(
+    "/documents/{document_id}/query-preview",
+    summary="Valida a busca revisada e conta os registros (sem salvar)",
+    description=(
+        "Usado na revisão da proposta: a busca inválida volta com 422 (`invalid_query`) e "
+        "a mensagem do problema."
+    ),
+    responses=error_responses(404, 422),
+)
+async def preview_query(
+    document_id: uuid.UUID, body: StructuredQuery, user: UserDep, db: SessionDep
+) -> QueryPreviewOut:
+    doc = await _owned_document(db, document_id, user)
+    datasets = await rule_queries.analysis_datasets(db, doc.analysis_id)
+    await db.commit()
+    try:
+        compiled, count = await rule_queries.count_matches(body, datasets)
+    except QueryError as exc:
+        raise _invalid_query(exc) from exc
+    return QueryPreviewOut(
+        query=compiled.normalized,
+        dataset_id=compiled.dataset.id,
+        sql_display=readable_sql(compiled.normalized, compiled.dataset.name),
+        match_count=count,
+    )
 
 
 # ---------------------------------------------------------------------------
