@@ -6,7 +6,7 @@ import { AssistantMessage, type CitedRule, UserMessage } from "@/components/chat
 import { ChatComposer } from "@/components/chat/chat-composer";
 import { ProcessingSteps, PROCESSING_STEPS } from "@/components/chat/processing-steps";
 import { UploadDropzone } from "@/components/chat/upload-dropzone";
-import { CreateRulePopover } from "@/components/document/create-rule-popover";
+import { ExcerptActionPopover } from "@/components/document/excerpt-action-popover";
 import { HighlightLayer, type PageRect, type RuleHighlight } from "@/components/document/highlight-layer";
 import { PdfPage, PdfViewer } from "@/components/document/pdf-viewer";
 import { PdfToolbar } from "@/components/document/pdf-toolbar";
@@ -412,17 +412,19 @@ function WorkspaceDemo() {
         </section>
       </div>
 
-      <CreateRulePopover
+      <ExcerptActionPopover
         open={createOpen}
         onOpenChange={setCreateOpen}
         anchorRef={selectionRef}
-        onCreate={({ type, summary }) => {
+        label="Grifar trecho (demonstração)"
+        onAnalyze={() => {
           const info = selectionInfo.current;
           if (!info) return;
           const id = `n${Date.now()}`;
+          const summary = info.text.slice(0, 80);
           setRules((list) => [
             ...list,
-            { id, type, summary, status: "pendente", page: info.page, excerpt: info.text, spans: [], rects: info.rects },
+            { id, type: "outro", summary, status: "pendente", page: info.page, excerpt: info.text, spans: [], rects: info.rects },
           ]);
           setCreateOpen(false);
           window.getSelection()?.removeAllRanges();

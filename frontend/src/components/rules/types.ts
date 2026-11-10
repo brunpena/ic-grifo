@@ -17,6 +17,8 @@ export type RuleView = {
   id: string;
   type: RuleType;
   status: RuleStatus;
+  /** csv: verificável nas bases; geral: registrada sem busca. */
+  category?: "csv" | "geral";
   summary: string;
   excerpt: string;
   /** Página onde o trecho começa, quando conhecida. */

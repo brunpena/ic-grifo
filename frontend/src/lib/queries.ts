@@ -4,7 +4,7 @@ import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tansta
 import type { ColumnType } from "@/lib/analyses";
 import { api, type Schemas, unwrap } from "@/lib/api";
 import { rememberColumns } from "@/lib/column-cache";
-import type { DocumentInfo, Rule } from "@/lib/documents";
+import type { Rule } from "@/lib/documents";
 
 export type StructuredQuery = Schemas["StructuredQuery-Input"];
 export type QueryCondition = Schemas["Condition"];
@@ -119,26 +119,9 @@ export function useDeleteRuleQuery(documentId: string) {
       unwrap(api.DELETE("/api/v1/rules/{rule_id}/query", { params: { path: { rule_id: ruleId } } })),
     onSuccess: (_result, ruleId) =>
       queryClient.setQueryData<Rule[]>(ruleKeys.rules(documentId), (list) =>
-        list?.map((r) => (r.id === ruleId ? { ...r, query: null } : r)),
+        // Sem busca, a regra passa para as regras gerais (como no back).
+        list?.map((r) => (r.id === ruleId ? { ...r, query: null, category: "geral" as const, validation: null } : r)),
       ),
-  });
-}
-
-/** Pede à IA as buscas das regras; o documento volta a ser acompanhado até ficar pronto. */
-export function useGenerateQueries(documentId: string) {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: (overwrite: boolean) =>
-      unwrap(
-        api.POST("/api/v1/documents/{document_id}/queries", {
-          params: { path: { document_id: documentId } },
-          body: { overwrite },
-        }),
-      ),
-    onSuccess: (doc) => {
-      queryClient.setQueryData<DocumentInfo>(["documents", doc.id], doc);
-      void queryClient.invalidateQueries({ queryKey: ruleKeys.rules(doc.id) });
-    },
   });
 }
 

@@ -2,7 +2,7 @@ import { Circle, CircleCheck, CircleX } from "lucide-react";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
 
-export const PROCESSING_STEPS = ["Enviando", "Lendo o documento", "Identificando regras", "Pronto"] as const;
+export const PROCESSING_STEPS = ["Enviando", "Lendo o documento", "Pronto para grifar"] as const;
 
 type ProcessingStepsProps = {
   /** Índice da etapa atual. Ao chegar na última ("Pronto"), tudo aparece concluído. */

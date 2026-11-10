@@ -186,7 +186,7 @@ function RuleRow({
       {showValidation && <td className={CELL}><ValidationBadge validation={rule.validation} /></td>}
       {onEditQuery && (
         <td className={CELL}>
-          <QueryBadge query={rule.query} onClick={() => onEditQuery(rule)} />
+          <QueryBadge query={rule.query} general={rule.category === "geral"} onClick={() => onEditQuery(rule)} />
         </td>
       )}
       <td className={CELL}>

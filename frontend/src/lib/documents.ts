@@ -10,6 +10,11 @@ export type Rule = Schemas["RuleOut"];
 export type ChatMessage = Schemas["MessageOut"];
 export type RuleStatus = Rule["status"];
 export type RuleType = Rule["type"];
+export type RuleCategory = Rule["category"];
+export type RuleCreate = Schemas["RuleCreateIn"];
+export type ExcerptMessage = Schemas["ExcerptMessage"];
+export type RuleProposal = Schemas["RuleProposal"];
+export type QueryPreview = Schemas["QueryPreviewOut"];
 
 const keys = {
   list: ["documents"] as const,
@@ -171,14 +176,41 @@ export function useUpdateRule(documentId: string) {
   });
 }
 
+/** Aprova a regra revisada: é a única forma de uma regra entrar no banco. */
 export function useCreateRule(documentId: string) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (body: { type: RuleType; summary: string; page: number; excerpt: string }) =>
+    mutationFn: (body: RuleCreate) =>
       unwrap(api.POST("/api/v1/documents/{document_id}/rules", { params: { path: { document_id: documentId } }, body })),
     onSuccess: (rule) =>
       queryClient.setQueryData<Rule[]>(keys.rules(documentId), (list) =>
         [...(list ?? []), rule].sort((a, b) => (a.page ?? 0) - (b.page ?? 0)),
+      ),
+  });
+}
+
+/** A IA analisa o trecho grifado e propõe a regra. Nada é salvo no servidor. */
+export function useAnalyzeExcerpt(documentId: string) {
+  return useMutation({
+    mutationFn: (body: Schemas["ExcerptAnalysisIn"]) =>
+      unwrap(
+        api.POST("/api/v1/documents/{document_id}/excerpt-analysis", {
+          params: { path: { document_id: documentId } },
+          body,
+        }),
+      ),
+  });
+}
+
+/** Valida a busca editada na revisão e conta os registros, sem salvar. */
+export function usePreviewQuery(documentId: string) {
+  return useMutation({
+    mutationFn: (body: Schemas["StructuredQuery-Input"]) =>
+      unwrap(
+        api.POST("/api/v1/documents/{document_id}/query-preview", {
+          params: { path: { document_id: documentId } },
+          body,
+        }),
       ),
   });
 }

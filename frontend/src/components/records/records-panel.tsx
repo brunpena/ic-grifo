@@ -108,7 +108,7 @@ export function RecordsPanel({
 /** Visão geral de todas as regras, inclusive as inconclusivas e ainda não avaliadas. */
 function RulesOverview({ rules, onSelectRule }: { rules: Rule[]; onSelectRule: (id: string) => void }) {
   if (!rules.length) {
-    return <EmptyState icon={SearchX} title="Nenhuma regra encontrada" description="As regras aparecem aqui quando o documento termina de ser analisado." className="flex-1" />;
+    return <EmptyState icon={SearchX} title="Nenhuma regra encontrada" description="Grife um trecho do documento e aprove a regra proposta pela IA." className="flex-1" />;
   }
   return (
     <div className="min-h-0 flex-1 overflow-auto">
@@ -119,7 +119,7 @@ function RulesOverview({ rules, onSelectRule }: { rules: Rule[]; onSelectRule: (
               <RuleTypeBadge type={rule.type} className="shrink-0" />
               <span className="flex min-w-0 flex-1 flex-col">
                 <span className="truncate text-[13px] font-medium">{rule.summary}</span>
-                <span className="truncate text-xs text-foreground-subtle">{rule.query ? describeQuery(rule.query.query) : "Sem consulta para esta regra"}</span>
+                <span className="truncate text-xs text-foreground-subtle">{rule.query ? describeQuery(rule.query.query) : rule.category === "geral" ? "Regra geral, sem busca nas bases" : "Sem consulta para esta regra"}</span>
               </span>
               <span className="text-xs text-foreground-muted">{rule.query?.state === "erro" ? "Revisar consulta" : rule.query ? "Selecionar para consultar" : "Sem consulta"}</span>
             </button>
@@ -175,7 +175,16 @@ function RuleRecords({ rule, onBack, onEditQuery }: { rule: Rule; onBack: () => 
       {showSql && query?.sql_display && <SqlPreview sql={query.sql_display} />}
 
       {!query ? (
-        <EmptyState icon={SearchX} title="Sem busca" description="Crie a busca para ver os registros desta regra." className="flex-1" />
+        rule.category === "geral" ? (
+          <EmptyState
+            icon={SearchX}
+            title="Regra geral"
+            description="Esta regra foi registrada sem busca porque não se aplica às bases CSV. Crie uma busca se ela puder ser verificada nos dados."
+            className="flex-1"
+          />
+        ) : (
+          <EmptyState icon={SearchX} title="Sem busca" description="Crie a busca para ver os registros desta regra." className="flex-1" />
+        )
       ) : query.state === "erro" ? (
         <EmptyState
           icon={AlertTriangle}

@@ -7,6 +7,25 @@ import { HIGHLIGHT, RULE_TYPES, type RuleStatus, type RuleType } from "@/lib/des
 /** Retângulo em frações da página (0 a 1), para independer do zoom. */
 export type PageRect = { x: number; y: number; width: number; height: number };
 
+/** Retângulos de uma seleção de texto dentro da página, em frações (recortados à página). */
+export function selectionRects(range: Range, pageEl: HTMLElement): PageRect[] {
+  const box = pageEl.getBoundingClientRect();
+  if (!box.width || !box.height) return [];
+  return Array.from(range.getClientRects()).flatMap((r) => {
+    const left = Math.max(r.left, box.left);
+    const top = Math.max(r.top, box.top);
+    const right = Math.min(r.right, box.right);
+    const bottom = Math.min(r.bottom, box.bottom);
+    if (right - left < 1 || bottom - top < 1) return [];
+    return [{
+      x: (left - box.left) / box.width,
+      y: (top - box.top) / box.height,
+      width: (right - left) / box.width,
+      height: (bottom - top) / box.height,
+    }];
+  });
+}
+
 export type RuleHighlight = {
   ruleId: string;
   type: RuleType;
@@ -24,6 +43,8 @@ type HighlightLayerProps = {
    */
   pulse?: { ruleId: string; key: number } | null;
   searchRects?: PageRect[];
+  /** Trecho grifado em análise (ainda não é uma regra). */
+  draftRects?: PageRect[];
   /** Índice, em `searchRects`, da ocorrência atual. */
   currentSearchIndex?: number;
   onHoverRule?: (ruleId: string | null) => void;
@@ -61,6 +82,7 @@ export function HighlightLayer({
   activeRuleId,
   pulse,
   searchRects = [],
+  draftRects = [],
   currentSearchIndex,
   onHoverRule,
   onClickRule,
@@ -92,6 +114,18 @@ export function HighlightLayer({
           />
         ));
       })}
+
+      {draftRects.map((rect, i) => (
+        <div
+          key={`draft-${i}`}
+          className="absolute rounded-[2px] mix-blend-multiply"
+          style={{
+            ...toBox(rect),
+            backgroundColor: withAlpha(HIGHLIGHT.draftColor, HIGHLIGHT.draftFillOpacity),
+            outline: `1.5px dashed ${HIGHLIGHT.draftColor}`,
+          }}
+        />
+      ))}
 
       {searchRects.map((rect, i) => (
         <div

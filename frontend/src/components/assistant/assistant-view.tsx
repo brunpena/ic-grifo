@@ -9,7 +9,6 @@ import {
   Link2,
   MousePointerClick,
   Search,
-  Sparkles,
   Type,
   X,
 } from "lucide-react";
@@ -20,8 +19,9 @@ import { ProcessingSteps } from "@/components/chat/processing-steps";
 import { DatasetUploader } from "@/components/datasets/dataset-uploader";
 import { DocumentSourceDialog, type DocumentSourceMode } from "@/components/documents/document-source-dialog";
 import { AnalysisHistory } from "@/components/history/analysis-history";
-import { CreateRulePopover } from "@/components/document/create-rule-popover";
-import { HighlightLayer, type PageRect } from "@/components/document/highlight-layer";
+import { ExcerptActionPopover } from "@/components/document/excerpt-action-popover";
+import { HighlightLayer, type PageRect, selectionRects } from "@/components/document/highlight-layer";
+import { ExcerptPanel, ExcerptPanelEmpty, type ExcerptSelection } from "@/components/excerpt/excerpt-panel";
 import { PDF_TO_CSS, PdfDocumentPages, usePdfDocument } from "@/components/document/pdf-document";
 import { PdfPage, PdfViewer } from "@/components/document/pdf-viewer";
 import { PdfToolbar } from "@/components/document/pdf-toolbar";
@@ -30,7 +30,7 @@ import { RecordsPanel } from "@/components/records/records-panel";
 import { RuleLegend } from "@/components/document/rule-legend";
 import { SearchBar } from "@/components/document/search-bar";
 import { usePdfSearch } from "@/components/document/use-pdf-search";
-import { RulesHeader } from "@/components/rules/rules-header";
+import { type RuleCategoryFilter, RulesHeader } from "@/components/rules/rules-header";
 import { RulesTable } from "@/components/rules/rules-table";
 import { Button } from "@/components/ui/button";
 import { Dialog } from "@/components/ui/dialog";
@@ -47,7 +47,6 @@ import {
   isDocumentFile,
   isPdfFile,
   type Rule,
-  useCreateRule,
   useDocument,
   useDocumentFile,
   useRules,
@@ -56,11 +55,13 @@ import {
   useUploadDocument,
 } from "@/lib/documents";
 import type { FloatingAnchor } from "@/lib/floating";
-import { describeQuery, useGenerateQueries } from "@/lib/queries";
+import { describeQuery } from "@/lib/queries";
 import { DESKTOP_QUERY, useMediaQuery } from "@/lib/use-media-query";
 import { cn } from "@/lib/utils";
 
-type MobileTab = "document" | "rules" | "table";
+type MobileTab = "document" | "excerpt" | "rules" | "table";
+
+const DOCUMENT_STEPS = ["Enviando", "Lendo o documento", "Pronto para grifar"] as const;
 
 const EMPTY_RULES: Rule[] = [];
 
@@ -100,7 +101,7 @@ export function AssistantView() {
   const documentName = doc?.title ?? pendingUpload?.name ?? "";
   const isOpen = !!documentId || !!pendingUpload;
   const pdf = usePdfDocument(file);
-  const [layout, setLayout] = useState<AnalysisLayout>({ chat: false, rules: true, table: true });
+  const [layout, setLayout] = useState<AnalysisLayout>({ chat: false, ai: false, rules: true, table: true });
   // Busca no documento (Ctrl+F).
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
@@ -110,8 +111,6 @@ export function AssistantView() {
   const rulesQuery = useRules(documentId, ready);
   const rules = rulesQuery.data ?? EMPTY_RULES;
   const updateRule = useUpdateRule(documentId ?? "");
-  const createRule = useCreateRule(documentId ?? "");
-  const generateQueries = useGenerateQueries(documentId ?? "");
   const [editingQueryId, setEditingQueryId] = useState<string | null>(null);
   // Só as bases já lidas no servidor entram nas buscas das regras.
   const datasets = (analysis?.datasets ?? []).filter((d) => d.status === "ready");
@@ -145,10 +144,15 @@ export function AssistantView() {
   const [pulse, setPulse] = useState<{ ruleId: string; key: number } | null>(null);
   const [typeFilter, setTypeFilter] = useState<RuleType | null>(null);
   const [statusFilter, setStatusFilter] = useState<RuleStatus | null>(null);
+  const [categoryFilter, setCategoryFilter] = useState<RuleCategoryFilter>(null);
   const [mobileTab, setMobileTab] = useState<MobileTab>("document");
-  const [createOpen, setCreateOpen] = useState(false);
+  // Seleção de texto à espera do clique em "Grifar e analisar com IA".
+  const [actionOpen, setActionOpen] = useState(false);
   const selectionRef = useRef<FloatingAnchor | null>(null);
-  const selectionInfo = useRef<{ page: number; text: string } | null>(null);
+  const selectionInfo = useRef<{ page: number; text: string; rects: PageRect[] } | null>(null);
+  // Trecho grifado em conversa com a IA: fica marcado no PDF até aprovar ou descartar.
+  const [excerpt, setExcerpt] = useState<ExcerptSelection | null>(null);
+  const [draftHighlight, setDraftHighlight] = useState<{ page: number; rects: PageRect[] } | null>(null);
 
   // Ctrl+F (ou ⌘F) abre a busca no documento em vez da busca do navegador.
   useEffect(() => {
@@ -169,9 +173,33 @@ export function AssistantView() {
     setSelectedId(null);
     setPage(1);
     setMobileTab("rules");
-    setLayout({ chat: false, rules: true, table: true });
+    setLayout({ chat: false, ai: false, rules: true, table: true });
     setSearchIndex(0);
+    setCategoryFilter(null);
+    closeExcerpt();
     upload.reset();
+  };
+
+  const closeExcerpt = () => {
+    setExcerpt(null);
+    setDraftHighlight(null);
+  };
+
+  /** Esconde o painel da IA (a conversa continua). */
+  const hideExcerptPanel = () => {
+    if (isDesktop) setLayout((l) => ({ ...l, ai: false }));
+    else setMobileTab("document");
+  };
+
+  const startExcerpt = () => {
+    const info = selectionInfo.current;
+    if (!info) return;
+    setActionOpen(false);
+    setExcerpt({ key: Date.now(), page: info.page, text: info.text });
+    setDraftHighlight({ page: info.page, rects: info.rects });
+    window.getSelection()?.removeAllRanges();
+    if (isDesktop) setLayout((l) => ({ ...l, ai: true }));
+    else setMobileTab("excerpt");
   };
 
   /** Envia os arquivos para a análise atual e abre o primeiro. */
@@ -317,9 +345,10 @@ export function AssistantView() {
     if (!sel || sel.isCollapsed || !pageEl.contains(sel.anchorNode)) return;
     const text = sel.toString().replace(/\s+/g, " ").trim();
     if (text.length < 2) return;
-    selectionRef.current = sel.getRangeAt(0);
-    selectionInfo.current = { page: pageNumber, text };
-    setCreateOpen(true);
+    const range = sel.getRangeAt(0);
+    selectionRef.current = range;
+    selectionInfo.current = { page: pageNumber, text, rects: selectionRects(range, pageEl) };
+    setActionOpen(true);
   };
 
   const onPageClick = (pageNumber: number, point: { x: number; y: number }) => {
@@ -411,7 +440,7 @@ export function AssistantView() {
             {canUploadDocument ? (
               <section aria-labelledby="step-document" className="flex flex-col gap-3 rounded-xl border border-border bg-surface p-5">
                 <h2 id="step-document" className="font-medium">2. Envie o documento com as regras</h2>
-                <p className="text-sm text-foreground-muted">A IA identifica as regras e prepara consultas usando o significado das colunas. Selecione uma regra para ver os registros.</p>
+                <p className="text-sm text-foreground-muted">Depois, grife no documento cada trecho que for uma regra. A IA interpreta o trecho, diz se ele pode ser verificado na base e propõe a consulta; a regra só é salva quando você aprova.</p>
                 <div className="flex flex-wrap gap-2">
                   <Button variant="primary" icon={<FileUp size={16} aria-hidden />} onClick={attach}>Enviar documento</Button>
                   <Button icon={<Type size={16} aria-hidden />} onClick={() => setSourceMode("text")}>Colar texto</Button>
@@ -438,8 +467,15 @@ export function AssistantView() {
   }
 
   const visibleRules = rules.filter(
-    (r) => (!typeFilter || r.type === typeFilter) && (!statusFilter || r.status === statusFilter),
+    (r) =>
+      (!typeFilter || r.type === typeFilter) &&
+      (!statusFilter || r.status === statusFilter) &&
+      (!categoryFilter || r.category === categoryFilter),
   );
+  const categoryCounts = {
+    csv: rules.filter((r) => r.category === "csv").length,
+    geral: rules.filter((r) => r.category === "geral").length,
+  };
   const activeRuleId = hoverId ?? selectedId;
   const widestPage = pdf.status === "ready" ? Math.max(...pdf.pages.map((p) => p.width)) : 595;
   // Arredondado em passos de 5% para não redesenhar as páginas a cada pixel ao arrastar a divisória.
@@ -448,13 +484,13 @@ export function AssistantView() {
     : 1;
   const zoom = zoomOverride ?? fitZoom;
 
-  // Etapa atual: 0 enviando, 1 lendo, 2 identificando regras, 3 pronto.
-  const step = upload.isPending ? 0 : !doc || doc.status === "processing" ? 1 : doc.status === "extracting_rules" ? 2 : 3;
+  // Etapa atual: 0 enviando, 1 lendo, 2 pronto para grifar.
+  const step = upload.isPending ? 0 : !doc || doc.status === "processing" ? 1 : 2;
   const failed = upload.isError || doc?.status === "error";
-  const failedStep = upload.isError ? 0 : doc?.page_count ? 2 : 1;
+  const failedStep = upload.isError ? 0 : 1;
 
-  // Regerando as buscas: as regras continuam na tela, com um aviso.
-  const generating = doc?.status === "extracting_rules" && rules.length > 0;
+  // Validação geral em andamento: as regras continuam na tela, com um aviso.
+  const generating = doc?.status === "extracting_rules";
   // Documento aberto pelo histórico: a situação ainda não chegou, mostra o espaço de trabalho em skeleton.
   const opening = !!documentId && documentId === reopenedId && !doc;
   const showRules = ready || generating || opening;
@@ -528,7 +564,7 @@ export function AssistantView() {
     >
       {doc?.status === "error" && pdf.status === "ready" && (
         <div role="alert" className="m-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-danger/40 bg-danger-soft p-4 text-sm">
-          <p>{doc.status_message} Os pacotes concluídos foram preservados.</p>
+          <p>{doc.status_message} O arquivo enviado foi preservado.</p>
           {resumeAction}
         </div>
       )}
@@ -561,6 +597,7 @@ export function AssistantView() {
               activeRuleId={activeRuleId}
               pulse={pulse}
               searchRects={search.matches.filter((m) => m.page === n).map((m) => m.rect)}
+              draftRects={draftHighlight?.page === n ? draftHighlight.rects : undefined}
               currentSearchIndex={
                 search.matches[searchIndex]?.page === n
                   ? search.matches.slice(0, searchIndex).filter((m) => m.page === n).length
@@ -590,23 +627,9 @@ export function AssistantView() {
             statusFilter={statusFilter}
             onStatusFilterChange={setStatusFilter}
             notice={generating ? (doc?.status_message ?? "Verificando as regras nas bases…") : doc?.status_message}
+            categories={{ value: categoryFilter, onChange: setCategoryFilter, counts: categoryCounts }}
             actions={
               <>
-                {datasets.length > 0 && rules.length > 0 && (
-                  <Button
-                    size="sm"
-                    icon={<Sparkles size={16} strokeWidth={1.75} aria-hidden />}
-                    loading={generateQueries.isPending || generating}
-                    onClick={() =>
-                      generateQueries.mutate(false, {
-                        onError: (error) =>
-                          toast({ title: "Não foi possível gerar as buscas", description: errorMessage(error), variant: "error" }),
-                      })
-                    }
-                  >
-                    Preparar consultas com IA
-                  </Button>
-                )}
                 {isDesktop && (
                   <IconButton
                     aria-label="Esconder regras"
@@ -642,8 +665,8 @@ export function AssistantView() {
               rules.length === 0 ? (
                 <EmptyState
                   icon={MousePointerClick}
-                  title="Nenhuma regra encontrada"
-                  description="Selecione um trecho do documento e clique em “Criar regra”."
+                  title="Nenhuma regra ainda"
+                  description="Selecione um trecho do documento e clique em “Grifar e analisar com IA”. A IA propõe a regra e você aprova."
                 />
               ) : undefined
             }
@@ -652,11 +675,11 @@ export function AssistantView() {
       ) : (
         <div className="flex flex-1 flex-col items-center justify-center gap-6 p-6" aria-live="polite">
           <FileSearch size={32} strokeWidth={1.5} aria-hidden className={failed ? "text-danger" : "text-accent"} />
-          <ProcessingSteps current={failed ? failedStep : step} failed={failed} />
+          <ProcessingSteps current={failed ? failedStep : step} failed={failed} steps={DOCUMENT_STEPS} />
           <p className={cn("max-w-72 text-center text-[13px]", failed ? "text-danger" : "text-foreground-muted")}>
             {failed
               ? (doc?.status_message ?? errorMessage(upload.error))
-              : (doc?.status_message ?? "Isso leva de alguns segundos a poucos minutos, conforme o tamanho do documento.")}
+              : (doc?.status_message ?? "Isso leva alguns segundos, conforme o tamanho do documento.")}
           </p>
           {failed && (
             doc?.status === "error" ? (
@@ -682,6 +705,33 @@ export function AssistantView() {
     />
   );
 
+  const excerptPanel = excerpt && documentId ? (
+    <ExcerptPanel
+      key={excerpt.key}
+      selection={excerpt}
+      documentId={documentId}
+      datasets={datasets}
+      onHide={hideExcerptPanel}
+      onDiscard={closeExcerpt}
+      onApproved={(rule) => {
+        closeExcerpt();
+        setSelectedId(rule.id);
+        if (isDesktop) setLayout((l) => ({ ...l, rules: true }));
+        else setMobileTab("rules");
+        toast({
+          title: "Regra aprovada",
+          description:
+            rule.category === "csv"
+              ? "Ela entrou nas regras verificáveis no CSV, com a consulta pronta."
+              : "Ela foi registrada nas regras gerais, sem consulta nas bases.",
+          variant: "success",
+        });
+      }}
+    />
+  ) : (
+    <ExcerptPanelEmpty onHide={hideExcerptPanel} />
+  );
+
   return (
     <div className="relative flex h-full flex-col" {...dropHandlers}>
       {fileInput}
@@ -699,20 +749,25 @@ export function AssistantView() {
           document={documentPanel}
           rules={rulesPanel}
           table={tablePanel(() => setLayout({ ...layout, table: false }))}
+          aside={excerptPanel}
+          onAsideChange={(open) => setLayout((l) => ({ ...l, ai: open }))}
         />
       ) : (
         <div className="flex h-full flex-col">
           <MobileTabs value={mobileTab} onChange={setMobileTab} ruleCount={rules.length} />
           <div className="min-h-0 flex-1">
+            {/* Montado o tempo todo: trocar de aba não perde a conversa com a IA. */}
+            <div className={mobileTab === "excerpt" ? "h-full" : "hidden"}>{excerptPanel}</div>
             {mobileTab === "document"
                 ? documentPanel
                 : mobileTab === "rules"
                   ? rulesPanel
-                  : tablePanel()}
+                  : mobileTab === "table"
+                    ? tablePanel()
+                    : null}
           </div>
         </div>
       )}
-
       </div>
       {sourceDialog}
       <Dialog
@@ -739,28 +794,11 @@ export function AssistantView() {
         documentId={documentId ?? ""}
         onClose={() => setEditingQueryId(null)}
       />
-      <CreateRulePopover
-        open={createOpen}
-        onOpenChange={setCreateOpen}
+      <ExcerptActionPopover
+        open={actionOpen && !!ready}
+        onOpenChange={setActionOpen}
         anchorRef={selectionRef}
-        creating={createRule.isPending}
-        onCreate={({ type, summary }) => {
-          const info = selectionInfo.current;
-          if (!info) return;
-          createRule.mutate(
-            { type, summary, page: info.page, excerpt: info.text },
-            {
-              onSuccess: (rule) => {
-                setCreateOpen(false);
-                setSelectedId(rule.id);
-                window.getSelection()?.removeAllRanges();
-                toast({ title: "Regra criada", variant: "success" });
-              },
-              onError: (error) =>
-                toast({ title: "Não foi possível criar a regra", description: errorMessage(error), variant: "error" }),
-            },
-          );
-        }}
+        onAnalyze={startExcerpt}
       />
       {dragging && <DropOverlay />}
     </div>
@@ -800,6 +838,7 @@ function DropOverlay() {
 
 const TABS: { value: MobileTab; label: string }[] = [
   { value: "document", label: "Documento" },
+  { value: "excerpt", label: "IA" },
   { value: "rules", label: "Regras" },
   { value: "table", label: "Tabela" },
 ];

@@ -283,7 +283,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Continua o processamento sem reenviar pacotes concluidos */
+        /** Lê de novo o documento interrompido, sem reenviar o arquivo */
         post: operations["resume_document_api_v1_documents__document_id__resume_post"];
         delete?: never;
         options?: never;
@@ -336,7 +336,10 @@ export interface paths {
         /** Regras do documento, na ordem do texto */
         get: operations["list_rules_api_v1_documents__document_id__rules_get"];
         put?: never;
-        /** Cria uma regra a partir de um trecho selecionado na página */
+        /**
+         * Aprova e salva a regra de um trecho grifado (com a busca, se verificável)
+         * @description É a única forma de uma regra entrar no banco: a pessoa revisou a proposta. Em `category = csv` a busca é validada contra o schema da base e a SQL é preparada (sem executar); em `geral` a regra fica registrada sem busca.
+         */
         post: operations["create_rule_api_v1_documents__document_id__rules_post"];
         delete?: never;
         options?: never;
@@ -362,26 +365,6 @@ export interface paths {
         patch: operations["update_rule_api_v1_rules__rule_id__patch"];
         trace?: never;
     };
-    "/api/v1/documents/{document_id}/queries": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Gera com a IA as buscas das regras nas bases da análise (em segundo plano)
-         * @description Considera todas as regras não rejeitadas, inclusive as que a extração não ligou a nenhuma base (útil quando as bases chegaram depois do documento). O documento fica em `extracting_rules` até terminar.
-         */
-        post: operations["generate_document_queries_api_v1_documents__document_id__queries_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/v1/rules/{rule_id}/query": {
         parameters: {
             query?: never;
@@ -396,7 +379,7 @@ export interface paths {
          */
         put: operations["set_rule_query_api_v1_rules__rule_id__query_put"];
         post?: never;
-        /** Remove a busca da regra */
+        /** Remove a busca da regra (ela passa para as regras gerais) */
         delete: operations["delete_rule_query_api_v1_rules__rule_id__query_delete"];
         options?: never;
         head?: never;
@@ -431,6 +414,46 @@ export interface paths {
         get: operations["list_rule_records_api_v1_rules__rule_id__records_get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/documents/{document_id}/excerpt-analysis": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * A IA analisa o trecho grifado e propõe a regra (sem salvar)
+         * @description Classifica o trecho como regra verificável nas bases (`csv`) ou não (`geral`) e, se verificável, propõe a busca, já validada e contada nos registros. Envie a conversa em `messages` para pedir ajustes; a proposta só entra no banco pela aprovação (POST /documents/{id}/rules).
+         */
+        post: operations["analyze_excerpt_api_v1_documents__document_id__excerpt_analysis_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/documents/{document_id}/query-preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Valida a busca revisada e conta os registros (sem salvar)
+         * @description Usado na revisão da proposta: a busca inválida volta com 422 (`invalid_query`) e a mensagem do problema.
+         */
+        post: operations["preview_query_api_v1_documents__document_id__query_preview_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -793,7 +816,7 @@ export interface components {
             source_url: string | null;
             /**
              * Status
-             * @description processing (lendo o PDF), extracting_rules (IA analisando), ready ou error.
+             * @description processing (lendo o PDF), extracting_rules (validação geral em andamento), ready (pronto para grifar) ou error.
              * @enum {string}
              */
             status: "processing" | "extracting_rules" | "ready" | "error";
@@ -830,14 +853,41 @@ export interface components {
         ErrorResponse: {
             error: components["schemas"]["ErrorDetail"];
         };
-        /** GenerateQueriesIn */
-        GenerateQueriesIn: {
+        /** ExcerptAnalysisIn */
+        ExcerptAnalysisIn: {
+            /** Page */
+            page: number;
             /**
-             * Overwrite
-             * @description Refaz também as buscas já geradas pela IA. Buscas editadas à mão ficam.
-             * @default false
+             * Excerpt
+             * @description Texto grifado na página.
              */
-            overwrite: boolean;
+            excerpt: string;
+            /**
+             * Messages
+             * @description Conversa até aqui, terminando na mensagem da pessoa. Vazia na abertura.
+             */
+            messages?: components["schemas"]["ExcerptMessage"][];
+            /** @description Proposta atual, para a IA ajustá-la em vez de recomeçar. */
+            current?: components["schemas"]["RuleProposalIn"] | null;
+        };
+        /** ExcerptAnalysisOut */
+        ExcerptAnalysisOut: {
+            /**
+             * Reply
+             * @description Mensagem da IA para a pessoa.
+             */
+            reply: string;
+            proposal: components["schemas"]["RuleProposal"];
+        };
+        /** ExcerptMessage */
+        ExcerptMessage: {
+            /**
+             * Role
+             * @enum {string}
+             */
+            role: "user" | "assistant";
+            /** Content */
+            content: string;
         };
         /** HTTPValidationError */
         HTTPValidationError: {
@@ -928,6 +978,20 @@ export interface components {
             /** Organization */
             organization?: string | null;
         };
+        /** QueryPreviewOut */
+        QueryPreviewOut: {
+            /** @description A busca com nomes e tipos normalizados. */
+            query: components["schemas"]["StructuredQuery-Output"];
+            /**
+             * Dataset Id
+             * Format: uuid
+             */
+            dataset_id: string;
+            /** Sql Display */
+            sql_display: string | null;
+            /** Match Count */
+            match_count: number;
+        };
         /** RecordRow */
         RecordRow: {
             /**
@@ -969,7 +1033,10 @@ export interface components {
             /** Password */
             password: string;
         };
-        /** RuleCreateIn */
+        /**
+         * RuleCreateIn
+         * @description Aprovação de uma regra: só aqui ela entra no banco, já validada pela pessoa.
+         */
         RuleCreateIn: {
             /**
              * Type
@@ -982,9 +1049,27 @@ export interface components {
             page: number;
             /**
              * Excerpt
-             * @description Texto selecionado na página.
+             * @description Texto grifado na página.
              */
             excerpt: string;
+            /**
+             * Category
+             * @description csv exige `query`; geral guarda a regra sem busca nas bases.
+             * @default geral
+             * @enum {string}
+             */
+            category: "csv" | "geral";
+            /** Interpretation */
+            interpretation?: string | null;
+            /**
+             * Origin
+             * @description ia quando a proposta da IA foi aprovada.
+             * @default manual
+             * @enum {string}
+             */
+            origin: "ia" | "manual";
+            /** @description Busca revisada pela pessoa (obrigatória em csv). */
+            query?: components["schemas"]["StructuredQuery-Input"] | null;
         };
         /** RuleOut */
         RuleOut: {
@@ -1016,6 +1101,17 @@ export interface components {
              */
             origin: "ia" | "manual";
             /**
+             * Category
+             * @description csv: verificável nas bases (tem busca); geral: registrada sem busca.
+             * @enum {string}
+             */
+            category: "csv" | "geral";
+            /**
+             * Interpretation
+             * @description Como a regra foi interpretada e aprovada.
+             */
+            interpretation: string | null;
+            /**
              * Page
              * @description Página onde o trecho começa.
              */
@@ -1024,11 +1120,86 @@ export interface components {
             boxes: components["schemas"]["HighlightBox"][];
             /**
              * Dataset Ids
-             * @description Bases da análise que a IA relacionou à regra na extração.
+             * @description Bases da análise usadas pela busca.
              */
             dataset_ids: string[];
             /** @description Busca da regra nas bases, se houver. */
             query: components["schemas"]["RuleQueryOut"] | null;
+        };
+        /**
+         * RuleProposal
+         * @description O que a IA propõe para o trecho. Nada é salvo até a aprovação (POST /rules).
+         */
+        RuleProposal: {
+            /**
+             * Is Rule
+             * @description O trecho tem força normativa.
+             */
+            is_rule: boolean;
+            /**
+             * Category
+             * @description csv: verificável nas bases; geral: não.
+             * @enum {string}
+             */
+            category: "csv" | "geral";
+            /**
+             * Type
+             * @enum {string}
+             */
+            type: "obrigacao" | "proibicao" | "prazo" | "condicao" | "outro";
+            /** Summary */
+            summary: string;
+            /** Interpretation */
+            interpretation: string;
+            /**
+             * Reason
+             * @description Por que a regra é (ou não) verificável nos dados.
+             */
+            reason: string;
+            /** @description Busca proposta, só em csv. */
+            query: components["schemas"]["StructuredQuery-Output"] | null;
+            /**
+             * Sql Display
+             * @description SQL legível da busca, para revisão.
+             */
+            sql_display: string | null;
+            /**
+             * Match Count
+             * @description Registros que a busca encontra hoje.
+             */
+            match_count: number | null;
+            /**
+             * Query Error
+             * @description Problema da busca proposta (coluna ou valor inválido), para corrigir.
+             */
+            query_error: string | null;
+        };
+        /**
+         * RuleProposalIn
+         * @description A proposta como está na tela (a pessoa pode tê-la editado antes de pedir ajustes).
+         */
+        RuleProposalIn: {
+            /**
+             * Category
+             * @enum {string}
+             */
+            category: "csv" | "geral";
+            /**
+             * Type
+             * @enum {string}
+             */
+            type: "obrigacao" | "proibicao" | "prazo" | "condicao" | "outro";
+            /**
+             * Summary
+             * @default
+             */
+            summary: string;
+            /**
+             * Interpretation
+             * @default
+             */
+            interpretation: string;
+            query?: components["schemas"]["StructuredQuery-Input"] | null;
         };
         /** RuleQueryOut */
         RuleQueryOut: {
@@ -1096,6 +1267,8 @@ export interface components {
             summary?: string | null;
             /** Comment */
             comment?: string | null;
+            /** Interpretation */
+            interpretation?: string | null;
         };
         /** RuleValidationOut */
         RuleValidationOut: {
@@ -2345,68 +2518,6 @@ export interface operations {
             };
         };
     };
-    generate_document_queries_api_v1_documents__document_id__queries_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                document_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["GenerateQueriesIn"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            202: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["DocumentOut"];
-                };
-            };
-            /** @description Not Found */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            /** @description Conflict */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-            /** @description Service Unavailable */
-            503: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-        };
-    };
     set_rule_query_api_v1_rules__rule_id__query_put: {
         parameters: {
             query?: never;
@@ -2586,6 +2697,112 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    analyze_excerpt_api_v1_documents__document_id__excerpt_analysis_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                document_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ExcerptAnalysisIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExcerptAnalysisOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    preview_query_api_v1_documents__document_id__query_preview_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                document_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StructuredQuery-Input"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["QueryPreviewOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };

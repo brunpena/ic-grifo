@@ -10,6 +10,14 @@ import { cn } from "@/lib/utils";
 
 const STATUSES = Object.keys(RULE_STATUS) as RuleStatus[];
 
+export type RuleCategoryFilter = "csv" | "geral" | null;
+
+const CATEGORY_TABS: { value: RuleCategoryFilter; label: string }[] = [
+  { value: null, label: "Todas" },
+  { value: "csv", label: "Verificáveis no CSV" },
+  { value: "geral", label: "Gerais" },
+];
+
 type RulesHeaderProps = {
   validated: number;
   total: number;
@@ -19,8 +27,17 @@ type RulesHeaderProps = {
   onStatusFilterChange: (status: RuleStatus | null) => void;
   /** Botões à direita dos filtros (ex.: gerar buscas). */
   actions?: ReactNode;
-  /** Aviso do processamento (ex.: buscas que a IA não conseguiu gerar). */
+  /** Aviso do processamento (ex.: validação em andamento). */
   notice?: string | null;
+  /**
+   * Separação do banco de regras. Com ela, o topo mostra as categorias no lugar do
+   * progresso de validação (toda regra já entra aprovada).
+   */
+  categories?: {
+    value: RuleCategoryFilter;
+    onChange: (value: RuleCategoryFilter) => void;
+    counts: { csv: number; geral: number };
+  };
   className?: string;
 };
 
@@ -34,16 +51,43 @@ export function RulesHeader({
   onStatusFilterChange,
   actions,
   notice,
+  categories,
   className,
 }: RulesHeaderProps) {
   return (
     <div className={cn("flex shrink-0 flex-col gap-3 border-b border-border bg-surface p-3", className)}>
+      {categories ? (
+        <div role="tablist" aria-label="Categoria das regras" className="flex flex-wrap gap-1">
+          {CATEGORY_TABS.map((tab) => {
+            const count =
+              tab.value === null ? categories.counts.csv + categories.counts.geral : categories.counts[tab.value];
+            const active = categories.value === tab.value;
+            return (
+              <button
+                key={tab.label}
+                type="button"
+                role="tab"
+                aria-selected={active}
+                onClick={() => categories.onChange(tab.value)}
+                className={cn(
+                  "inline-flex h-7 items-center gap-1.5 rounded-md px-2.5 text-[13px] font-medium transition-colors duration-150 ease-out",
+                  active ? "bg-accent-soft text-accent" : "text-foreground-muted hover:bg-surface-hover hover:text-foreground",
+                )}
+              >
+                {tab.label}
+                <span className="font-mono text-[11px] tabular-nums">{count}</span>
+              </button>
+            );
+          })}
+        </div>
+      ) : (
       <div className="flex flex-col gap-1.5">
         <p className="text-[13px] text-foreground-muted tabular-nums">
           <span className="font-medium text-foreground">{validated}</span> de {total} regras validadas
         </p>
         <ProgressBar value={validated} max={total} label="Regras validadas" />
       </div>
+      )}
       <div className="flex flex-wrap gap-2">
         <RuleTypeSelect
           allowAll

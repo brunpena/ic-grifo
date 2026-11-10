@@ -39,4 +39,7 @@ export const HIGHLIGHT = {
   searchColor: "#0A84FF",
   searchCurrentColor: "#0038D6",
   searchFillOpacity: 0.3,
+  // Trecho grifado em análise com a IA (ainda não aprovado).
+  draftColor: "#7C3AED",
+  draftFillOpacity: 0.22,
 } as const;

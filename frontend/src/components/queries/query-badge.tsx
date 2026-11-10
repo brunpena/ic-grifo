@@ -1,6 +1,6 @@
 "use client";
 
-import { AlertTriangle, Database, Plus } from "lucide-react";
+import { AlertTriangle, BookText, Database, Plus } from "lucide-react";
 import type { MouseEvent } from "react";
 import { Tooltip } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
@@ -12,10 +12,13 @@ const BADGE =
 /** Situação da busca da regra; clicar abre o editor. */
 export function QueryBadge({
   query,
+  general,
   onClick,
   className,
 }: {
   query: RuleQuerySummary | null | undefined;
+  /** Regra geral: registrada sem busca porque não se aplica às bases CSV. */
+  general?: boolean;
   onClick?: () => void;
   className?: string;
 }) {
@@ -23,6 +26,20 @@ export function QueryBadge({
     e.stopPropagation();
     onClick?.();
   };
+  if (!query && general) {
+    return (
+      <Tooltip content="Regra geral: não se aplica às bases CSV. Clique para criar uma busca.">
+        <button
+          type="button"
+          onClick={handle}
+          className={cn(BADGE, "bg-surface-muted text-foreground-muted hover:bg-surface-hover hover:text-foreground", className)}
+        >
+          <BookText size={14} strokeWidth={1.75} aria-hidden />
+          Geral
+        </button>
+      </Tooltip>
+    );
+  }
   if (!query) {
     return (
       <button
