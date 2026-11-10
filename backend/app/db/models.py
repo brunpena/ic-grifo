@@ -31,6 +31,8 @@ DATASET_STATUSES = ("processing", "ready", "error")
 RULE_TYPES = ("obrigacao", "proibicao", "prazo", "condicao", "outro")
 RULE_STATUSES = ("pendente", "validada", "rejeitada")
 RULE_ORIGINS = ("ia", "manual")
+# csv: verificável nas bases (tem busca); geral: registrada para consulta e contexto.
+RULE_CATEGORIES = ("csv", "geral")
 MESSAGE_ROLES = ("user", "assistant")
 QUERY_ORIGINS = ("ia", "manual")
 QUERY_STATES = ("pendente", "ok", "erro")
@@ -128,7 +130,6 @@ class Document(Base):
     mode: Mapped[str] = mapped_column(Text)
     storage_path: Mapped[str | None] = mapped_column(Text)
     full_text: Mapped[str | None] = mapped_column(Text)
-    extraction_checkpoint: Mapped[dict | None] = mapped_column(JSONB)
     page_count: Mapped[int | None] = mapped_column(Integer)
     status: Mapped[str] = mapped_column(Text, default="processing")
     status_message: Mapped[str | None] = mapped_column(Text)
@@ -184,6 +185,7 @@ class Rule(Base):
         CheckConstraint(_in("type", RULE_TYPES), name="ck_rules_type"),
         CheckConstraint(_in("status", RULE_STATUSES), name="ck_rules_status"),
         CheckConstraint(_in("origin", RULE_ORIGINS), name="ck_rules_origin"),
+        CheckConstraint(_in("category", RULE_CATEGORIES), name="ck_rules_category"),
         CheckConstraint("char_end > char_start", name="ck_rules_range"),
         Index("ix_rules_document_char_start", "document_id", "char_start"),
         Index(
@@ -204,6 +206,10 @@ class Rule(Base):
     status: Mapped[str] = mapped_column(Text, default="pendente")
     comment: Mapped[str | None] = mapped_column(Text)
     origin: Mapped[str] = mapped_column(Text)
+    # Toda regra nasce de um trecho grifado e aprovado pela pessoa (ver excerpt-analysis).
+    category: Mapped[str] = mapped_column(Text, default="geral", server_default="geral")
+    # Como a regra foi interpretada (proposta pela IA e revisada na aprovação).
+    interpretation: Mapped[str | None] = mapped_column(Text)
     # Bases da análise que a IA relacionou à regra (a busca é gerada só para essas).
     dataset_ids: Mapped[list[uuid.UUID]] = mapped_column(
         ARRAY(UUID(as_uuid=True)), default=list, server_default="{}"

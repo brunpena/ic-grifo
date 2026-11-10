@@ -239,6 +239,9 @@ async def evaluate_plan(
     return compliance.summarize(plan, checked, checked_at, errors)
 
 
+GENERAL_RULE = "Regra registrada sem verificação nos dados: não se aplica às bases CSV."
+
+
 async def validate_document(
     db: AsyncSession, document_id: uuid.UUID, *, refresh_columns: bool = False
 ) -> None:
@@ -253,13 +256,14 @@ async def validate_document(
     datasets = await rule_queries.analysis_datasets(db, document.analysis_id)
     await ensure_meanings(db, datasets, refresh=refresh_columns)
     sources = await _sources(db, document.analysis_id)
-    active = [r for r in rules if r.status != "rejeitada"]
+    active = [r for r in rules if r.status != "rejeitada" and r.category == "csv"]
     for rule in rules:
-        rule.validation = (
-            result("ignorada", "Regra rejeitada na revisão humana.")
-            if (rule.status == "rejeitada")
-            else None
-        )
+        if rule.status == "rejeitada":
+            rule.validation = result("ignorada", "Regra rejeitada na revisão humana.")
+        elif rule.category != "csv":
+            rule.validation = result("ignorada", GENERAL_RULE)
+        else:
+            rule.validation = None
     await db.commit()
     if not datasets:
         for rule in active:
