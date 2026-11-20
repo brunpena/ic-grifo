@@ -4,6 +4,7 @@ import { Check, ChevronDown } from "lucide-react";
 import { type KeyboardEvent, useEffect, useId, useRef, useState } from "react";
 import { RULE_TYPES, type RuleType } from "@/lib/design/tokens";
 import { useFloatingPosition } from "@/lib/floating";
+import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 import { RuleTypeDot } from "./badge";
 import { FIELD_CLASSES } from "./input";
@@ -35,13 +36,14 @@ export function RuleTypeSelect<AllowAll extends boolean = false>({
   value,
   onChange,
   allowAll,
-  allLabel = "Todos os tipos",
+  allLabel,
   id,
   autoFocus,
   disabled,
   className,
   ...aria
 }: RuleTypeSelectProps<AllowAll>) {
+  const t = useT();
   const options: (RuleType | null)[] = allowAll ? [null, ...TYPES] : TYPES;
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0);
@@ -68,7 +70,7 @@ export function RuleTypeSelect<AllowAll extends boolean = false>({
     if (open) document.getElementById(optionId(active))?.scrollIntoView({ block: "nearest" });
   });
 
-  const labelOf = (option: RuleType | null) => (option ? RULE_TYPES[option].label : allLabel);
+  const labelOf = (option: RuleType | null) => (option ? t(RULE_TYPES[option].label) : (allLabel ?? t("Todos os tipos")));
 
   const openList = () => {
     setActive(Math.max(0, options.indexOf(value)));

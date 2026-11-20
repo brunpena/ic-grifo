@@ -2,6 +2,7 @@
 
 import { Plus } from "lucide-react";
 import { type RefObject, useId, useState } from "react";
+import { useT } from "@/lib/i18n";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/input";
 import { Popover } from "@/components/ui/popover";
@@ -23,6 +24,7 @@ type CreateRulePopoverProps = {
  * o mesmo popover vira o formulário (tipo e resumo).
  */
 export function CreateRulePopover({ open, onOpenChange, anchorRef, onCreate, creating }: CreateRulePopoverProps) {
+  const t = useT();
   const [expanded, setExpanded] = useState(false);
   const [type, setType] = useState<RuleType>("obrigacao");
   const [summary, setSummary] = useState("");
@@ -43,7 +45,7 @@ export function CreateRulePopover({ open, onOpenChange, anchorRef, onCreate, cre
         open={open}
         onOpenChange={change}
         anchorRef={anchorRef}
-        label="Criar regra a partir da seleção"
+        label={t("Criar regra a partir da seleção")}
         placement="top"
         initialFocus={false}
         className="border-none bg-transparent p-0"
@@ -56,7 +58,7 @@ export function CreateRulePopover({ open, onOpenChange, anchorRef, onCreate, cre
           onMouseDown={(e) => e.preventDefault()}
           onClick={() => setExpanded(true)}
         >
-          Criar regra
+          {t("Criar regra")}
         </Button>
       </Popover>
     );
@@ -67,7 +69,7 @@ export function CreateRulePopover({ open, onOpenChange, anchorRef, onCreate, cre
       open={open}
       onOpenChange={change}
       anchorRef={anchorRef}
-      label="Criar regra"
+      label={t("Criar regra")}
       placement="top"
       className="w-72"
     >
@@ -80,29 +82,29 @@ export function CreateRulePopover({ open, onOpenChange, anchorRef, onCreate, cre
       >
         <div className="flex flex-col gap-1">
           <span id={typeLabelId} className="text-xs font-medium text-foreground-muted">
-            Tipo
+            {t("Tipo")}
           </span>
           <RuleTypeSelect value={type} onChange={setType} aria-labelledby={typeLabelId} autoFocus />
         </div>
         <div className="flex flex-col gap-1">
           <label htmlFor={summaryId} className="text-xs font-medium text-foreground-muted">
-            Resumo
+            {t("Resumo")}
           </label>
           <Textarea
             id={summaryId}
             rows={2}
             value={summary}
             onChange={(e) => setSummary(e.target.value)}
-            placeholder="Ex.: Entregar o relatório em até 10 dias úteis"
+            placeholder={t("Ex.: Entregar o relatório em até 10 dias úteis")}
             required
           />
         </div>
         <div className="flex justify-end gap-2">
           <Button size="sm" variant="ghost" onClick={() => change(false)}>
-            Cancelar
+            {t("Cancelar")}
           </Button>
           <Button size="sm" variant="primary" type="submit" loading={creating} disabled={!summary.trim()}>
-            Criar regra
+            {t("Criar regra")}
           </Button>
         </div>
       </form>

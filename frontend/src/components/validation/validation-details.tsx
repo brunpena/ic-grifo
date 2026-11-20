@@ -7,18 +7,20 @@ import { IconButton } from "@/components/ui/icon-button";
 import { Select } from "@/components/ui/select";
 import { errorMessage } from "@/lib/api";
 import type { Rule } from "@/lib/documents";
+import { intlLocale, msg, useT } from "@/lib/i18n";
 import { type RecordVerdict, useValidationRecords, VALIDATION_LABELS } from "@/lib/validation";
 import { ValidationBadge } from "./validation-badge";
 import { type LeadingColumn, PaginationSkeleton, RecordsTableSkeleton } from "@/components/records/records-skeleton";
 import { knownColumns } from "@/lib/column-cache";
 
 const VALIDATION_LEADING: LeadingColumn[] = [
-  { label: "Linha", skeletonClassName: "w-8" },
-  { label: "Resultado", skeletonClassName: "h-5 w-20" },
-  { label: "Evidência", cellClassName: "min-w-64", skeletonClassName: "w-56" },
+  { label: msg("Linha"), skeletonClassName: "w-8" },
+  { label: msg("Resultado"), skeletonClassName: "h-5 w-20" },
+  { label: msg("Evidência"), cellClassName: "min-w-64", skeletonClassName: "w-56" },
 ];
 
 export function ValidationDetails({ rule, onBack }: { rule: Rule; onBack: () => void }) {
+  const t = useT();
   const validation = rule.validation!;
   const available = validation.datasets ?? [];
   const missing = validation.missing_data ?? [];
@@ -32,7 +34,7 @@ export function ValidationDetails({ rule, onBack }: { rule: Rule; onBack: () => 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex shrink-0 items-start gap-2 border-b border-border px-3 py-3">
-        <IconButton aria-label="Ver todas as regras" icon={<ArrowLeft size={16} aria-hidden />} onClick={onBack} />
+        <IconButton aria-label={t("Ver todas as regras")} icon={<ArrowLeft size={16} aria-hidden />} onClick={onBack} />
         <div className="flex min-w-0 flex-1 flex-col gap-2">
           <p className="text-[13px] font-medium">{rule.summary}</p>
           <div><ValidationBadge validation={validation} /></div>
@@ -43,28 +45,36 @@ export function ValidationDetails({ rule, onBack }: { rule: Rule; onBack: () => 
             </ul>
           )}
           <p className="text-xs text-foreground-subtle">
-            {validation.passed_count.toLocaleString("pt-BR")} conformes · {validation.failed_count.toLocaleString("pt-BR")} violações · {validation.unknown_count.toLocaleString("pt-BR")} inconclusivos
+            {t("{passed} conformes · {failed} violações · {unknown} inconclusivos", {
+              passed: t.number(validation.passed_count),
+              failed: t.number(validation.failed_count),
+              unknown: t.number(validation.unknown_count),
+            })}
           </p>
-          <p className="text-[11px] text-foreground-subtle">Verificação em {new Date(validation.checked_at).toLocaleString("pt-BR")}. A revisão humana da regra é independente deste resultado.</p>
+          <p className="text-[11px] text-foreground-subtle">
+            {t("Verificação em {date}. A revisão humana da regra é independente deste resultado.", {
+              date: new Date(validation.checked_at).toLocaleString(intlLocale(t.locale)),
+            })}
+          </p>
         </div>
       </div>
       {available.length > 0 && !stale && (
         <>
           <div className="flex shrink-0 flex-wrap gap-2 border-b border-border p-2">
-            <Select aria-label="Base verificada" value={datasetId ?? ""} onChange={(e) => { setDatasetId(e.target.value); setOffset(0); }} className="min-w-32 flex-1">
+            <Select aria-label={t("Base verificada")} value={datasetId ?? ""} onChange={(e) => { setDatasetId(e.target.value); setOffset(0); }} className="min-w-32 flex-1">
               {available.map((d) => <option key={d.dataset_id} value={d.dataset_id}>{d.dataset_name}</option>)}
             </Select>
-            <Select aria-label="Resultado do registro" value={filter} onChange={(e) => { setFilter(e.target.value as RecordVerdict | ""); setOffset(0); }}>
-              <option value="">Todos os resultados</option>
-              <option value="conforme">Conformes</option>
-              <option value="violacao">Violações</option>
-              <option value="inconclusiva">Inconclusivos</option>
+            <Select aria-label={t("Resultado do registro")} value={filter} onChange={(e) => { setFilter(e.target.value as RecordVerdict | ""); setOffset(0); }}>
+              <option value="">{t("Todos os resultados")}</option>
+              <option value="conforme">{t("Conformes")}</option>
+              <option value="violacao">{t("Violações")}</option>
+              <option value="inconclusiva">{t("Inconclusivos")}</option>
             </Select>
           </div>
           {records.isError ? (
             <div role="alert" className="p-4 text-sm text-danger">
-              <p>{errorMessage(records.error)}</p>
-              <Button size="sm" onClick={() => void records.refetch()} className="mt-2">Tentar novamente</Button>
+              <p>{errorMessage(records.error, t)}</p>
+              <Button size="sm" onClick={() => void records.refetch()} className="mt-2">{t("Tentar novamente")}</Button>
             </div>
           ) : (
             <div className="min-h-0 flex-1 overflow-auto" aria-busy={records.isFetching}>
@@ -75,19 +85,19 @@ export function ValidationDetails({ rule, onBack }: { rule: Rule; onBack: () => 
                   className="overflow-visible"
                 />
               ) : data.total === 0 ? (
-                <p className="p-4 text-sm text-foreground-muted">Nenhum registro para este resultado. Isso não comprova o cumprimento da regra.</p>
+                <p className="p-4 text-sm text-foreground-muted">{t("Nenhum registro para este resultado. Isso não comprova o cumprimento da regra.")}</p>
               ) : (
                 <table className="border-separate border-spacing-0 text-left text-[13px]">
                   <thead className="sticky top-0 z-10 bg-surface-muted">
-                    <tr>{["Linha", "Resultado", "Evidência", ...data.columns].map((c, i) => (
+                    <tr>{[t("Linha"), t("Resultado"), t("Evidência"), ...data.columns].map((c, i) => (
                       <th key={i} className="border-b border-border px-3 py-2 text-xs font-medium whitespace-nowrap">{c}</th>
                     ))}</tr>
                   </thead>
                   <tbody className={records.isPlaceholderData ? "opacity-60" : ""}>
                     {data.rows.map((row) => (
                       <tr key={row.index} className="hover:bg-surface-hover">
-                        <td className="border-b border-border px-3 py-2 font-mono text-xs">{row.index + 1}</td>
-                        <td className="border-b border-border px-3 py-2 whitespace-nowrap">{VALIDATION_LABELS[row.verdict]}</td>
+                        <td className="border-b border-border px-3 py-2 font-mono text-xs">{t.number(row.index + 1)}</td>
+                        <td className="border-b border-border px-3 py-2 whitespace-nowrap">{t(VALIDATION_LABELS[row.verdict])}</td>
                         <td className="min-w-64 border-b border-border px-3 py-2 text-xs text-foreground-muted">{row.explanation}</td>
                         {row.values.map((value, i) => <td key={i} className="max-w-64 truncate border-b border-border px-3 py-2 whitespace-nowrap" title={value ?? undefined}>{value ?? "—"}</td>)}
                       </tr>
@@ -100,10 +110,16 @@ export function ValidationDetails({ rule, onBack }: { rule: Rule; onBack: () => 
           {!data && !records.isError && <PaginationSkeleton />}
           {data && (
             <div className="flex shrink-0 items-center gap-2 border-t border-border px-3 py-2 text-xs text-foreground-muted">
-              <span aria-live="polite">{data.total === 0 ? 0 : offset + 1}–{Math.min(offset + 100, data.total)} de {data.total.toLocaleString("pt-BR")}</span>
+              <span aria-live="polite">
+                {t("{from}–{to} de {total}", {
+                  from: t.number(data.total === 0 ? 0 : offset + 1),
+                  to: t.number(Math.min(offset + 100, data.total)),
+                  total: t.number(data.total),
+                })}
+              </span>
               <div className="ml-auto flex">
-                <IconButton aria-label="Página anterior" icon={<ChevronLeft size={16} aria-hidden />} disabled={offset === 0 || records.isPlaceholderData} onClick={() => setOffset(Math.max(0, offset - 100))} />
-                <IconButton aria-label="Próxima página" icon={<ChevronRight size={16} aria-hidden />} disabled={offset + 100 >= data.total || records.isPlaceholderData} onClick={() => setOffset(offset + 100)} />
+                <IconButton aria-label={t("Página anterior")} icon={<ChevronLeft size={16} aria-hidden />} disabled={offset === 0 || records.isPlaceholderData} onClick={() => setOffset(Math.max(0, offset - 100))} />
+                <IconButton aria-label={t("Próxima página")} icon={<ChevronRight size={16} aria-hidden />} disabled={offset + 100 >= data.total || records.isPlaceholderData} onClick={() => setOffset(offset + 100)} />
               </div>
             </div>
           )}

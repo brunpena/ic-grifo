@@ -8,6 +8,7 @@ import { IconButton } from "@/components/ui/icon-button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tooltip } from "@/components/ui/tooltip";
 import { RULE_TYPES, type RuleStatus } from "@/lib/design/tokens";
+import { msg, useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 import { QueryBadge } from "@/components/queries/query-badge";
 import type { RuleView } from "./types";
@@ -32,11 +33,11 @@ type RulesTableProps = {
 };
 
 const ACTIONS: { status: RuleStatus; label: string; icon: ReactNode }[] = [
-  { status: "validada", label: "Validar regra", icon: <Check size={16} strokeWidth={1.75} aria-hidden /> },
-  { status: "rejeitada", label: "Rejeitar regra", icon: <X size={16} strokeWidth={1.75} aria-hidden /> },
+  { status: "validada", label: msg("Validar regra"), icon: <Check size={16} strokeWidth={1.75} aria-hidden /> },
+  { status: "rejeitada", label: msg("Rejeitar regra"), icon: <X size={16} strokeWidth={1.75} aria-hidden /> },
   {
     status: "pendente",
-    label: "Voltar para pendente",
+    label: msg("Voltar para pendente"),
     icon: <RotateCcw size={16} strokeWidth={1.75} aria-hidden />,
   },
 ];
@@ -59,6 +60,7 @@ export function RulesTable({
   empty,
   className,
 }: RulesTableProps) {
+  const t = useT();
   const showQuery = !!onEditQuery;
   return (
     <div className={cn("@container min-h-0 overflow-auto", className)} aria-busy={loading || undefined}>
@@ -76,15 +78,15 @@ export function RulesTable({
         </colgroup>
         <thead className="sticky top-0 z-10 bg-surface-muted">
           <tr>
-            <th scope="col" className={HEAD}>Tipo</th>
-            <th scope="col" className={cn(HEAD, TRECHO)}>Trecho</th>
-            <th scope="col" className={HEAD}>Resumo</th>
-            <th scope="col" className={cn(HEAD, PAGINA)}>Página</th>
-            <th scope="col" className={HEAD}>{showValidation ? "Revisão humana" : "Situação"}</th>
-            {showValidation && <th scope="col" className={HEAD}>Validação nas bases</th>}
-            {showQuery && <th scope="col" className={HEAD}>Busca na base</th>}
+            <th scope="col" className={HEAD}>{t("Tipo")}</th>
+            <th scope="col" className={cn(HEAD, TRECHO)}>{t("Trecho")}</th>
+            <th scope="col" className={HEAD}>{t("Resumo")}</th>
+            <th scope="col" className={cn(HEAD, PAGINA)}>{t("Página")}</th>
+            <th scope="col" className={HEAD}>{showValidation ? t("Revisão humana") : t("Situação")}</th>
+            {showValidation && <th scope="col" className={HEAD}>{t("Validação nas bases")}</th>}
+            {showQuery && <th scope="col" className={HEAD}>{t("Busca na base")}</th>}
             <th scope="col" className={HEAD}>
-              <span className="sr-only">Ações</span>
+              <span className="sr-only">{t("Ações")}</span>
             </th>
           </tr>
         </thead>
@@ -121,8 +123,8 @@ export function RulesTable({
         empty ?? (
           <EmptyState
             icon={FileSearch}
-            title="Nenhuma regra encontrada"
-            description="Ajuste os filtros ou selecione um trecho do documento para criar uma regra."
+            title={t("Nenhuma regra encontrada")}
+            description={t("Ajuste os filtros ou selecione um trecho do documento para criar uma regra.")}
           />
         )
       )}
@@ -145,6 +147,7 @@ function RuleRow({
   selected: boolean;
   busy: boolean;
 } & Pick<RulesTableProps, "onSelect" | "onHover" | "onSetStatus" | "onEditQuery">) {
+  const t = useT();
   return (
     <tr
       tabIndex={0}
@@ -201,7 +204,7 @@ function RuleRow({
           {ACTIONS.filter((a) => a.status !== rule.status).map((action) => (
             <IconButton
               key={action.status}
-              aria-label={action.label}
+              aria-label={t(action.label)}
               icon={action.icon}
               loading={busy}
               onClick={(e) => {

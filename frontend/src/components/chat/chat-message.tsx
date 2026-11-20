@@ -4,15 +4,17 @@ import type { ReactNode } from "react";
 import { BrandLogo } from "@/components/brand-logo";
 import { RuleChip } from "@/components/rules/rule-chip";
 import type { RuleType } from "@/lib/design/tokens";
+import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
 export type CitedRule = { id: string; type: RuleType; summary: string };
 
 export function UserMessage({ children, className }: { children: ReactNode; className?: string }) {
+  const t = useT();
   return (
     <div className={cn("flex justify-end", className)}>
       <div className="max-w-[85%] rounded-lg bg-accent-soft px-3 py-2 text-sm whitespace-pre-wrap text-foreground">
-        <span className="sr-only">Você: </span>
+        <span className="sr-only">{t("Você:")} </span>
         {children}
       </div>
     </div>
@@ -47,12 +49,13 @@ export function AssistantMessage({
   onCitationClick,
   className,
 }: AssistantMessageProps) {
+  const t = useT();
   return (
     <div className={cn("flex gap-3", className)} aria-busy={streaming || undefined}>
       <BrandLogo size={20} labelled={false} className="mt-0.5" />
       <div className="flex min-w-0 flex-1 flex-col gap-2">
         <div className="text-sm leading-relaxed whitespace-pre-wrap text-foreground">
-          <span className="sr-only">Assistente: </span>
+          <span className="sr-only">{t("Assistente:")} </span>
           {children}
           {streaming && <StreamingCursor />}
         </div>
@@ -73,9 +76,10 @@ export function CitationList({
   onClick?: (ruleId: string) => void;
   className?: string;
 }) {
+  const t = useT();
   return (
     <div className={cn("flex flex-col gap-1.5", className)}>
-      <span className="text-xs text-foreground-subtle">Regras citadas</span>
+      <span className="text-xs text-foreground-subtle">{t("Regras citadas")}</span>
       <ul className="flex flex-wrap gap-1.5">
         {citations.map((rule) => (
           <li key={rule.id} className="max-w-full">

@@ -4,6 +4,7 @@ import { ChevronDown } from "lucide-react";
 import { type ReactNode, useId, useState } from "react";
 import { CitationList, type CitedRule, StreamingCursor } from "@/components/chat/chat-message";
 import { Card } from "@/components/ui/card";
+import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
 type AnswerCardProps = {
@@ -28,6 +29,7 @@ export function AnswerCard({
   defaultOpen = true,
   className,
 }: AnswerCardProps) {
+  const t = useT();
   const [open, setOpen] = useState(defaultOpen);
   const contentId = useId();
 
@@ -47,7 +49,7 @@ export function AnswerCard({
           aria-hidden
           className={cn("shrink-0 text-foreground-subtle transition-transform duration-150 ease-out", open && "rotate-180")}
         />
-        <span className="sr-only">{open ? "Recolher resposta" : "Expandir resposta"}</span>
+        <span className="sr-only">{open ? t("Recolher resposta") : t("Expandir resposta")}</span>
       </button>
       <div id={contentId} hidden={!open} className="flex flex-col gap-3 border-t border-border px-4 py-3">
         <div className="text-sm leading-relaxed whitespace-pre-wrap text-foreground">

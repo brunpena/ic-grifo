@@ -1,9 +1,10 @@
 "use client";
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { ReactNode } from "react";
+import { type ReactNode, useEffect } from "react";
 import { ToastProvider } from "@/components/ui/toast";
 import { ApiError } from "@/lib/api";
+import { seedStoredUser } from "@/lib/auth";
 
 let browserQueryClient: QueryClient | undefined;
 
@@ -29,8 +30,11 @@ function getQueryClient() {
 }
 
 export function Providers({ children }: { children: ReactNode }) {
+  const queryClient = getQueryClient();
+  // Depois da hidratação: mostra o último usuário enquanto a sessão é conferida.
+  useEffect(() => seedStoredUser(queryClient), [queryClient]);
   return (
-    <QueryClientProvider client={getQueryClient()}>
+    <QueryClientProvider client={queryClient}>
       <ToastProvider>{children}</ToastProvider>
     </QueryClientProvider>
   );

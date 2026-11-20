@@ -44,6 +44,13 @@ class Settings(BaseSettings):
     local_storage_dir: Path = Path("./data/storage")
     # Cache analítico embarcado, independente do backend de armazenamento dos uploads.
     duckdb_cache_dir: Path = Path("./data/duckdb")
+    # Cópia local dos PDFs guardados no Supabase: abrir um documento não baixa o arquivo
+    # do Storage de novo. Os mais antigos saem quando a pasta passa do limite. 0 = desliga.
+    pdf_cache_dir: Path = Path("./data/cache/pdfs")
+    pdf_cache_max_mb: int = Field(default=500, ge=0)
+    # Segundos em que uma sessão já validada é reaproveitada sem consultar o banco.
+    # Logout e troca de senha limpam o cache neste processo; 0 = sempre consulta.
+    auth_cache_seconds: float = Field(default=60, ge=0)
 
     # Limites
     max_upload_mb: int = 50

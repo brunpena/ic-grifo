@@ -9,6 +9,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { useToast } from "@/components/ui/toast";
 import { type Dataset, isCsvFile, useDeleteDataset, useUploadDataset } from "@/lib/analyses";
 import { errorMessage } from "@/lib/api";
+import { msg, type Translate, useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
 type Upload = { id: number; name: string; size: number; sent: number; error?: string };
@@ -25,9 +26,7 @@ let nextUpload = 0;
 /** Colunas que ainda vão aparecer enquanto o servidor lê o cabeçalho e os tipos. */
 const COLUMN_PLACEHOLDERS = ["w-16", "w-24", "w-12", "w-20", "w-28", "w-14"];
 
-const plural = (n: number, one: string, many: string) => `${n.toLocaleString("pt-BR")} ${n === 1 ? one : many}`;
-
-const formatBytes = (bytes: number) => {
+const formatBytes = (bytes: number, t: Translate) => {
   const units = ["B", "KB", "MB", "GB"];
   let value = bytes;
   let unit = 0;
@@ -35,23 +34,30 @@ const formatBytes = (bytes: number) => {
     value /= 1024;
     unit += 1;
   }
-  return `${value.toLocaleString("pt-BR", { maximumFractionDigits: unit ? 1 : 0 })} ${units[unit]}`;
+  return `${t.number(value, { maximumFractionDigits: unit ? 1 : 0 })} ${units[unit]}`;
 };
 
 /** Texto do status do envio: a porcentagem e, ao fim, a espera pela resposta do servidor. */
-function uploadStatus(u: Upload) {
-  if (u.error) return u.error;
+function uploadStatus(u: Upload, t: Translate) {
+  if (u.error) return t(u.error);
   if (u.sent < u.size) {
     const percent = Math.floor((u.sent / u.size) * 100);
-    return `Enviando… ${percent}% (${formatBytes(u.sent)} de ${formatBytes(u.size)})`;
+    return t("Enviando… {percent}% ({sent} de {size})", {
+      percent,
+      sent: formatBytes(u.sent, t),
+      size: formatBytes(u.size, t),
+    });
   }
-  return "Concluindo o envio…";
+  return t("Concluindo o envio…");
 }
+
+const CONFIDENCE = { high: msg("alta"), medium: msg("média"), low: msg("baixa") } as const;
 
 /** Envio de várias bases em CSV. As linhas ficam só no servidor: aqui aparecem o nome, a
  * situação da leitura e o tamanho detectado, com opção de remover. */
 export function DatasetUploader({ datasets, ensureAnalysis, className }: DatasetUploaderProps) {
   const toast = useToast();
+  const t = useT();
   const inputRef = useRef<HTMLInputElement>(null);
   const [dragging, setDragging] = useState(false);
   const [uploads, setUploads] = useState<Upload[]>([]);
@@ -65,7 +71,7 @@ export function DatasetUploader({ datasets, ensureAnalysis, className }: Dataset
     const rejected = files.filter((f) => !isCsvFile(f));
     const failed = (name: string, error: string): Upload => ({ id: ++nextUpload, name, size: 0, sent: 0, error });
     if (rejected.length) {
-      setUploads((list) => [...list, ...rejected.map((f) => failed(f.name, "Não é um arquivo CSV."))]);
+      setUploads((list) => [...list, ...rejected.map((f) => failed(f.name, msg("Não é um arquivo CSV.")))]);
     }
     if (!accepted.length) return;
 
@@ -73,7 +79,7 @@ export function DatasetUploader({ datasets, ensureAnalysis, className }: Dataset
     try {
       analysisId = await ensureAnalysis();
     } catch (error) {
-      toast({ title: "Não foi possível criar a análise", description: errorMessage(error), variant: "error" });
+      toast({ title: t("Não foi possível criar a análise"), description: errorMessage(error, t), variant: "error" });
       return;
     }
     await Promise.all(
@@ -92,7 +98,7 @@ export function DatasetUploader({ datasets, ensureAnalysis, className }: Dataset
           });
           setUploads((list) => list.filter((u) => u.id !== id));
         } catch (error) {
-          setUploads((list) => list.map((u) => (u.id === id ? { ...u, error: errorMessage(error) } : u)));
+          setUploads((list) => list.map((u) => (u.id === id ? { ...u, error: errorMessage(error, t) } : u)));
         }
       }),
     );
@@ -101,7 +107,7 @@ export function DatasetUploader({ datasets, ensureAnalysis, className }: Dataset
   const removeDataset = (dataset: Dataset) => {
     setRemoving(dataset.id);
     remove.mutate(dataset, {
-      onError: (error) => toast({ title: "Não foi possível remover", description: errorMessage(error), variant: "error" }),
+      onError: (error) => toast({ title: t("Não foi possível remover"), description: errorMessage(error, t), variant: "error" }),
       onSettled: () => setRemoving(null),
     });
   };
@@ -145,8 +151,8 @@ export function DatasetUploader({ datasets, ensureAnalysis, className }: Dataset
           className={cn("shrink-0 text-foreground-subtle", dragging && "text-accent")}
         />
         <span className="flex flex-col gap-0.5">
-          <span className="text-sm font-medium">Arraste os CSVs ou clique para escolher</span>
-          <span className="text-xs text-foreground-subtle">Uma ou mais bases. Separador e tipos são detectados sozinhos.</span>
+          <span className="text-sm font-medium">{t("Arraste os CSVs ou clique para escolher")}</span>
+          <span className="text-xs text-foreground-subtle">{t("Uma ou mais bases. Separador e tipos são detectados sozinhos.")}</span>
         </span>
       </button>
       <input
@@ -164,7 +170,7 @@ export function DatasetUploader({ datasets, ensureAnalysis, className }: Dataset
       />
 
       {(datasets.length > 0 || uploads.length > 0) && (
-        <ul className="flex flex-col gap-2" aria-label="Bases enviadas">
+        <ul className="flex flex-col gap-2" aria-label={t("Bases enviadas")}>
           {datasets.map((d) => (
             <li
               key={d.id}
@@ -188,10 +194,12 @@ export function DatasetUploader({ datasets, ensureAnalysis, className }: Dataset
                   className={cn("text-xs tabular-nums", d.status === "error" ? "text-danger" : "text-foreground-subtle")}
                 >
                   {d.status === "processing"
-                    ? (d.status_message ?? `Carregando a base no servidor… (${formatBytes(d.size_bytes)})`)
+                    ? d.status_message
+                      ? t(d.status_message)
+                      : t("Carregando a base no servidor… ({size})", { size: formatBytes(d.size_bytes, t) })
                     : d.status === "error"
-                      ? (d.status_message ?? "Não foi possível ler a base.")
-                      : `${plural(d.row_count, "linha", "linhas")} · ${plural(d.columns.length, "coluna", "colunas")}`}
+                      ? t(d.status_message ?? msg("Não foi possível ler a base."))
+                      : `${t.plural(d.row_count, "{n} linha", "{n} linhas")} · ${t.plural(d.columns.length, "{n} coluna", "{n} colunas")}`}
                 </span>
                 {d.status === "processing" && (
                   <div aria-hidden className="mt-2 flex flex-wrap gap-1.5">
@@ -199,18 +207,18 @@ export function DatasetUploader({ datasets, ensureAnalysis, className }: Dataset
                   </div>
                 )}
                 {d.original_size_bytes != null && d.original_size_bytes > d.size_bytes && (
-                  <p className="mt-1 text-xs text-danger">Base parcial: o limite do armazenamento cortou o arquivo. A validação cobre somente as linhas guardadas.</p>
+                  <p className="mt-1 text-xs text-danger">{t("Base parcial: o limite do armazenamento cortou o arquivo. A validação cobre somente as linhas guardadas.")}</p>
                 )}
                 {d.status === "ready" && (
                   <details className="mt-1 text-xs">
-                    <summary className="cursor-pointer text-accent">Significado das colunas (IA)</summary>
-                    {d.status_message && <p className="mt-2 text-foreground-muted">{d.status_message}</p>}
+                    <summary className="cursor-pointer text-accent">{t("Significado das colunas (IA)")}</summary>
+                    {d.status_message && <p className="mt-2 text-foreground-muted">{t(d.status_message)}</p>}
                     <dl className="mt-2 space-y-3">
                       {d.columns.map((column) => (
                         <div key={column.name}>
                           <dt className="font-medium">{column.name}</dt>
-                          <dd className="text-foreground-muted">{column.semantic?.meaning ?? "Interpretação pendente"}</dd>
-                          {column.semantic && <dd className="text-foreground-subtle">Confiança {column.semantic.confidence === "high" ? "alta" : column.semantic.confidence === "medium" ? "média" : "baixa"}{column.semantic.unit ? ` · ${column.semantic.unit}` : ""}{column.semantic.event ? ` · ${column.semantic.event}` : ""}. {column.semantic.reason}</dd>}
+                          <dd className="text-foreground-muted">{column.semantic?.meaning ?? t("Interpretação pendente")}</dd>
+                          {column.semantic && <dd className="text-foreground-subtle">{t("Confiança {level}", { level: t(CONFIDENCE[column.semantic.confidence]) })}{column.semantic.unit ? ` · ${column.semantic.unit}` : ""}{column.semantic.event ? ` · ${column.semantic.event}` : ""}. {column.semantic.reason}</dd>}
                         </div>
                       ))}
                     </dl>
@@ -218,7 +226,7 @@ export function DatasetUploader({ datasets, ensureAnalysis, className }: Dataset
                 )}
               </div>
               <IconButton
-                aria-label={`Remover ${d.name}`}
+                aria-label={t("Remover {name}", { name: d.name })}
                 icon={<Trash2 size={16} strokeWidth={1.75} aria-hidden />}
                 loading={removing === d.id}
                 onClick={() => removeDataset(d)}
@@ -241,15 +249,15 @@ export function DatasetUploader({ datasets, ensureAnalysis, className }: Dataset
               <div className="flex min-w-0 flex-1 flex-col" role={u.error ? "alert" : "status"}>
                 <span className="truncate text-[13px] font-medium">{u.name}</span>
                 <span className={cn("text-xs tabular-nums", u.error ? "text-danger" : "text-foreground-subtle")}>
-                  {uploadStatus(u)}
+                  {uploadStatus(u, t)}
                 </span>
                 {!u.error && u.sent < u.size && (
-                  <ProgressBar value={u.sent} max={u.size} label={`Envio de ${u.name}`} className="mt-1.5" />
+                  <ProgressBar value={u.sent} max={u.size} label={t("Envio de {name}", { name: u.name })} className="mt-1.5" />
                 )}
               </div>
               {u.error && (
                 <IconButton
-                  aria-label="Dispensar"
+                  aria-label={t("Dispensar")}
                   icon={<X size={16} strokeWidth={1.75} aria-hidden />}
                   onClick={() => setUploads((list) => list.filter((x) => x.id !== u.id))}
                 />

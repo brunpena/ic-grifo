@@ -1,7 +1,9 @@
 import { Library, type LucideIcon, Settings, Sparkles } from "lucide-react";
+import { msg } from "@/lib/i18n";
 
 export type NavItem = {
   href: string;
+  /** Textos em português; traduza ao exibir com `t(...)`. */
   label: string;
   /** Título no cabeçalho (breadcrumb). */
   title: string;
@@ -9,14 +11,14 @@ export type NavItem = {
 };
 
 export const MAIN_NAV: NavItem[] = [
-  { href: "/assistente", label: "Assistente", title: "Assistente de IA", icon: Sparkles },
-  { href: "/regras", label: "Base de regras", title: "Base de regras", icon: Library },
+  { href: "/assistente", label: msg("Assistente"), title: msg("Assistente de IA"), icon: Sparkles },
+  { href: "/regras", label: msg("Base de regras"), title: msg("Base de regras"), icon: Library },
 ];
 
 export const SETTINGS_NAV: NavItem = {
   href: "/configuracoes",
-  label: "Configurações",
-  title: "Configurações",
+  label: msg("Configurações"),
+  title: msg("Configurações"),
   icon: Settings,
 };
 

@@ -2,6 +2,7 @@
 
 import { X } from "lucide-react";
 import { type ReactNode, useEffect, useId, useRef } from "react";
+import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 import { IconButton } from "./icon-button";
 import { OVERLAY_CLASSES } from "./popover";
@@ -26,6 +27,7 @@ export function Dialog({ open, onOpenChange, title, description, children, foote
   const ref = useRef<HTMLDialogElement>(null);
   const titleId = useId();
   const descriptionId = useId();
+  const t = useT();
 
   useEffect(() => {
     const dialog = ref.current;
@@ -64,7 +66,7 @@ export function Dialog({ open, onOpenChange, title, description, children, foote
             )}
           </div>
           <IconButton
-            aria-label="Fechar"
+            aria-label={t("Fechar")}
             icon={<X size={16} strokeWidth={1.75} aria-hidden />}
             onClick={() => onOpenChange(false)}
             className="-mt-1 -mr-2"

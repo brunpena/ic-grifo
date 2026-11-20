@@ -6,12 +6,16 @@ ainda não existir. O acesso usa a chave service_role, que nunca vai para o fron
 """
 
 import asyncio
+import logging
+import os
 import uuid
 from pathlib import Path
 
 import httpx
 
 from app.core.config import get_settings
+
+logger = logging.getLogger(__name__)
 
 
 class StorageError(Exception):
@@ -177,16 +181,83 @@ async def delete_files(names: list[str]) -> None:
         )
 
 
+# ----- cópia local dos PDFs (só com o Supabase) -----
+# O PDF de um documento é gravado uma única vez, na conversão, então a cópia nunca fica
+# desatualizada. Baixar do Storage leva de 1 a 2 s; ler do disco, alguns milissegundos.
+
+
+def _pdf_cache_path(document_id: uuid.UUID) -> Path | None:
+    settings = get_settings()
+    if settings.storage_backend == "local" or settings.pdf_cache_max_mb == 0:
+        return None
+    return settings.pdf_cache_dir / pdf_name(document_id)
+
+
+def _cache_read(path: Path) -> bytes | None:
+    try:
+        data = path.read_bytes()
+        os.utime(path)  # Marca o uso: os menos usados saem primeiro.
+        return data
+    except OSError:
+        return None
+
+
+def _cache_store(path: Path, data: bytes) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_name(f".{uuid.uuid4().hex}.tmp")
+        temporary.write_bytes(data)
+        temporary.replace(path)
+        _cache_prune(path.parent, get_settings().pdf_cache_max_mb * 1024 * 1024)
+    except OSError:
+        # Cache é só atalho: sem disco ou com o arquivo em uso, lê do Storage na próxima vez.
+        logger.warning("pdf_cache_write_failed", extra={"path": str(path)}, exc_info=True)
+
+
+def _cache_prune(folder: Path, limit: int) -> None:
+    files = []
+    for path in folder.glob("*.pdf"):
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        files.append((stat.st_mtime, stat.st_size, path))
+    total = sum(size for _, size, _ in files)
+    for _, size, path in sorted(files):
+        if total <= limit:
+            break
+        path.unlink(missing_ok=True)
+        total -= size
+
+
+def _cache_remove(path: Path) -> None:
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
 # ----- atalhos para os PDFs dos documentos -----
 
 
 async def save_pdf(document_id: uuid.UUID, data: bytes) -> str:
-    return await save_file(pdf_name(document_id), data, "application/pdf")
+    stored = await save_file(pdf_name(document_id), data, "application/pdf")
+    if (path := _pdf_cache_path(document_id)) is not None:
+        await asyncio.to_thread(_cache_store, path, data)
+    return stored
 
 
 async def read_pdf(document_id: uuid.UUID) -> bytes:
-    return await read_file(pdf_name(document_id))
+    path = _pdf_cache_path(document_id)
+    if path is not None and (cached := await asyncio.to_thread(_cache_read, path)) is not None:
+        return cached
+    data = await read_file(pdf_name(document_id))
+    if path is not None:
+        await asyncio.to_thread(_cache_store, path, data)
+    return data
 
 
 async def delete_pdf(document_id: uuid.UUID) -> None:
+    if (path := _pdf_cache_path(document_id)) is not None:
+        await asyncio.to_thread(_cache_remove, path)
     await delete_files(document_files(document_id))

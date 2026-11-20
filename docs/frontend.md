@@ -35,12 +35,60 @@ No celular, o Assistente usa abas em vez dos painéis redimensionáveis.
 | Grifo | Coordenadas da API renderizadas na interface | O navegador desenha as marcações. |
 
 `useAnalysis` consulta a cada 1,5 segundo enquanto há base em processamento.
-`useDocument` consulta a cada 1,5 segundo durante processamento e a cada 5 segundos
-quando pronto; para no erro. `useRules` acompanha regras habilitadas a cada 5 segundos.
-A transição para pronto invalida os caches de regras, análise e evidências.
+`useDocument` consulta a cada 1,5 segundo só enquanto o documento está em processamento;
+pronto ou com erro, para. Quando uma base termina de ser lida, o servidor volta a preparar
+as buscas dos documentos prontos: `useAnalysis` percebe essa transição, recarrega o
+documento e o acompanha por 10 segundos. Ações como gerar buscas ou validar devolvem o
+documento já em andamento, e a consulta recomeça sozinha.
+
+`useRules`, `useRuleRecords` e `useValidationRecords` não fazem consultas periódicas.
+A transição do documento para pronto (não a abertura de um documento já pronto) invalida
+regras, registros, evidências e análise; remover uma base também invalida esses caches.
+Registros e evidências ficam 5 minutos em cache, então voltar a uma regra já vista não
+consulta o DuckDB de novo. Ao reabrir pelo histórico, o documento da lista entra no
+cache (`seedDocument`), e PDF, regras e situação atual carregam em paralelo.
+
+O último usuário logado fica em `localStorage` (`grifo:user`). Logo após a hidratação,
+`seedStoredUser` o coloca no cache como desatualizado: menu, cabeçalho e as consultas da
+página começam sem esperar `/auth/me`, que confere a sessão em paralelo. Um 401 apaga a
+cópia e o AppShell manda para o login; login e cadastro só redirecionam com o usuário
+confirmado pela API (`dataUpdatedAt > 0`). O PDF de cada documento volta com
+`Cache-Control: private, immutable`, então o navegador o reaproveita ao recarregar a página.
+
+A tela de entrada não carrega o espaço de trabalho: `AnalysisWorkspace`, `RulesTable`,
+`RecordsPanel`, `QueryEditorDialog` e `CreateRulePopover` usam `next/dynamic` e são
+pré-carregados assim que existe uma análise (`preloadWorkspace`).
 
 O envio de CSV usa XMLHttpRequest para medir bytes. O chat usa fetch e leitura de SSE
 porque a operação precisa de POST. Consultas comuns usam o cliente OpenAPI tipado.
+
+## Idiomas (português e inglês)
+
+A interface tem português e inglês. As bandeiras (`LanguageToggle`) ficam no cabeçalho e
+nas telas de login/cadastro; em Configurações há a mesma escolha por extenso. A escolha
+fica em `localStorage` (`grifo:locale`); sem escolha, vale o idioma do navegador.
+
+- **Como traduzir um texto:** em componentes, `const t = useT()` e `t("Texto em português")`.
+  O texto em português é a própria chave; a versão em inglês fica em
+  [src/lib/i18n/en.ts](<../frontend/src/lib/i18n/en.ts>). Sem tradução, aparece em português.
+- **Variáveis e plural:** `t("Remover {name}", { name })`, `t.plural(n, "{n} linha", "{n} linhas")`;
+  números com `t.number(n)` e datas com `intlLocale(t.locale)`.
+- **Constantes fora de componentes** (rótulos de tipos, operadores, menus): marque com
+  `msg("…")` e traduza ao exibir com `t(valor)`.
+- **Funções que montam texto** recebem `t` como argumento (`describeQuery(query, t)`,
+  `errorMessage(error, t)`): o React Compiler memoriza resultados pelos argumentos, e o
+  idioma precisa ser um deles para o texto mudar ao trocar de idioma.
+- **Conferência:** `npm run i18n:check` lista textos sem tradução, variáveis diferentes e
+  traduções sem uso.
+- **Hidratação:** o HTML pré-renderizado é sempre em português. `useLocale` usa
+  `useSyncExternalStore` com português como valor do servidor, e o idioma salvo entra logo
+  após a hidratação. Pelo mesmo motivo, o AppShell só mostra o usuário guardado no
+  navegador depois de `useHydrated()`.
+
+Continuam em português: mensagens do servidor montadas com valores ou não listadas em
+[server-messages.ts](<../frontend/src/lib/api/server-messages.ts>), o que a IA gera (resumos
+das regras, interpretações, explicações), os dados de exemplo da Base de regras, o
+título da aba (metadata do servidor) e a vitrine `/dev/ui`.
 
 ## Roteiro dentro de AssistantView
 
@@ -93,7 +141,8 @@ porque a operação precisa de POST. Consultas comuns usam o cliente OpenAPI tip
 | --- | --- |
 | [src/components/assistant/assistant-view.tsx](<../frontend/src/components/assistant/assistant-view.tsx>) | Coordena a tela real: análise/documento, envio, conversa, seleção, PDF, filtros, painéis e validação. |
 | [src/components/assistant/assistant-composer.tsx](<../frontend/src/components/assistant/assistant-composer.tsx>) | Campo de pergunta, anexos e aviso do Assistente real. |
-| [src/components/analysis/analysis-workspace.tsx](<../frontend/src/components/analysis/analysis-workspace.tsx>) | Painéis redimensionáveis e PanelToggles; persiste visibilidade e larguras. |
+| [src/components/analysis/analysis-workspace.tsx](<../frontend/src/components/analysis/analysis-workspace.tsx>) | Painéis redimensionáveis; persiste visibilidade e larguras. Carregado sob demanda. |
+| [src/components/analysis/panel-toggles.tsx](<../frontend/src/components/analysis/panel-toggles.tsx>) | Botões de liga/desliga dos painéis e tipo AnalysisLayout, separados para não puxar o `react-resizable-panels` na tela inicial. |
 | [src/components/datasets/dataset-uploader.tsx](<../frontend/src/components/datasets/dataset-uploader.tsx>) | Envio paralelo de CSVs, progresso, estado de leitura, remoção e significado das colunas. |
 | [src/components/documents/document-source-dialog.tsx](<../frontend/src/components/documents/document-source-dialog.tsx>) | Entrada por texto ou link; garante análise e chama os hooks de criação. |
 | [src/components/chat/chat-message.tsx](<../frontend/src/components/chat/chat-message.tsx>) | Mensagens, streaming e chips de regras citadas. |

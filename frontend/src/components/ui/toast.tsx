@@ -10,6 +10,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 import { IconButton } from "./icon-button";
 
@@ -42,7 +43,8 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     const id = nextId.current++;
     setToasts((current) => [...current, { ...input, id }]);
   };
-  const dismiss = (id: number) => setToasts((current) => current.filter((t) => t.id !== id));
+  const dismiss = (id: number) => setToasts((current) => current.filter((item) => item.id !== id));
+  const t = useT();
 
   return (
     <ToastContext value={toast}>
@@ -50,12 +52,12 @@ export function ToastProvider({ children }: { children: ReactNode }) {
       {/* A região existe desde o início para que os leitores de tela anunciem o que entrar nela. */}
       <div
         role="region"
-        aria-label="Notificações"
+        aria-label={t("Notificações")}
         aria-live="polite"
         className="pointer-events-none fixed right-4 bottom-4 z-50 flex w-90 max-w-[calc(100vw-32px)] flex-col gap-2"
       >
-        {toasts.map((t) => (
-          <Toast key={t.id} toast={t} onDismiss={() => dismiss(t.id)} />
+        {toasts.map((item) => (
+          <Toast key={item.id} toast={item} onDismiss={() => dismiss(item.id)} />
         ))}
       </div>
     </ToastContext>
@@ -66,6 +68,7 @@ function Toast({ toast, onDismiss }: { toast: ToastItem; onDismiss: () => void }
   const variant = toast.variant ?? "info";
   const { Icon, bar, icon } = VARIANTS[variant];
   const [paused, setPaused] = useState(false);
+  const t = useT();
   // Evita reiniciar o tempo a cada nova renderização da lista.
   const onTimeout = useEffectEvent(onDismiss);
 
@@ -94,7 +97,7 @@ function Toast({ toast, onDismiss }: { toast: ToastItem; onDismiss: () => void }
         {toast.description && <p className="text-[13px] text-foreground-muted">{toast.description}</p>}
       </div>
       <IconButton
-        aria-label="Fechar notificação"
+        aria-label={t("Fechar notificação")}
         icon={<X size={16} strokeWidth={1.75} aria-hidden />}
         onClick={onDismiss}
         className="-my-1"

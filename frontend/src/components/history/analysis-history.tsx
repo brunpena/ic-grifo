@@ -4,15 +4,14 @@ import { CircleCheck, CircleX, FileText, History, Loader2 } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { errorMessage } from "@/lib/api";
 import { type DocumentInfo, useDocuments } from "@/lib/documents";
+import { intlLocale, msg, useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
-const DATE = new Intl.DateTimeFormat("pt-BR", { dateStyle: "short", timeStyle: "short" });
-
 const STATUS: Record<DocumentInfo["status"], { label: string; Icon: typeof CircleCheck; className: string }> = {
-  ready: { label: "Pronto", Icon: CircleCheck, className: "bg-success-soft text-success" },
-  processing: { label: "Lendo", Icon: Loader2, className: "bg-pending-soft text-pending" },
-  extracting_rules: { label: "Analisando", Icon: Loader2, className: "bg-pending-soft text-pending" },
-  error: { label: "Interrompido", Icon: CircleX, className: "bg-danger-soft text-danger" },
+  ready: { label: msg("Pronto"), Icon: CircleCheck, className: "bg-success-soft text-success" },
+  processing: { label: msg("Lendo"), Icon: Loader2, className: "bg-pending-soft text-pending" },
+  extracting_rules: { label: msg("Analisando"), Icon: Loader2, className: "bg-pending-soft text-pending" },
+  error: { label: msg("Interrompido"), Icon: CircleX, className: "bg-danger-soft text-danger" },
 };
 
 /** Documentos que a pessoa já analisou, do mais recente ao mais antigo. */
@@ -26,11 +25,13 @@ export function AnalysisHistory({
   className?: string;
 }) {
   const { data: documents, isPending, isError, error } = useDocuments();
+  const t = useT();
+  const date = new Intl.DateTimeFormat(intlLocale(t.locale), { dateStyle: "short", timeStyle: "short" });
 
   if (isPending) {
     return (
       <div role="status" aria-busy className={className}>
-        <span className="sr-only">Carregando histórico</span>
+        <span className="sr-only">{t("Carregando histórico")}</span>
         <ul aria-hidden className="flex flex-col gap-2">
         {[1, 2, 3, 4].map((n) => (
           <li key={n} aria-hidden className="flex items-center gap-3 rounded-lg border border-border bg-surface px-3 py-2.5">
@@ -47,12 +48,12 @@ export function AnalysisHistory({
     );
   }
   if (isError) {
-    return <p role="alert" className="text-sm text-danger">{errorMessage(error)}</p>;
+    return <p role="alert" className="text-sm text-danger">{errorMessage(error, t)}</p>;
   }
   if (!documents.length) {
     return (
       <p className={cn("flex items-center gap-2 text-sm text-foreground-muted", className)}>
-        <History size={16} aria-hidden /> Nenhuma análise anterior.
+        <History size={16} aria-hidden /> {t("Nenhuma análise anterior.")}
       </p>
     );
   }
@@ -79,14 +80,14 @@ export function AnalysisHistory({
               <span className="min-w-0 flex-1">
                 <span className="block truncate text-sm font-medium">{document.title}</span>
                 <span className="block text-xs text-foreground-muted">
-                  {DATE.format(new Date(document.created_at))}
-                  {document.page_count ? ` · ${document.page_count} pág.` : ""}
-                  {current ? " · aberto agora" : ""}
+                  {date.format(new Date(document.created_at))}
+                  {document.page_count ? ` · ${t("{n} pág.", { n: document.page_count })}` : ""}
+                  {current ? ` · ${t("aberto agora")}` : ""}
                 </span>
               </span>
               <span className={cn("inline-flex h-6 shrink-0 items-center gap-1.5 rounded-sm px-2 text-xs font-medium", status.className)}>
                 <status.Icon size={14} strokeWidth={1.75} aria-hidden />
-                {status.label}
+                {t(status.label)}
               </span>
             </button>
           </li>

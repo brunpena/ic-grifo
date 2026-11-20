@@ -2,6 +2,7 @@
 
 import { ChevronDown, ChevronUp, Search, X } from "lucide-react";
 import { IconButton } from "@/components/ui/icon-button";
+import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
 type SearchBarProps = {
@@ -30,6 +31,7 @@ export function SearchBar({
   onClose,
   className,
 }: SearchBarProps) {
+  const t = useT();
   const hasQuery = query.trim().length > 0;
   const noResults = hasQuery && total === 0;
 
@@ -58,8 +60,8 @@ export function SearchBar({
             onClose();
           }
         }}
-        placeholder="Buscar no documento"
-        aria-label="Buscar no documento"
+        placeholder={t("Buscar no documento")}
+        aria-label={t("Buscar no documento")}
         aria-invalid={noResults || undefined}
         className="h-8 min-w-0 flex-1 bg-transparent px-1 text-sm text-foreground outline-none placeholder:text-foreground-subtle [&::-webkit-search-cancel-button]:hidden"
       />
@@ -70,24 +72,24 @@ export function SearchBar({
           noResults ? "text-danger" : "text-foreground-muted",
         )}
       >
-        {noResults ? "Nenhum resultado" : hasQuery ? `${current + 1} de ${total}` : ""}
+        {noResults ? t("Nenhum resultado") : hasQuery ? t("{current} de {total}", { current: current + 1, total }) : ""}
       </span>
       <IconButton
-        aria-label="Ocorrência anterior"
+        aria-label={t("Ocorrência anterior")}
         icon={<ChevronUp size={16} strokeWidth={1.75} aria-hidden />}
         onClick={onPrevious}
         disabled={total === 0}
         tooltipSide="bottom"
       />
       <IconButton
-        aria-label="Próxima ocorrência"
+        aria-label={t("Próxima ocorrência")}
         icon={<ChevronDown size={16} strokeWidth={1.75} aria-hidden />}
         onClick={onNext}
         disabled={total === 0}
         tooltipSide="bottom"
       />
       <IconButton
-        aria-label="Fechar busca"
+        aria-label={t("Fechar busca")}
         icon={<X size={16} strokeWidth={1.75} aria-hidden />}
         onClick={onClose}
         tooltipSide="bottom"

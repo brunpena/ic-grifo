@@ -138,6 +138,8 @@ Os valores efetivos estão em
 | Banco | `DATABASE_URL`, `DATABASE_PGBOUNCER`, `DATABASE_POOL_SIZE` | Conexão e pool SQLAlchemy/asyncpg. |
 | Arquivos | `STORAGE_BACKEND`, `LOCAL_STORAGE_DIR` | Disco local ou Supabase. |
 | Storage externo | `SUPABASE_URL`, `SUPABASE_SERVICE_KEY`, `SUPABASE_BUCKET`, `SUPABASE_MAX_FILE_MB` | Bucket privado, credencial do servidor e limite configurado. |
+| Cache de PDFs | `PDF_CACHE_DIR`, `PDF_CACHE_MAX_MB` | Cópia em disco dos PDFs do Supabase (~2 s → poucos ms por abertura). Os menos usados saem acima do limite; `0` desliga. Sem efeito com storage local. |
+| Cache de sessões | `AUTH_CACHE_SECONDS` | Reaproveita a sessão validada sem consultar o banco (~200 ms por requisição no Supabase). Logout, senha e perfil limpam o cache no processo; com vários workers, a mudança vale nos outros após esse prazo. `0` desliga. |
 | Documentos | `MAX_UPLOAD_MB`, `MAX_PASTED_CHARS`, `URL_FETCH_TIMEOUT_SECONDS` | Limites de entrada e download. |
 | CSV | `MAX_DATASET_MB` | Limite de upload; vazio significa sem esse limite de aplicação. O Storage pode impor outro. |
 | Gemini | `GEMINI_API_KEY`, `GEMINI_MODEL`, `GEMINI_THINKING_LEVEL` | Provedor e geração de respostas. |

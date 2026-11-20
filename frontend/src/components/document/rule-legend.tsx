@@ -2,6 +2,7 @@
 
 import { RuleTypeDot } from "@/components/ui/badge";
 import { RULE_TYPES, type RuleType } from "@/lib/design/tokens";
+import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
 const TYPES = Object.keys(RULE_TYPES) as RuleType[];
@@ -15,10 +16,11 @@ type RuleLegendProps = {
 };
 
 export function RuleLegend({ active, onChange, className }: RuleLegendProps) {
+  const t = useT();
   return (
     <div
       role="group"
-      aria-label="Legenda dos tipos de regra. Clique para filtrar a tabela"
+      aria-label={t("Legenda dos tipos de regra. Clique para filtrar a tabela")}
       className={cn(
         "flex h-9 shrink-0 items-center gap-1 overflow-x-auto border-b border-border bg-surface px-2",
         className,
@@ -37,7 +39,7 @@ export function RuleLegend({ active, onChange, className }: RuleLegendProps) {
           )}
         >
           <RuleTypeDot type={type} />
-          {RULE_TYPES[type].label}
+          {t(RULE_TYPES[type].label)}
         </button>
       ))}
     </div>

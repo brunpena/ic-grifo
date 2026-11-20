@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 from fastapi import APIRouter, Response, status
 from sqlalchemy import delete, select
 
-from app.api.deps import AuthDep, OptionalAuthDep, SessionDep, UserDep
+from app.api.deps import AuthDep, OptionalAuthDep, SessionDep, UserDep, forget_user_sessions
 from app.core.config import get_settings
 from app.core.errors import AppError, ConflictError, UnauthorizedError
 from app.core.security import hash_password, hash_token, new_session_token, verify_password
@@ -96,6 +96,7 @@ async def logout(auth: OptionalAuthDep, db: SessionDep, response: Response) -> N
     if auth:
         await db.execute(delete(UserSession).where(UserSession.id == auth.session.id))
         await db.commit()
+        forget_user_sessions(auth.user.id)
     _clear_cookie(response)
 
 
@@ -117,6 +118,7 @@ async def update_profile(body: ProfileUpdateIn, user: UserDep, db: SessionDep) -
     for field, value in changes.items():
         setattr(user, field, value)
     await db.commit()
+    forget_user_sessions(user.id)
     await db.refresh(user)
     return UserOut.model_validate(user)
 
@@ -136,3 +138,4 @@ async def change_password(body: PasswordChangeIn, auth: AuthDep, db: SessionDep)
         delete(UserSession).where(UserSession.user_id == user.id, UserSession.id != auth.session.id)
     )
     await db.commit()
+    forget_user_sessions(user.id)

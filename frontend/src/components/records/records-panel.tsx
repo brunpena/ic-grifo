@@ -10,13 +10,13 @@ import { Select } from "@/components/ui/select";
 import { errorMessage } from "@/lib/api";
 import { knownColumns } from "@/lib/column-cache";
 import type { Rule } from "@/lib/documents";
+import { useT } from "@/lib/i18n";
 import { describeQuery, useRuleRecords } from "@/lib/queries";
 import { cn } from "@/lib/utils";
 import { ValidationDetails } from "@/components/validation/validation-details";
 import { PaginationSkeleton, RecordsTableSkeleton, RulesOverviewSkeleton } from "./records-skeleton";
 
 const PAGE_SIZE = 100;
-const number = (n: number) => n.toLocaleString("pt-BR");
 
 type RecordsPanelProps = {
   rules: Rule[];
@@ -44,23 +44,24 @@ export function RecordsPanel({
   onClose,
   className,
 }: RecordsPanelProps) {
+  const t = useT();
   const [searchFor, setSearchFor] = useState<string | null>(null);
   const selected = rules.find((r) => r.id === selectedRuleId) ?? null;
   const withQuery = rules.filter((r) => r.query);
 
   return (
-    <section aria-label="Registros encontrados" className={cn("flex h-full min-h-0 flex-col bg-surface", className)}>
+    <section aria-label={t("Registros encontrados")} className={cn("flex h-full min-h-0 flex-col bg-surface", className)}>
       <div className="flex h-11 shrink-0 items-center gap-2 border-b border-border px-3">
         <FileSpreadsheet size={16} strokeWidth={1.75} aria-hidden className="shrink-0 text-accent" />
-        <span className="text-[13px] font-medium">Registros</span>
+        <span className="text-[13px] font-medium">{t("Registros")}</span>
         {rules.length > 0 && (
           <Select
-            aria-label="Filtrar registros por regra"
+            aria-label={t("Filtrar registros por regra")}
             value={selected?.id ?? ""}
             onChange={(e) => onSelectRule(e.target.value || null)}
             className="ml-auto w-56 max-w-[60%] [&_select]:h-8 [&_select]:text-[13px]"
           >
-            <option value="">Todas as regras</option>
+            <option value="">{t("Todas as regras")}</option>
 
             {rules.map((r) => (
               <option key={r.id} value={r.id}>
@@ -71,12 +72,12 @@ export function RecordsPanel({
         )}
         {selected?.validation && (
           <Button size="sm" variant="ghost" onClick={() => setSearchFor(searchFor === selected.id ? null : selected.id)}>
-            {searchFor === selected.id ? "Ver consulta" : "Ver validação"}
+            {searchFor === selected.id ? t("Ver consulta") : t("Ver validação")}
           </Button>
         )}
         {onClose && (
           <IconButton
-            aria-label="Esconder tabela"
+            aria-label={t("Esconder tabela")}
             icon={<X size={16} strokeWidth={1.75} aria-hidden />}
             onClick={onClose}
             tooltipSide="bottom"
@@ -92,8 +93,8 @@ export function RecordsPanel({
       ) : !hasDatasets && !rules.some((r) => r.validation) ? (
         <EmptyState
           icon={Database}
-          title="Nenhuma base de dados"
-          description="Envie um CSV na tela inicial da análise para buscar os registros de cada regra."
+          title={t("Nenhuma base de dados")}
+          description={t("Envie um CSV na tela inicial da análise para buscar os registros de cada regra.")}
           className="flex-1"
         />
       ) : selected ? (
@@ -107,8 +108,9 @@ export function RecordsPanel({
 
 /** Visão geral de todas as regras, inclusive as inconclusivas e ainda não avaliadas. */
 function RulesOverview({ rules, onSelectRule }: { rules: Rule[]; onSelectRule: (id: string) => void }) {
+  const t = useT();
   if (!rules.length) {
-    return <EmptyState icon={SearchX} title="Nenhuma regra encontrada" description="As regras aparecem aqui quando o documento termina de ser analisado." className="flex-1" />;
+    return <EmptyState icon={SearchX} title={t("Nenhuma regra encontrada")} description={t("As regras aparecem aqui quando o documento termina de ser analisado.")} className="flex-1" />;
   }
   return (
     <div className="min-h-0 flex-1 overflow-auto">
@@ -119,9 +121,9 @@ function RulesOverview({ rules, onSelectRule }: { rules: Rule[]; onSelectRule: (
               <RuleTypeBadge type={rule.type} className="shrink-0" />
               <span className="flex min-w-0 flex-1 flex-col">
                 <span className="truncate text-[13px] font-medium">{rule.summary}</span>
-                <span className="truncate text-xs text-foreground-subtle">{rule.query ? describeQuery(rule.query.query) : "Sem consulta para esta regra"}</span>
+                <span className="truncate text-xs text-foreground-subtle">{rule.query ? describeQuery(rule.query.query, t) : t("Sem consulta para esta regra")}</span>
               </span>
-              <span className="text-xs text-foreground-muted">{rule.query?.state === "erro" ? "Revisar consulta" : rule.query ? "Selecionar para consultar" : "Sem consulta"}</span>
+              <span className="text-xs text-foreground-muted">{rule.query?.state === "erro" ? t("Revisar consulta") : rule.query ? t("Selecionar para consultar") : t("Sem consulta")}</span>
             </button>
           </li>
         ))}
@@ -131,6 +133,7 @@ function RulesOverview({ rules, onSelectRule }: { rules: Rule[]; onSelectRule: (
 }
 
 function RuleRecords({ rule, onBack, onEditQuery }: { rule: Rule; onBack: () => void; onEditQuery: (rule: Rule) => void }) {
+  const t = useT();
   const [offset, setOffset] = useState(0);
   const [showSql, setShowSql] = useState(false);
   const query = rule.query;
@@ -142,7 +145,7 @@ function RuleRecords({ rule, onBack, onEditQuery }: { rule: Rule; onBack: () => 
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex shrink-0 items-start gap-2 border-b border-border px-3 py-2">
         <IconButton
-          aria-label="Ver todas as regras"
+          aria-label={t("Ver todas as regras")}
           icon={<ArrowLeft size={16} strokeWidth={1.75} aria-hidden />}
           onClick={onBack}
           className="-ml-1"
@@ -153,8 +156,8 @@ function RuleRecords({ rule, onBack, onEditQuery }: { rule: Rule; onBack: () => 
           </span>
           <span className="text-xs text-foreground-subtle">
             {query
-              ? `${query.dataset_name ?? "base removida"} · ${describeQuery(query.query)}`
-              : "Esta regra ainda não tem busca nas bases."}
+              ? `${query.dataset_name ?? t("base removida")} · ${describeQuery(query.query, t)}`
+              : t("Esta regra ainda não tem busca nas bases.")}
           </span>
         </div>
         {query?.sql_display && (
@@ -165,25 +168,25 @@ function RuleRecords({ rule, onBack, onEditQuery }: { rule: Rule; onBack: () => 
             aria-expanded={showSql}
             onClick={() => setShowSql(!showSql)}
           >
-            {showSql ? "Ocultar SQL" : "Ver SQL"}
+            {showSql ? t("Ocultar SQL") : t("Ver SQL")}
           </Button>
         )}
         <Button size="sm" variant="ghost" icon={<Pencil size={14} strokeWidth={1.75} aria-hidden />} onClick={() => onEditQuery(rule)}>
-          {query ? "Editar busca" : "Criar busca"}
+          {query ? t("Editar busca") : t("Criar busca")}
         </Button>
       </div>
       {showSql && query?.sql_display && <SqlPreview sql={query.sql_display} />}
 
       {!query ? (
-        <EmptyState icon={SearchX} title="Sem busca" description="Crie a busca para ver os registros desta regra." className="flex-1" />
+        <EmptyState icon={SearchX} title={t("Sem busca")} description={t("Crie a busca para ver os registros desta regra.")} className="flex-1" />
       ) : query.state === "erro" ? (
         <EmptyState
           icon={AlertTriangle}
-          title="A busca tem um erro"
+          title={t("A busca tem um erro")}
           description={query.error}
           action={
             <Button size="sm" variant="primary" onClick={() => onEditQuery(rule)}>
-              Corrigir busca
+              {t("Corrigir busca")}
             </Button>
           }
           className="flex-1"
@@ -191,11 +194,11 @@ function RuleRecords({ rule, onBack, onEditQuery }: { rule: Rule; onBack: () => 
       ) : records.isError ? (
         <EmptyState
           icon={AlertTriangle}
-          title="Não foi possível carregar os registros"
-          description={errorMessage(records.error)}
+          title={t("Não foi possível carregar os registros")}
+          description={errorMessage(records.error, t)}
           action={
             <Button size="sm" onClick={() => void records.refetch()}>
-              Tentar de novo
+              {t("Tentar de novo")}
             </Button>
           }
           className="flex-1"
@@ -208,8 +211,8 @@ function RuleRecords({ rule, onBack, onEditQuery }: { rule: Rule; onBack: () => 
       ) : data.total === 0 ? (
         <EmptyState
           icon={SearchX}
-          title="Nenhum registro encontrado"
-          description="Nenhuma linha da base atende a esta busca. Revise as condições se esperava resultados."
+          title={t("Nenhum registro encontrado")}
+          description={t("Nenhuma linha da base atende a esta busca. Revise as condições se esperava resultados.")}
           className="flex-1"
         />
       ) : (
@@ -219,7 +222,7 @@ function RuleRecords({ rule, onBack, onEditQuery }: { rule: Rule; onBack: () => 
               <thead className="sticky top-0 z-10 bg-surface-muted">
                 <tr>
                   <th scope="col" className="sticky left-0 z-10 border-b border-border bg-surface-muted px-3 py-2 text-xs font-medium text-foreground-muted">
-                    Linha
+                    {t("Linha")}
                   </th>
                   {data.columns.map((c) => (
                     <th key={c} scope="col" className="border-b border-border px-3 py-2 text-xs font-medium whitespace-nowrap text-foreground-muted">
@@ -232,7 +235,7 @@ function RuleRecords({ rule, onBack, onEditQuery }: { rule: Rule; onBack: () => 
                 {data.rows.map((row) => (
                   <tr key={row.index} className="hover:bg-surface-hover">
                     <td className="sticky left-0 border-b border-border bg-surface px-3 py-1.5 font-mono text-xs text-foreground-subtle tabular-nums">
-                      {number(row.index + 1)}
+                      {t.number(row.index + 1)}
                     </td>
                     {row.values.map((cell, i) => (
                       <td key={i} className="border-b border-border px-3 py-1.5 whitespace-nowrap">
@@ -252,18 +255,20 @@ function RuleRecords({ rule, onBack, onEditQuery }: { rule: Rule; onBack: () => 
           </div>
           <div className="flex h-10 shrink-0 items-center gap-2 border-t border-border px-3 text-xs text-foreground-muted">
               <span className="tabular-nums" aria-live="polite">
-                {number(offset + 1)}–{number(Math.min(offset + PAGE_SIZE, data.total))} de {number(data.total)}{" "}
-                {data.total === 1 ? "registro" : "registros"}
+                {t.plural(data.total, "{from}–{to} de {n} registro", "{from}–{to} de {n} registros", {
+                  from: t.number(offset + 1),
+                  to: t.number(Math.min(offset + PAGE_SIZE, data.total)),
+                })}
               </span>
               <div className="ml-auto flex">
                 <IconButton
-                  aria-label="Página anterior"
+                  aria-label={t("Página anterior")}
                   icon={<ChevronLeft size={16} strokeWidth={1.75} aria-hidden />}
                   disabled={offset === 0}
                   onClick={() => setOffset(Math.max(0, offset - PAGE_SIZE))}
                 />
                 <IconButton
-                  aria-label="Próxima página"
+                  aria-label={t("Próxima página")}
                   icon={<ChevronRight size={16} strokeWidth={1.75} aria-hidden />}
                   disabled={offset + PAGE_SIZE >= data.total}
                   onClick={() => setOffset(offset + PAGE_SIZE)}
@@ -278,6 +283,7 @@ function RuleRecords({ rule, onBack, onEditQuery }: { rule: Rule; onBack: () => 
 
 /** Consulta SQL usada para buscar os registros da regra, com os nomes reais das colunas. */
 function SqlPreview({ sql }: { sql: string }) {
+  const t = useT();
   const [copied, setCopied] = useState(false);
   const copy = async () => {
     try {
@@ -290,11 +296,11 @@ function SqlPreview({ sql }: { sql: string }) {
   };
   return (
     <div className="relative shrink-0 border-b border-border bg-surface-muted">
-      <pre aria-label="Consulta SQL da busca" className="max-h-48 overflow-auto px-3 py-2 pr-10 font-mono text-xs leading-relaxed whitespace-pre text-foreground">
+      <pre aria-label={t("Consulta SQL da busca")} className="max-h-48 overflow-auto px-3 py-2 pr-10 font-mono text-xs leading-relaxed whitespace-pre text-foreground">
         {sql}
       </pre>
       <IconButton
-        aria-label={copied ? "SQL copiada" : "Copiar SQL"}
+        aria-label={copied ? t("SQL copiada") : t("Copiar SQL")}
         icon={copied ? <Check size={14} strokeWidth={1.75} aria-hidden /> : <Copy size={14} strokeWidth={1.75} aria-hidden />}
         onClick={() => void copy()}
         className="absolute top-1 right-1"

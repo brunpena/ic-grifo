@@ -2,6 +2,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { api, errorMessage, unwrap } from "@/lib/api";
+import { useT } from "@/lib/i18n";
 
 /** Indicador discreto de conexão com a API (usa GET /health). */
 export function ApiStatus() {
@@ -9,18 +10,19 @@ export function ApiStatus() {
     queryKey: ["health"],
     queryFn: () => unwrap(api.GET("/api/v1/health")),
   });
+  const t = useT();
 
   let color = "bg-pending";
-  let label = "Verificando conexão com a API…";
+  let label = t("Verificando conexão com a API…");
   if (error) {
     color = "bg-danger";
-    label = errorMessage(error);
+    label = errorMessage(error, t);
   } else if (data?.status === "ok") {
     color = "bg-success";
-    label = "API conectada";
+    label = t("API conectada");
   } else if (data) {
     color = "bg-amber-500";
-    label = "API no ar, mas sem acesso ao banco de dados";
+    label = t("API no ar, mas sem acesso ao banco de dados");
   }
 
   return (

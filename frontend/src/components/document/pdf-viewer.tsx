@@ -1,5 +1,6 @@
 import type { ReactNode, Ref, UIEventHandler } from "react";
 import { Skeleton } from "@/components/ui/skeleton";
+import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
 type PdfViewerProps = {
@@ -16,8 +17,9 @@ type PdfViewerProps = {
 
 /** Painel do documento: o cabeçalho fica fixo e só as páginas rolam. */
 export function PdfViewer({ header, overlay, children, scrollRef, onScroll, className }: PdfViewerProps) {
+  const t = useT();
   return (
-    <section aria-label="Documento" className={cn("relative flex h-full min-h-0 flex-col bg-viewer", className)}>
+    <section aria-label={t("Documento")} className={cn("relative flex h-full min-h-0 flex-col bg-viewer", className)}>
       {header}
       <div className="relative min-h-0 flex-1">
         <div ref={scrollRef} onScroll={onScroll} className="absolute inset-0 overflow-auto">
@@ -42,10 +44,11 @@ type PdfPageProps = {
 
 /** Página do documento. Fica branca nos dois temas, como papel. */
 export function PdfPage({ width, height, pageNumber, loading, children, className }: PdfPageProps) {
+  const t = useT();
   return (
     <div
       role="region"
-      aria-label={`Página ${pageNumber}`}
+      aria-label={t("Página {n}", { n: pageNumber })}
       aria-busy={loading || undefined}
       data-page={pageNumber}
       className={cn("paper relative shrink-0 bg-white shadow-sm", className)}

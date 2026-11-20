@@ -6,7 +6,7 @@ import re
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, File, Form, Query, Response, UploadFile, status
+from fastapi import APIRouter, File, Form, Query, Request, Response, UploadFile, status
 from pydantic import ValidationError
 from sqlalchemy import delete, func, select, update
 from sse_starlette.sse import EventSourceResponse
@@ -60,6 +60,9 @@ from app.schemas.validation import RecordVerdict, ValidationRecordsOut
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["documentos"])
+
+# Uma semana: o mesmo documento nunca recebe outro PDF (ver `get_document_file`).
+PDF_CACHE_CONTROL = "private, max-age=604800, immutable"
 
 CITATION = re.compile(r"\[(R\d+(?:\s*,\s*R\d+)*)\]")
 CITATION_WITH_SPACE = re.compile(r"\s*\[R\d+(?:\s*,\s*R\d+)*\]")
@@ -353,15 +356,22 @@ async def get_document(document_id: uuid.UUID, user: UserDep, db: SessionDep) ->
     response_class=Response,
     responses=error_responses(404),
 )
-async def get_document_file(document_id: uuid.UUID, user: UserDep, db: SessionDep) -> Response:
+async def get_document_file(
+    document_id: uuid.UUID, user: UserDep, db: SessionDep, request: Request
+) -> Response:
     doc = await _owned_document(db, document_id, user)
     stored_id = doc.id
     await db.commit()
+    # O PDF é gravado uma única vez, na conversão: o navegador pode guardá-lo. `private`
+    # impede caches compartilhados (proxies) de guardar um arquivo de um usuário logado.
+    headers = {"Cache-Control": PDF_CACHE_CONTROL, "ETag": f'"{stored_id}"'}
+    if request.headers.get("if-none-match") == headers["ETag"]:
+        return Response(status_code=status.HTTP_304_NOT_MODIFIED, headers=headers)
     try:
         data = await storage.read_pdf(stored_id)
     except storage.StorageError as exc:
         raise NotFoundError("Arquivo não encontrado.") from exc
-    return Response(data, media_type="application/pdf")
+    return Response(data, media_type="application/pdf", headers=headers)
 
 
 @router.delete(
