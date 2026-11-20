@@ -16,7 +16,8 @@ from sqlalchemy import select
 
 from app.db.models import Document
 from app.db.session import SessionLocal
-from app.services import ingest, llm
+from app.processing.ai import llm
+from app.processing.pipeline import ingest
 
 
 async def main(document_id: str) -> None:

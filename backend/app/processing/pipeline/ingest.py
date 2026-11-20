@@ -13,12 +13,15 @@ from sqlalchemy import delete, exists, insert, select, update
 from app.core.logging import log_step
 from app.db.models import Analysis, Dataset, Document, Page, Rule, Word
 from app.db.session import SessionLocal
-from app.services import document_upload, llm, rule_queries, rule_validation, storage
-from app.services.converters import ConversionError, SourceFile
-from app.services.datasets import DatasetError, parse_csv
-from app.services.pdf_text import ExtractedDocument, PdfReadError, extract_pdf
-from app.services.query_engine import prime_dataset
-from app.services.storage import StorageError, read_pdf
+from app.processing.ai import llm
+from app.processing.datasets.datasets import DatasetError, parse_csv
+from app.processing.datasets.query_engine import prime_dataset
+from app.processing.documents import document_upload
+from app.processing.documents.converters import ConversionError, SourceFile
+from app.processing.documents.pdf_text import ExtractedDocument, PdfReadError, extract_pdf
+from app.processing.rules import rule_queries, rule_validation
+from app.processing.shared import storage
+from app.processing.shared.storage import StorageError, read_pdf
 
 logger = logging.getLogger(__name__)
 

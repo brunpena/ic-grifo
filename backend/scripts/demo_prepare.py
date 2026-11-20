@@ -2,7 +2,7 @@
 
 Usa a análise mais recente que já tem o PDF da portaria e a base do Sisu
 (chamada_regular_sisu_2022_1) e roda, com as respostas prontas de
-`app/services/llm_mock.py`: extração das regras, geração das buscas e validação.
+`app/processing/ai/llm_mock.py`: extração das regras, geração das buscas e validação.
 
 Uso (na pasta backend):
     .venv\\Scripts\\python.exe scripts\\demo_prepare.py
@@ -20,7 +20,7 @@ from sqlalchemy import delete, select, update  # noqa: E402
 
 from app.db.models import Dataset, Document, Rule  # noqa: E402
 from app.db.session import SessionLocal  # noqa: E402
-from app.services import ingest  # noqa: E402
+from app.processing.pipeline import ingest  # noqa: E402
 
 TITLE = "PORTARIA NORMATIVA Nº 21"
 

@@ -9,7 +9,7 @@ import io
 
 import pymupdf
 
-from app.services.converters.base import ConversionError
+from app.processing.documents.converters.base import ConversionError
 
 PAGE = pymupdf.paper_rect("a4")
 MARGIN = 56  # ~2 cm

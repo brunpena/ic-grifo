@@ -6,15 +6,16 @@ from datetime import UTC, date, datetime
 import pytest
 from pydantic import ValidationError
 
+from app.processing.ai import validation_llm
+from app.processing.datasets.datasets import parse_csv, parse_value
+from app.processing.datasets.query_engine import DatasetRef, QueryError
+from app.processing.rules import compliance
 from app.schemas.validation import (
     ComplianceCheck,
     DatasetCheck,
     DatasetValidation,
     ValidationPlan,
 )
-from app.services import compliance, validation_llm
-from app.services.datasets import parse_csv, parse_value
-from app.services.query_engine import DatasetRef, QueryError
 
 CSV = (
     b"Contrato;Assinatura;Entrega;Valor;Garantia\n"
@@ -258,7 +259,7 @@ async def test_ai_column_interpretation_keeps_physical_types_and_marks_missing_c
 
 
 async def test_ai_plan_batch_failure_is_not_a_silent_approval(monkeypatch):
-    from app.services.llm import RulePrompt
+    from app.processing.ai.llm import RulePrompt
 
     async def fake(system, payload):
         return {
@@ -276,7 +277,7 @@ async def test_ai_plan_batch_failure_is_not_a_silent_approval(monkeypatch):
 def test_source_signature_changes_when_column_meaning_changes():
     from types import SimpleNamespace
 
-    from app.services.rule_validation import source_signature
+    from app.processing.rules.rule_validation import source_signature
 
     ref, _, _ = data()
     source = SimpleNamespace(
@@ -290,7 +291,7 @@ def test_source_signature_changes_when_column_meaning_changes():
 def test_measured_business_days_can_be_checked_without_calendar_arithmetic():
     from types import SimpleNamespace
 
-    from app.services.rule_validation import measured_business_days
+    from app.processing.rules.rule_validation import measured_business_days
 
     plan = ValidationPlan.model_validate(
         {

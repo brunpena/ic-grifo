@@ -3,7 +3,13 @@ import asyncio
 import httpx
 import pytest
 
-from app.services.safe_fetch import FetchError, fetch_url, is_public_ip, parse_url, resolve_public
+from app.processing.documents.safe_fetch import (
+    FetchError,
+    fetch_url,
+    is_public_ip,
+    parse_url,
+    resolve_public,
+)
 
 DNS = {
     "docs.exemplo.com": ["93.184.216.34"],

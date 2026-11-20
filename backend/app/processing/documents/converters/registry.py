@@ -1,15 +1,15 @@
 """Registro dos conversores. Um formato novo entra criando um `Converter` e registrando-o
 aqui; o upload, o link e o processamento não mudam."""
 
-from app.services.converters.base import (
+from app.processing.documents.converters.base import (
     ConvertedDocument,
     Converter,
     SourceFile,
     UnsupportedFormatError,
 )
-from app.services.converters.html import HtmlConverter
-from app.services.converters.pdf import PdfConverter
-from app.services.converters.text import TextConverter
+from app.processing.documents.converters.html import HtmlConverter
+from app.processing.documents.converters.pdf import PdfConverter
+from app.processing.documents.converters.text import TextConverter
 
 # Tipos que não dizem nada sobre o conteúdo; nesses casos valem a extensão e os bytes.
 GENERIC_TYPES = {"application/octet-stream", "binary/octet-stream", "application/unknown"}

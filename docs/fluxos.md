@@ -106,10 +106,10 @@ O PDF do visualizador fica disponível depois da conversão, quando há `page_co
 
 Arquivos centrais:
 [documents.py](../backend/app/api/v1/documents.py),
-[registry.py](../backend/app/services/converters/registry.py),
-[pdf_text.py](../backend/app/services/pdf_text.py),
-[ingest.py](../backend/app/services/ingest.py) e
-[llm.py](../backend/app/services/llm.py).
+[registry.py](../backend/app/processing/documents/converters/registry.py),
+[pdf_text.py](../backend/app/processing/documents/pdf_text.py),
+[ingest.py](../backend/app/processing/pipeline/ingest.py) e
+[llm.py](../backend/app/processing/ai/llm.py).
 
 Os blocos de texto têm sobreposição para não perder regras na fronteira.
 A IA devolve números de frases; o backend encontra os intervalos exatos no texto.

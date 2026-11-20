@@ -76,7 +76,7 @@ class Settings(BaseSettings):
     llm_chunk_chars: int = 12000
     llm_chunk_overlap: int = 400
     # Demonstração: respostas prontas da IA (regras, buscas e validação) sem chamar o
-    # Gemini. Ver app/services/llm_mock.py.
+    # Gemini. Ver app/processing/ai/llm_mock.py.
     llm_mock: bool = False
 
     # Embeddings

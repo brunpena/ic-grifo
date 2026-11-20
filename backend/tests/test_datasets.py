@@ -6,7 +6,7 @@ import httpx
 import pytest
 
 from app.main import app
-from app.services.datasets import (
+from app.processing.datasets.datasets import (
     DatasetError,
     dataset_display_name,
     detect_delimiter,

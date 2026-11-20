@@ -5,14 +5,14 @@ import json
 import logging
 import uuid
 
-from app.services import storage
-from app.services.converters import (
+from app.processing.documents.converters import (
     ConversionError,
     ConvertedDocument,
     SourceFile,
     UnsupportedFormatError,
     registry,
 )
+from app.processing.shared import storage
 
 logger = logging.getLogger(__name__)
 

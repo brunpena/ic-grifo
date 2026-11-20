@@ -18,7 +18,7 @@ flowchart TB
     UI --> HOOKS["Hooks e cache TanStack Query"]
     HOOKS --> HTTP["Cliente OpenAPI / fetch / XMLHttpRequest"]
     HTTP --> API["FastAPI: rotas e autenticação"]
-    API --> SERV["Serviços Python"]
+    API --> SERV["Processamento Python (app/processing)"]
     SERV --> DB[("PostgreSQL")]
     SERV --> ARQ[("Arquivos locais ou Supabase Storage")]
     SERV --> IA["Gemini REST"]
@@ -104,7 +104,7 @@ dependendo da IA e da revisão humana.
 
 ## Fronteiras importantes
 
-- As rotas verificam entrada, sessão e propriedade. Os serviços contêm o processamento.
+- As rotas verificam entrada, sessão e propriedade. O processamento fica em `app/processing`, uma subpasta por etapa.
 - Pydantic define os contratos da API e dos planos; SQLAlchemy define a persistência.
 - `ingest.py` coordena as etapas. `compliance.py` usa SQL para contagens e paginação,
   explicando apenas as evidências da página em Python.

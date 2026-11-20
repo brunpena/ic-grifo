@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import ClassVar
 
-from app.services.pdf_text import ExtractedDocument
+from app.processing.documents.pdf_text import ExtractedDocument
 
 
 class ConversionError(Exception):

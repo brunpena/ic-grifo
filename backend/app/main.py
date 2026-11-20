@@ -9,7 +9,7 @@ from app.core.config import get_settings
 from app.core.errors import register_error_handlers
 from app.core.logging import setup_logging
 from app.db.session import engine
-from app.services.ingest import recover_interrupted
+from app.processing.pipeline.ingest import recover_interrupted
 
 logger = logging.getLogger("app")
 

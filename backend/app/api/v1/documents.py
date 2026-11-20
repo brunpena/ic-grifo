@@ -27,6 +27,21 @@ from app.db.models import (
     Word,
 )
 from app.db.session import SessionLocal
+from app.processing.ai import llm
+from app.processing.datasets.duckdb_sql import readable_sql
+from app.processing.datasets.query_engine import QueryError
+from app.processing.documents import document_upload, safe_fetch
+from app.processing.documents.converters import (
+    ConversionError,
+    SourceFile,
+    UnsupportedFormatError,
+)
+from app.processing.documents.converters.text import title_from_text
+from app.processing.documents.highlights import page_range, rule_boxes
+from app.processing.documents.text_match import find_excerpt
+from app.processing.pipeline import ingest
+from app.processing.rules import rule_queries, rule_validation
+from app.processing.shared import storage
 from app.schemas.common import error_responses
 from app.schemas.documents import (
     CitedRule,
@@ -42,25 +57,6 @@ from app.schemas.documents import (
 )
 from app.schemas.queries import RecordsOut, RuleQueryOut, StructuredQuery
 from app.schemas.validation import RecordVerdict, ValidationRecordsOut
-from app.services import (
-    document_upload,
-    ingest,
-    llm,
-    rule_queries,
-    rule_validation,
-    safe_fetch,
-    storage,
-)
-from app.services.converters import (
-    ConversionError,
-    SourceFile,
-    UnsupportedFormatError,
-)
-from app.services.converters.text import title_from_text
-from app.services.duckdb_sql import readable_sql
-from app.services.highlights import page_range, rule_boxes
-from app.services.query_engine import QueryError
-from app.services.text_match import find_excerpt
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["documentos"])

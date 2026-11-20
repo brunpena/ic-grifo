@@ -2,8 +2,8 @@ import threading
 import uuid
 from types import SimpleNamespace
 
-from app.services import highlights
-from app.services.highlights import WordGeometry
+from app.processing.documents import highlights
+from app.processing.documents.highlights import WordGeometry
 
 
 def test_indexed_boxes_preserve_lines_pages_and_overlapping_offsets():

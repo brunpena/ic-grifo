@@ -11,9 +11,14 @@ from dataclasses import dataclass, field
 from html import escape
 from html.parser import HTMLParser
 
-from app.services.converters.base import ConversionError, ConvertedDocument, Converter, SourceFile
-from app.services.converters.render import html_to_pdf
-from app.services.pdf_text import PdfReadError, extract_pdf
+from app.processing.documents.converters.base import (
+    ConversionError,
+    ConvertedDocument,
+    Converter,
+    SourceFile,
+)
+from app.processing.documents.converters.render import html_to_pdf
+from app.processing.documents.pdf_text import PdfReadError, extract_pdf
 
 # Descartadas com tudo o que têm dentro.
 DROP = {

@@ -582,7 +582,7 @@ async def extract_rules(
 ) -> list[ExtractedRule]:
     """Extrai regras de todos os blocos, em paralelo (até LLM_MAX_CONCURRENCY ao mesmo tempo)."""
     if getattr(get_settings(), "llm_mock", False):
-        from app.services import llm_mock
+        from app.processing.ai import llm_mock
 
         return await llm_mock.extract_rules(text, on_progress, datasets)
     ensure_configured()
@@ -825,7 +825,7 @@ async def generate_queries(
 ) -> dict[int, GeneratedQuery]:
     """Buscas para todas as regras, em lotes paralelos (até LLM_MAX_CONCURRENCY)."""
     if getattr(get_settings(), "llm_mock", False):
-        from app.services import llm_mock
+        from app.processing.ai import llm_mock
 
         return await llm_mock.generate_queries(rules, datasets)
     ensure_configured()

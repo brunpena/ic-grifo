@@ -3,11 +3,11 @@ import uuid
 
 import pytest
 
+from app.processing.ai import llm
+from app.processing.ai.llm import ExtractedRule, GeneratedQuery
+from app.processing.datasets.datasets import parse_csv, parse_value
+from app.processing.datasets.query_engine import DatasetRef, QueryError, compile_query, run
 from app.schemas.queries import StructuredQuery
-from app.services import llm
-from app.services.datasets import parse_csv, parse_value
-from app.services.llm import ExtractedRule, GeneratedQuery
-from app.services.query_engine import DatasetRef, QueryError, compile_query, run
 
 CSV = (
     "Número;Fornecedor;Valor;Assinatura;Ativo;Modalidade;Garantia\n"
@@ -197,8 +197,8 @@ def fake_ai(monkeypatch):
                 result[r.ref] = GeneratedQuery(None, {}, "Nenhuma base tem sigilo")
         return result
 
+    from app.processing.ai import validation_llm
     from app.schemas.validation import ValidationPlan
-    from app.services import validation_llm
 
     async def meanings(name, columns):
         return [{**c, "semantic": {"meaning": c["name"], "confidence": "high"}} for c in columns]
@@ -320,7 +320,7 @@ async def test_rules_become_queries_over_the_datasets(migrated_db, client, fake_
 
 
 def test_readable_sql_uses_real_names_and_inline_values():
-    from app.services.duckdb_sql import readable_sql
+    from app.processing.datasets.duckdb_sql import readable_sql
 
     query = StructuredQuery.model_validate(
         {

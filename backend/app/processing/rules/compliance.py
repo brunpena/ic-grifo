@@ -13,19 +13,9 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 
-from app.schemas.queries import ConditionGroup, StructuredQuery
-from app.schemas.validation import (
-    ComplianceCheck,
-    DatasetCheck,
-    DatasetValidation,
-    Operand,
-    RuleValidationOut,
-    ValidationPlan,
-    ValidationRecord,
-)
-from app.services.datasets import Value
-from app.services.duckdb_cache import CsvCacheError
-from app.services.query_engine import (
+from app.processing.datasets.datasets import Value
+from app.processing.datasets.duckdb_cache import CsvCacheError
+from app.processing.datasets.query_engine import (
     OPERATOR_LABELS,
     OPERATORS_BY_TYPE,
     DatasetRef,
@@ -35,6 +25,16 @@ from app.services.query_engine import (
     compile_query,
     fetch_rows,
     fold,
+)
+from app.schemas.queries import ConditionGroup, StructuredQuery
+from app.schemas.validation import (
+    ComplianceCheck,
+    DatasetCheck,
+    DatasetValidation,
+    Operand,
+    RuleValidationOut,
+    ValidationPlan,
+    ValidationRecord,
 )
 
 Outcome = bool | None
@@ -334,7 +334,7 @@ def compile_validation(
         ((_column(ref, n)[1].get("semantic") or {}).get("confidence")) != "high"
         for n in _scope_columns(normalized)
     )
-    from app.services.duckdb_sql import validation_sql
+    from app.processing.datasets.duckdb_sql import validation_sql
 
     checks = [compile_check(c, ref, today) for c in plan.checks]
     sql = validation_sql(

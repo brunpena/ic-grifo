@@ -1,7 +1,12 @@
 """PDF com texto: o próprio arquivo vai para o visualizador."""
 
-from app.services.converters.base import ConversionError, ConvertedDocument, Converter, SourceFile
-from app.services.pdf_text import PdfReadError, extract_pdf
+from app.processing.documents.converters.base import (
+    ConversionError,
+    ConvertedDocument,
+    Converter,
+    SourceFile,
+)
+from app.processing.documents.pdf_text import PdfReadError, extract_pdf
 
 
 class PdfConverter(Converter):

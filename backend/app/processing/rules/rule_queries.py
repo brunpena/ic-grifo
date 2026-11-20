@@ -18,10 +18,9 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Dataset, Document, Rule, RuleQuery
-from app.schemas.queries import RecordRow, RecordsOut, StructuredQuery
-from app.services import llm
-from app.services.duckdb_sql import query_sql
-from app.services.query_engine import (
+from app.processing.ai import llm
+from app.processing.datasets.duckdb_sql import query_sql
+from app.processing.datasets.query_engine import (
     MAX_STORED_MATCHES,
     CompiledQuery,
     DatasetRef,
@@ -31,6 +30,7 @@ from app.services.query_engine import (
     load_dataset,
     search,
 )
+from app.schemas.queries import RecordRow, RecordsOut, StructuredQuery
 
 logger = logging.getLogger(__name__)
 
@@ -198,7 +198,7 @@ async def generate_for_document(
     if not datasets:
         return result
     # A geração usa os significados já interpretados; só interpreta os que faltam.
-    from app.services.rule_validation import ensure_meanings
+    from app.processing.rules.rule_validation import ensure_meanings
 
     await ensure_meanings(db, datasets, refresh=False)
     rules = (

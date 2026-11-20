@@ -8,7 +8,9 @@ from sqlalchemy import func, select, update
 
 from app.db.models import Document, Page, Word
 from app.db.session import SessionLocal
-from app.services import ingest, llm, storage, validation_llm
+from app.processing.ai import llm, validation_llm
+from app.processing.pipeline import ingest
+from app.processing.shared import storage
 from tests.test_documents import _login, _wait_ready, make_pdf
 
 

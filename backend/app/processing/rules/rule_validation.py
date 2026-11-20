@@ -13,14 +13,21 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.db.models import Dataset, Document, Rule
+from app.processing.ai import llm, validation_llm
+from app.processing.datasets.query_engine import (
+    DatasetRef,
+    LoadedDataset,
+    QueryError,
+    fold,
+    load_dataset,
+)
+from app.processing.rules import compliance, rule_queries
 from app.schemas.validation import (
     DatasetValidation,
     RuleValidationOut,
     ValidationPlan,
     ValidationRecordsOut,
 )
-from app.services import compliance, llm, rule_queries, validation_llm
-from app.services.query_engine import DatasetRef, LoadedDataset, QueryError, fold, load_dataset
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +55,7 @@ async def interpret(name: str, columns: list[dict]) -> tuple[list[dict], str | N
 async def ensure_meanings(db: AsyncSession, datasets: list[Dataset], *, refresh: bool) -> None:
     pending = [d for d in datasets if refresh or any(not c.get("semantic") for c in d.columns)]
     if getattr(get_settings(), "llm_mock", False):
-        from app.services import llm_mock
+        from app.processing.ai import llm_mock
 
         # Interpretações antigas (da IA real ou com falha) dão lugar às do mock.
         pending = [d for d in datasets if refresh or llm_mock.needs_meanings(d.columns)]

@@ -8,10 +8,10 @@ Use este mapa para localizar responsabilidades sem começar pelos arquivos gerad
 ## Como ler os arquivos maiores
 
 - Em `api/v1/documents.py`, procure as seções de documentos, regras, buscas, verificação e conversa.
-- Em `services/llm.py`, separe o transporte HTTP dos prompts de extração, busca e chat.
-- Em `services/ingest.py`, comece pelos `start_*` e siga a função assíncrona agendada.
-- Em `services/rule_validation.py`, leia `validate_document`, depois `evaluate_plan` e `records`.
-- Em `services/compliance.py`, siga a compilação do critério até a avaliação de uma linha.
+- Em `processing/ai/llm.py`, separe o transporte HTTP dos prompts de extração, busca e chat.
+- Em `processing/pipeline/ingest.py`, comece pelos `start_*` e siga a função assíncrona agendada.
+- Em `processing/rules/rule_validation.py`, leia `validate_document`, depois `evaluate_plan` e `records`.
+- Em `processing/rules/compliance.py`, siga a compilação do critério até a avaliação de uma linha.
 - Em `db/models.py`, acompanhe as relações com o diagrama da arquitetura ao lado.
 
 ## Entrada e rotas
@@ -49,38 +49,64 @@ Use este mapa para localizar responsabilidades sem começar pelos arquivos gerad
 | [app/schemas/queries.py](<../backend/app/schemas/queries.py>) | StructuredQuery, condições, grupos, operadores e registros encontrados; limites de condições e profundidade. |
 | [app/schemas/validation.py](<../backend/app/schemas/validation.py>) | ColumnMeaning, Operand, ComplianceCheck, DatasetCheck, ValidationPlan, contagens e evidências por registro. |
 
-## Serviços e motores
+## Processamento (`app/processing`)
+
+Cada etapa fica em uma subpasta. Dependências entre as pastas, onde cada etapa é acionada e como
+desligar uma funcionalidade estão em [app/processing/README.md](<../backend/app/processing/README.md>).
+
+### Orquestração (`processing/pipeline`)
 
 | Arquivo | Responsabilidade e pontos de entrada |
 | --- | --- |
-| [app/services/ingest.py](<../backend/app/services/ingest.py>) | Coordena tarefas asyncio, processamento dos CSVs e documentos, pedidos concorrentes de validação e recuperação na inicialização. |
-| [app/services/datasets.py](<../backend/app/services/datasets.py>) | parse_csv detecta codificação/separador; infer_column identifica tipos; parse_value converte células. Também nomeia e limita arquivos. |
-| [app/services/storage.py](<../backend/app/services/storage.py>) | Salva, lê e remove PDFs/CSVs em disco ou Supabase Storage; considera limite do bucket e envia corpos em blocos. |
-| [app/services/safe_fetch.py](<../backend/app/services/safe_fetch.py>) | Download HTTP/HTTPS com limite de tempo/tamanho; bloqueia IPs privados, fixa a resolução e revalida redirecionamentos. |
-| [app/services/pdf_text.py](<../backend/app/services/pdf_text.py>) | Extrai páginas, palavras, posições e full_text com PyMuPDF. Recusa PDFs ilegíveis ou sem texto. |
-| [app/services/text_match.py](<../backend/app/services/text_match.py>) | find_excerpt localiza texto selecionado tolerando espaços e travessões; usado por regras manuais. |
-| [app/services/highlights.py](<../backend/app/services/highlights.py>) | rule_boxes transforma intervalos de texto em retângulos normalizados; page_range localiza o texto da página. |
-| [app/services/llm.py](<../backend/app/services/llm.py>) | Transporte Gemini REST, retries e reforço de requisição lenta; extração em blocos, geração de buscas e chat por streaming. |
-| [app/services/validation_llm.py](<../backend/app/services/validation_llm.py>) | interpret_columns propõe significados sem mudar tipos físicos; plan_rules propõe e valida planos de conformidade por regra e lote. |
-| [app/services/query_engine.py](<../backend/app/services/query_engine.py>) | Valida filtros, normaliza valores e executa SQL no cache persistente. Carrega somente páginas e mantém referências a quatro bases. |
-| [app/services/duckdb_cache.py](<../backend/app/services/duckdb_cache.py>) | Classe CsvDuckDBCache: sincronização CSV, importação transacional, buscas parametrizadas e lock entre processos. |
-| [app/services/duckdb_sql.py](<../backend/app/services/duckdb_sql.py>) | Compila filtros e planos restritos em SQL parametrizado para o DuckDB. |
-| [app/services/text_normalization.py](<../backend/app/services/text_normalization.py>) | Normalização compartilhada de caixa, acentos e espaços nos filtros textuais. |
-| [app/services/rule_queries.py](<../backend/app/services/rule_queries.py>) | Gera e executa buscas, grava contagens/índices e preserva buscas manuais. analysis_datasets retorna apenas bases prontas. |
-| [app/services/compliance.py](<../backend/app/services/compliance.py>) | Valida critérios, consulta contagens e páginas no DuckDB, explica evidências e agrega os resultados da regra. |
-| [app/services/rule_validation.py](<../backend/app/services/rule_validation.py>) | Coordena significados, planos e resultados. validate_document avalia todas as regras; source_signature confere fontes; records reproduz evidências. |
+| [app/processing/pipeline/ingest.py](<../backend/app/processing/pipeline/ingest.py>) | Coordena tarefas asyncio, processamento dos CSVs e documentos, pedidos concorrentes de validação e recuperação na inicialização. |
 
-## Conversores
+### Documentos (`processing/documents`)
 
 | Arquivo | Responsabilidade e pontos de entrada |
 | --- | --- |
-| [app/services/converters/base.py](<../backend/app/services/converters/base.py>) | Contrato SourceFile → ConvertedDocument, classe Converter e erros de conversão. A saída contém PDF e ExtractedDocument. |
-| [app/services/converters/registry.py](<../backend/app/services/converters/registry.py>) | Registra PDF/HTML/TXT e escolhe por MIME type, extensão e conteúdo. |
-| [app/services/converters/pdf.py](<../backend/app/services/converters/pdf.py>) | Valida PDF e extrai texto/posições preservando o arquivo original. |
-| [app/services/converters/html.py](<../backend/app/services/converters/html.py>) | Decodifica e limpa HTML, prepara tabelas, gera PDF e o relê para obter coordenadas. |
-| [app/services/converters/text.py](<../backend/app/services/converters/text.py>) | Decodifica TXT, escapa conteúdo, preserva parágrafos e escolhe título antes da diagramação. |
-| [app/services/converters/render.py](<../backend/app/services/converters/render.py>) | html_to_pdf diagrama HTML limpo em A4 com Story/DocumentWriter do PyMuPDF. |
-| [app/services/converters/__init__.py](<../backend/app/services/converters/__init__.py>) | Reexporta contratos, erros e registro dos conversores para as demais camadas. |
+| [app/processing/documents/safe_fetch.py](<../backend/app/processing/documents/safe_fetch.py>) | Download HTTP/HTTPS com limite de tempo/tamanho; bloqueia IPs privados, fixa a resolução e revalida redirecionamentos. |
+| [app/processing/documents/pdf_text.py](<../backend/app/processing/documents/pdf_text.py>) | Extrai páginas, palavras, posições e full_text com PyMuPDF. Recusa PDFs ilegíveis ou sem texto. |
+| [app/processing/documents/text_match.py](<../backend/app/processing/documents/text_match.py>) | find_excerpt localiza texto selecionado tolerando espaços e travessões; usado por regras manuais. |
+| [app/processing/documents/highlights.py](<../backend/app/processing/documents/highlights.py>) | rule_boxes transforma intervalos de texto em retângulos normalizados; page_range localiza o texto da página. |
+| [app/processing/documents/converters/base.py](<../backend/app/processing/documents/converters/base.py>) | Contrato SourceFile → ConvertedDocument, classe Converter e erros de conversão. A saída contém PDF e ExtractedDocument. |
+| [app/processing/documents/converters/registry.py](<../backend/app/processing/documents/converters/registry.py>) | Registra PDF/HTML/TXT e escolhe por MIME type, extensão e conteúdo. |
+| [app/processing/documents/converters/pdf.py](<../backend/app/processing/documents/converters/pdf.py>) | Valida PDF e extrai texto/posições preservando o arquivo original. |
+| [app/processing/documents/converters/html.py](<../backend/app/processing/documents/converters/html.py>) | Decodifica e limpa HTML, prepara tabelas, gera PDF e o relê para obter coordenadas. |
+| [app/processing/documents/converters/text.py](<../backend/app/processing/documents/converters/text.py>) | Decodifica TXT, escapa conteúdo, preserva parágrafos e escolhe título antes da diagramação. |
+| [app/processing/documents/converters/render.py](<../backend/app/processing/documents/converters/render.py>) | html_to_pdf diagrama HTML limpo em A4 com Story/DocumentWriter do PyMuPDF. |
+| [app/processing/documents/converters/__init__.py](<../backend/app/processing/documents/converters/__init__.py>) | Reexporta contratos, erros e registro dos conversores para as demais camadas. |
+
+### Bases CSV e DuckDB (`processing/datasets`)
+
+| Arquivo | Responsabilidade e pontos de entrada |
+| --- | --- |
+| [app/processing/datasets/datasets.py](<../backend/app/processing/datasets/datasets.py>) | parse_csv detecta codificação/separador; infer_column identifica tipos; parse_value converte células. Também nomeia e limita arquivos. |
+| [app/processing/datasets/query_engine.py](<../backend/app/processing/datasets/query_engine.py>) | Valida filtros, normaliza valores e executa SQL no cache persistente. Carrega somente páginas e mantém referências a quatro bases. |
+| [app/processing/datasets/duckdb_cache.py](<../backend/app/processing/datasets/duckdb_cache.py>) | Classe CsvDuckDBCache: sincronização CSV, importação transacional, buscas parametrizadas e lock entre processos. |
+| [app/processing/datasets/duckdb_sql.py](<../backend/app/processing/datasets/duckdb_sql.py>) | Compila filtros e planos restritos em SQL parametrizado para o DuckDB. |
+
+### IA / Gemini (`processing/ai`)
+
+| Arquivo | Responsabilidade e pontos de entrada |
+| --- | --- |
+| [app/processing/ai/llm.py](<../backend/app/processing/ai/llm.py>) | Transporte Gemini REST, retries e reforço de requisição lenta; extração em blocos, geração de buscas e chat por streaming. |
+| [app/processing/ai/validation_llm.py](<../backend/app/processing/ai/validation_llm.py>) | interpret_columns propõe significados sem mudar tipos físicos; plan_rules propõe e valida planos de conformidade por regra e lote. |
+| [app/processing/ai/llm_mock.py](<../backend/app/processing/ai/llm_mock.py>) | Respostas prontas usadas quando LLM_MOCK=true, sem chamar o Gemini. |
+
+### Regras e conformidade (`processing/rules`)
+
+| Arquivo | Responsabilidade e pontos de entrada |
+| --- | --- |
+| [app/processing/rules/rule_queries.py](<../backend/app/processing/rules/rule_queries.py>) | Gera e executa buscas, grava contagens/índices e preserva buscas manuais. analysis_datasets retorna apenas bases prontas. |
+| [app/processing/rules/compliance.py](<../backend/app/processing/rules/compliance.py>) | Valida critérios, consulta contagens e páginas no DuckDB, explica evidências e agrega os resultados da regra. |
+| [app/processing/rules/rule_validation.py](<../backend/app/processing/rules/rule_validation.py>) | Coordena significados, planos e resultados. validate_document avalia todas as regras; source_signature confere fontes; records reproduz evidências. |
+
+### Infraestrutura comum (`processing/shared`)
+
+| Arquivo | Responsabilidade e pontos de entrada |
+| --- | --- |
+| [app/processing/shared/storage.py](<../backend/app/processing/shared/storage.py>) | Salva, lê e remove PDFs/CSVs em disco ou Supabase Storage; considera limite do bucket e envia corpos em blocos. |
+| [app/processing/shared/text_normalization.py](<../backend/app/processing/shared/text_normalization.py>) | Normalização compartilhada de caixa, acentos e espaços nos filtros textuais. |
 
 ## Migrations
 
@@ -145,7 +171,7 @@ Estes arquivos delimitam os pacotes importáveis. Não iniciam rotas ou tarefas 
 | [app/core/__init__.py](<../backend/app/core/__init__.py>) | Marcador do pacote Python correspondente. |
 | [app/db/__init__.py](<../backend/app/db/__init__.py>) | Marcador do pacote Python correspondente. |
 | [app/schemas/__init__.py](<../backend/app/schemas/__init__.py>) | Marcador do pacote Python correspondente. |
-| [app/services/__init__.py](<../backend/app/services/__init__.py>) | Marcador do pacote Python correspondente. |
+| [app/processing/__init__.py](<../backend/app/processing/__init__.py>) e um `__init__.py` por subpasta | Marcadores dos pacotes de processamento; cada docstring resume a etapa. |
 | [tests/__init__.py](<../backend/tests/__init__.py>) | Marcador do pacote Python correspondente. |
 
 ## Pontes entre camadas

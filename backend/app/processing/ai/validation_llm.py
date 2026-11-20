@@ -11,8 +11,8 @@ import logging
 from pydantic import ValidationError
 
 from app.core.config import get_settings
+from app.processing.ai import llm
 from app.schemas.validation import ColumnMeaning, ValidationPlan
-from app.services import llm
 
 logger = logging.getLogger(__name__)
 COLUMN_BATCH = 40
@@ -110,7 +110,7 @@ async def _json(system: str, data: dict) -> dict:
 async def interpret_columns(name: str, columns: list[dict]) -> list[dict]:
     """Preserva nomes/tipos inferidos pelo parser e acrescenta a interpretação semântica."""
     if getattr(get_settings(), "llm_mock", False):
-        from app.services import llm_mock
+        from app.processing.ai import llm_mock
 
         return await llm_mock.interpret_columns(name, columns)
     llm.ensure_configured()
@@ -181,7 +181,7 @@ async def plan_rules(
     if not rules:
         return {}
     if getattr(get_settings(), "llm_mock", False):
-        from app.services import llm_mock
+        from app.processing.ai import llm_mock
 
         return await llm_mock.plan_rules(rules, datasets, reference_date)
     llm.ensure_configured()

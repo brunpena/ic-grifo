@@ -98,7 +98,7 @@ class Dataset(Base):
     encoding: Mapped[str] = mapped_column(Text, default="")
     delimiter: Mapped[str] = mapped_column(Text, default="")
     row_count: Mapped[int] = mapped_column(Integer, default=0)
-    # [{name, type, format, null_count, distinct_count, examples, values}] (ver services.datasets)
+    # [{name, type, format, null_count, distinct_count, examples, values}] (ver datasets.py)
     columns: Mapped[list[dict]] = mapped_column(JSONB, default=list)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 

@@ -16,8 +16,8 @@ from typing import Any
 import duckdb
 from filelock import FileLock, Timeout
 
-from app.services.datasets import DatasetError, ParsedCsv, parse_csv, parse_value
-from app.services.text_normalization import fold
+from app.processing.datasets.datasets import DatasetError, ParsedCsv, parse_csv, parse_value
+from app.processing.shared.text_normalization import fold
 
 CACHE_VERSION = 1
 SQL_TYPES = {
@@ -112,7 +112,7 @@ class CsvDuckDBCache:
     def _import(
         self, connection: duckdb.DuckDBPyConnection, parsed: ParsedCsv, signature: str
     ) -> None:
-        from app.services.query_engine import coerce
+        from app.processing.datasets.query_engine import coerce
 
         columns = [c.to_dict() for c in parsed.columns]
         definitions = ["_row_id BIGINT PRIMARY KEY"]
@@ -252,7 +252,7 @@ class CsvDuckDBCache:
 
 
 if __name__ == "__main__":
-    # python -m app.services.duckdb_cache contratos.csv cache/contratos.duckdb
+    # python -m app.processing.datasets.duckdb_cache contratos.csv cache/contratos.duckdb
     import sys
 
     cache = CsvDuckDBCache(sys.argv[2])

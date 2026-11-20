@@ -18,16 +18,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 
 from app.core.config import get_settings
-from app.schemas.queries import (
-    MAX_CONDITIONS,
-    MAX_DEPTH,
-    Condition,
-    ConditionGroup,
-    Scalar,
-    StructuredQuery,
-)
-from app.services import storage
-from app.services.datasets import (
+from app.processing.datasets.datasets import (
     FALSE_VALUES,
     TRUE_VALUES,
     DatasetError,
@@ -36,8 +27,17 @@ from app.services.datasets import (
     parse_csv,
     parse_value,
 )
-from app.services.duckdb_cache import CACHE_VERSION, CsvCacheError, CsvDuckDBCache
-from app.services.text_normalization import fold
+from app.processing.datasets.duckdb_cache import CACHE_VERSION, CsvCacheError, CsvDuckDBCache
+from app.processing.shared import storage
+from app.processing.shared.text_normalization import fold
+from app.schemas.queries import (
+    MAX_CONDITIONS,
+    MAX_DEPTH,
+    Condition,
+    ConditionGroup,
+    Scalar,
+    StructuredQuery,
+)
 
 _CANONICAL_NUMBER = re.compile(r"[+-]?\d+(?:\.\d+)?")
 MAX_LIST_VALUES = 200
@@ -469,7 +469,7 @@ async def load_dataset(
 
 def run(compiled: CompiledQuery, rows: Sequence[list[Value]]) -> list[int]:
     if isinstance(rows, DuckDBRows):
-        from app.services.duckdb_sql import query_sql
+        from app.processing.datasets.duckdb_sql import query_sql
 
         sql, parameters = query_sql(compiled.normalized, compiled.dataset)
         try:
@@ -486,7 +486,7 @@ class SQLMatches(Sequence[int]):
     def __init__(
         self, rows: DuckDBRows, compiled: CompiledQuery, *, prefetch_limit: int | None = None
     ) -> None:
-        from app.services.duckdb_sql import query_sql
+        from app.processing.datasets.duckdb_sql import query_sql
 
         self.cache = rows.cache
         self.sql, self.params = query_sql(compiled.normalized, compiled.dataset)

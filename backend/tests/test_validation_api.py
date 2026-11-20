@@ -7,9 +7,9 @@ import httpx
 import pytest
 
 from app.main import app
+from app.processing.ai import llm, validation_llm
+from app.processing.ai.llm import ExtractedRule
 from app.schemas.validation import ValidationPlan
-from app.services import llm, validation_llm
-from app.services.llm import ExtractedRule
 
 CSV = (
     b"Contrato;Assinatura;Entrega;Valor;Garantia\n"
@@ -221,7 +221,7 @@ async def test_rule_without_datasets_is_explicitly_inconclusive(migrated_db, cli
 async def test_dataset_finishing_queues_queries_and_legacy_validation_is_explicit(
     migrated_db, client, validation_ai, monkeypatch
 ):
-    from app.services import ingest
+    from app.processing.pipeline import ingest
 
     await register(client)
     analysis = (await client.post("/api/v1/analyses", json={})).json()

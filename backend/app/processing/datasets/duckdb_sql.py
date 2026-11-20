@@ -8,10 +8,10 @@ import re
 from datetime import date
 from typing import Any
 
+from app.processing.datasets.query_engine import DatasetRef, coerce
+from app.processing.shared.text_normalization import fold
 from app.schemas.queries import ConditionGroup, StructuredQuery
 from app.schemas.validation import ComplianceCheck, DatasetCheck, Operand
-from app.services.query_engine import DatasetRef, coerce
-from app.services.text_normalization import fold
 
 
 class SQLBuilder:

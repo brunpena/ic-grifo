@@ -6,8 +6,8 @@ Linhas em branco separam parágrafos; quebras simples são mantidas.
 import re
 from html import escape
 
-from app.services.converters.base import ConvertedDocument, Converter, SourceFile
-from app.services.converters.html import CleanHtml, render_clean
+from app.processing.documents.converters.base import ConvertedDocument, Converter, SourceFile
+from app.processing.documents.converters.html import CleanHtml, render_clean
 
 _PARAGRAPHS = re.compile(r"\n[ \t]*\n+")
 

@@ -19,9 +19,9 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 
 from app.core.config import get_settings
+from app.processing.ai import llm
+from app.processing.shared.text_normalization import fold
 from app.schemas.validation import ValidationPlan
-from app.services import llm
-from app.services.query_engine import fold
 
 MOCK_REASON = "Interpretação da IA a partir do nome, do tipo e dos exemplos da coluna."
 # Coluna que identifica a base do Sisu entre as bases da análise.

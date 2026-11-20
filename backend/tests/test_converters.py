@@ -3,7 +3,7 @@ import re
 import pymupdf
 import pytest
 
-from app.services.converters import (
+from app.processing.documents.converters import (
     ConversionError,
     Converter,
     ConverterRegistry,
@@ -11,7 +11,7 @@ from app.services.converters import (
     UnsupportedFormatError,
     registry,
 )
-from app.services.converters.html import clean_html, decode_html
+from app.processing.documents.converters.html import clean_html, decode_html
 
 PAGE = """<!doctype html>
 <html><head><meta charset="utf-8"><title>Edital 12/2026</title>
