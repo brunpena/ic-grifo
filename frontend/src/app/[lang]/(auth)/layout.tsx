@@ -2,7 +2,7 @@ import { BrandLogo } from "@/components/brand-logo";
 import { LanguageToggle } from "@/components/language-toggle";
 import { ThemeToggle } from "@/components/theme-toggle";
 
-export default function AuthLayout({ children }: LayoutProps<"/">) {
+export default function AuthLayout({ children }: LayoutProps<"/[lang]">) {
   return (
     <div className="relative flex min-h-dvh flex-1 flex-col items-center justify-center overflow-hidden px-4 py-12">
       {/* Brilho suave do azul da marca atrás do formulário. */}

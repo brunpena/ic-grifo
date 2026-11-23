@@ -10,7 +10,7 @@ import { Input } from "@/components/ui/input";
 import { PasswordInput } from "@/components/ui/password-input";
 import { errorMessage } from "@/lib/api";
 import { useCurrentUser, useRegister } from "@/lib/auth";
-import { useT } from "@/lib/i18n";
+import { useLocalePath, useT } from "@/lib/i18n";
 
 export function RegisterForm() {
   const router = useRouter();
@@ -19,6 +19,7 @@ export function RegisterForm() {
   const confirmed = !!user && dataUpdatedAt > 0;
   const register = useRegister();
   const t = useT();
+  const href = useLocalePath();
   const passwordHint = t("Pelo menos 8 caracteres.");
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
@@ -29,8 +30,8 @@ export function RegisterForm() {
   const passwordId = useId();
 
   useEffect(() => {
-    if (confirmed) router.replace("/assistente");
-  }, [confirmed, router]);
+    if (confirmed) router.replace(href("/assistente"));
+  }, [confirmed, router, href]);
 
   return (
     <Card className="flex w-full flex-col gap-5 p-6">
@@ -49,7 +50,7 @@ export function RegisterForm() {
             return;
           }
           setPasswordError(null);
-          register.mutate({ name, email, password }, { onSuccess: () => router.replace("/assistente") });
+          register.mutate({ name, email, password }, { onSuccess: () => router.replace(href("/assistente")) });
         }}
       >
         {register.error && <FormError>{errorMessage(register.error, t)}</FormError>}
@@ -85,7 +86,7 @@ export function RegisterForm() {
 
       <p className="text-center text-[13px] text-foreground-muted">
         {t("Já tem conta?")}{" "}
-        <Link href="/login" className="font-medium text-accent underline-offset-2 hover:underline">
+        <Link href={href("/login")} className="font-medium text-accent underline-offset-2 hover:underline">
           {t("Entrar")}
         </Link>
       </p>

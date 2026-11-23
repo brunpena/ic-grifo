@@ -24,7 +24,7 @@ Abra, nesta ordem:
 2. [dev-backend.mjs](../scripts/dev-backend.mjs): siga a decisão sobre Docker, migrations e watchfiles.
 3. [main.py](../backend/app/main.py): leia `create_app` e `lifespan`.
 4. [router.py](../backend/app/api/v1/router.py): veja o prefixo e os grupos de endpoints.
-5. [layout.tsx](../frontend/src/app/layout.tsx) e [providers.tsx](../frontend/src/app/providers.tsx):
+5. [layout.tsx](<../frontend/src/app/[lang]/layout.tsx>) e [providers.tsx](<../frontend/src/app/[lang]/providers.tsx>):
    localize estilos, tema, TanStack Query e notificações.
 6. [app-shell.tsx](../frontend/src/components/app/app-shell.tsx): encontre a consulta da sessão e a navegação.
 

@@ -10,8 +10,9 @@ import { Input } from "@/components/ui/input";
 import { PasswordInput } from "@/components/ui/password-input";
 import { errorMessage } from "@/lib/api";
 import { safeNextPath, useCurrentUser, useLogin } from "@/lib/auth";
-import { useT } from "@/lib/i18n";
+import { useLocalePath, useT } from "@/lib/i18n";
 
+/** Para onde ir depois do login (sem idioma; o chamador completa com o idioma atual). */
 const nextPath = () => safeNextPath(new URLSearchParams(window.location.search).get("next"));
 
 export function LoginForm() {
@@ -21,6 +22,7 @@ export function LoginForm() {
   const confirmed = !!user && dataUpdatedAt > 0;
   const login = useLogin();
   const t = useT();
+  const href = useLocalePath();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const emailId = useId();
@@ -28,8 +30,8 @@ export function LoginForm() {
 
   // Quem já está logado vai direto para o sistema.
   useEffect(() => {
-    if (confirmed) router.replace(nextPath());
-  }, [confirmed, router]);
+    if (confirmed) router.replace(href(nextPath()));
+  }, [confirmed, router, href]);
 
   return (
     <Card className="flex w-full flex-col gap-5 p-6">
@@ -42,7 +44,7 @@ export function LoginForm() {
         className="flex flex-col gap-4"
         onSubmit={(e) => {
           e.preventDefault();
-          login.mutate({ email, password }, { onSuccess: () => router.replace(nextPath()) });
+          login.mutate({ email, password }, { onSuccess: () => router.replace(href(nextPath())) });
         }}
       >
         {login.error && <FormError>{errorMessage(login.error, t)}</FormError>}
@@ -74,7 +76,7 @@ export function LoginForm() {
 
       <p className="text-center text-[13px] text-foreground-muted">
         {t("Ainda não tem conta?")}{" "}
-        <Link href="/cadastro" className="font-medium text-accent underline-offset-2 hover:underline">
+        <Link href={href("/cadastro")} className="font-medium text-accent underline-offset-2 hover:underline">
           {t("Criar conta")}
         </Link>
       </p>

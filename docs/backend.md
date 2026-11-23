@@ -18,13 +18,14 @@ Use este mapa para localizar responsabilidades sem começar pelos arquivos gerad
 
 | Arquivo | Responsabilidade e pontos de entrada |
 | --- | --- |
-| [app/main.py](<../backend/app/main.py>) | Monta FastAPI, CORS, logs e erros. create_app configura a aplicação; lifespan recupera tarefas interrompidas e fecha o engine. |
+| [app/main.py](<../backend/app/main.py>) | Monta FastAPI, CORS (com cache do preflight), gzip, logs e erros. create_app configura a aplicação; lifespan recupera tarefas interrompidas e fecha o engine. |
 | [app/api/deps.py](<../backend/app/api/deps.py>) | Injeta sessões SQLAlchemy e autenticação: SessionDep, UserDep, AuthDep e OptionalAuthDep. |
-| [app/api/v1/router.py](<../backend/app/api/v1/router.py>) | Agrupa health, auth, analyses e documents sob /api/v1. |
+| [app/api/v1/router.py](<../backend/app/api/v1/router.py>) | Agrupa health, auth, analyses, documents e performance sob /api/v1. |
 | [app/api/v1/health.py](<../backend/app/api/v1/health.py>) | Consulta SELECT 1 e informa ok/degraded e disponibilidade do banco; mantém HTTP 200 no estado degraded. |
 | [app/api/v1/auth.py](<../backend/app/api/v1/auth.py>) | Cadastro, login, logout, perfil e senha. _start_session grava o hash do token e configura o cookie. |
 | [app/api/v1/analyses.py](<../backend/app/api/v1/analyses.py>) | CRUD de análises, upload e remoção de CSVs. owned_analysis verifica o dono; upload_dataset salva e agenda a leitura. |
 | [app/api/v1/documents.py](<../backend/app/api/v1/documents.py>) | Documentos, PDF, regras, buscas, validação e chat. Comece em _create_document, _rules_out, validate_document e send_message. |
+| [app/api/v1/performance.py](<../backend/app/api/v1/performance.py>) | Página de desempenho: tempo por tipo de requisição (summary), linha do tempo, chamadas individuais e simulações (run_simulation repete uma leitura via ASGITransport com a sessão do usuário). |
 
 ## Configuração, segurança e persistência
 
@@ -35,6 +36,7 @@ Use este mapa para localizar responsabilidades sem começar pelos arquivos gerad
 | [app/core/errors.py](<../backend/app/core/errors.py>) | AppError e subclasses; handlers padronizam respostas error.code e error.message em português. |
 | [app/core/json.py](<../backend/app/core/json.py>) | Serialização com orjson e classe OrjsonResponse utilizada em erros. |
 | [app/core/logging.py](<../backend/app/core/logging.py>) | Logs JSON, mascaramento de campos extras sensíveis e log_step para medir duração das etapas. |
+| [app/core/request_metrics.py](<../backend/app/core/request_metrics.py>) | RequestMetricsMiddleware mede cada requisição em /api (exceto /api/v1/performance); instrument_engine soma tempo e comandos SQL; writer grava em request_logs em lotes, em segundo plano, e apaga registros além de REQUEST_LOG_RETENTION_DAYS. |
 | [app/db/models.py](<../backend/app/db/models.py>) | Tabelas, relações, restrições e índices. Define estados, metadados das bases e Rule.validation. |
 | [app/db/session.py](<../backend/app/db/session.py>) | Engine asyncpg, configuração de pooler, SessionLocal e sessão por requisição em get_session. |
 
@@ -47,6 +49,7 @@ Use este mapa para localizar responsabilidades sem começar pelos arquivos gerad
 | [app/schemas/common.py](<../backend/app/schemas/common.py>) | Envelope dos erros e função error_responses para documentar respostas de falha. |
 | [app/schemas/documents.py](<../backend/app/schemas/documents.py>) | DocumentOut, RuleOut, retângulos, texto/link, regras manuais e mensagens com citações. |
 | [app/schemas/queries.py](<../backend/app/schemas/queries.py>) | StructuredQuery, condições, grupos, operadores e registros encontrados; limites de condições e profundidade. |
+| [app/schemas/performance.py](<../backend/app/schemas/performance.py>) | Estatísticas de latência (média, p50/p95/p99), por rota e categoria, linha do tempo, entrada e resultado das simulações. |
 | [app/schemas/validation.py](<../backend/app/schemas/validation.py>) | ColumnMeaning, Operand, ComplianceCheck, DatasetCheck, ValidationPlan, contagens e evidências por registro. |
 
 ## Processamento (`app/processing`)
@@ -129,7 +132,7 @@ desligar uma funcionalidade estão em [app/processing/README.md](<../backend/app
 | Arquivo | Responsabilidade e pontos de entrada |
 | --- | --- |
 | [tests/conftest.py](<../backend/tests/conftest.py>) | Ambiente e cliente HTTP de testes; verifica o banco, pula testes db indisponíveis e recria seu esquema em migrated_db. |
-| [tests/test_app.py](<../backend/tests/test_app.py>) | Configuração, CORS, erros, OpenAPI, health e migrations. |
+| [tests/test_app.py](<../backend/tests/test_app.py>) | Configuração, CORS (e cache do preflight), gzip, erros, OpenAPI, health e migrations. |
 | [tests/test_auth.py](<../backend/tests/test_auth.py>) | Hashes, cadastro/login/logout, perfil, senha e encerramento de outras sessões. |
 | [tests/test_datasets.py](<../backend/tests/test_datasets.py>) | CSV, tipos, nomes, limites e fluxo assíncrono de análises e bases. |
 | [tests/test_converters.py](<../backend/tests/test_converters.py>) | Formatos, limpeza de HTML, texto, PDFs sem conteúdo e tabelas entre páginas. |

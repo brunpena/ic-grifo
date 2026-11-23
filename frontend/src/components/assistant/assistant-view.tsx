@@ -41,6 +41,7 @@ import { closeAnalysis, useAnalysis, useCloseAnalysis, useCreateAnalysis } from 
 import { errorMessage } from "@/lib/api";
 import { firstName, useCurrentUser } from "@/lib/auth";
 import { msg, useT } from "@/lib/i18n";
+import { useAnalysisLifecycle, useAssistantRoute } from "./assistant-route";
 import type { RuleStatus, RuleType } from "@/lib/design/tokens";
 import {
   DOCUMENT_ACCEPT,
@@ -106,30 +107,37 @@ export function AssistantView() {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const [viewerWidth, setViewerWidth] = useState(0);
 
-  // Primeiro envio ainda sem resposta: o nome e, se for PDF, o arquivo para já exibir.
-  const [pendingUpload, setPendingUpload] = useState<{ name: string; file: File | null } | null>(null);
+  // Análise e documento vêm da URL (ver o layout de /assistente); `navigate` troca a URL.
+  const route = useAssistantRoute();
+  const { documentId } = route;
+  const docQuery = useDocument(documentId);
+  const { data: doc } = docQuery;
+  // Na página do documento, a análise vem do próprio documento.
+  const analysisId = route.analysisId ?? doc?.analysis_id ?? null;
+  const analysisQuery = useAnalysis(analysisId);
+  const { data: analysis } = analysisQuery;
+
+  // Primeiro envio ainda sem resposta: o nome e, se for PDF, o arquivo para já exibir. Só
+  // aparece na análise para a qual foi enviado (Voltar/Avançar levam a outras telas).
+  const [pendingUpload, setPendingUpload] = useState<{ name: string; file: File | null; analysisId: string } | null>(null);
+  const showPending = !documentId && !!pendingUpload && pendingUpload.analysisId === analysisId;
   const [datasetsOpen, setDatasetsOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [sourceMode, setSourceMode] = useState<DocumentSourceMode | null>(null);
-  // Análise em montagem: as bases vão antes do documento.
-  const [analysisId, setAnalysisId] = useState<string | null>(null);
-  const { data: analysis } = useAnalysis(analysisId);
   const createAnalysis = useCreateAnalysis();
+  const creatingAnalysis = useRef<Promise<string> | null>(null);
   const endAnalysis = useCloseAnalysis();
-  const closedAnalyses = useRef(new Set<string>());
-  const [documentId, setDocumentId] = useState<string | null>(null);
-  // Documento reaberto pelo histórico (não um envio novo): carrega já no espaço de trabalho.
-  const [reopenedId, setReopenedId] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
   const upload = useUploadDocument();
+  // O estado do envio só vale enquanto a tela mostra esse envio.
+  const shownUpload = showPending ? upload : null;
   const resumeDocument = useResumeDocument();
   const uploadMore = useUploadDocument();
-  const { data: doc } = useDocument(documentId);
   // Texto, HTML e links viram PDF no back; o PDF exibido vem sempre de lá (ou do cache).
   const documentFile = useDocumentFile(doc);
-  const file = documentId ? (documentFile.data ?? null) : (pendingUpload?.file ?? null);
-  const documentName = doc?.title ?? pendingUpload?.name ?? "";
-  const isOpen = !!documentId || !!pendingUpload;
+  const file = documentId ? (documentFile.data ?? null) : showPending ? pendingUpload.file : null;
+  const documentName = doc?.title ?? (showPending ? pendingUpload.name : "");
+  const isOpen = !!documentId || showPending;
   const pdf = usePdfDocument(file);
   const [layout, setLayout] = useState<AnalysisLayout>({ chat: false, rules: true, table: true });
   // Busca no documento (Ctrl+F).
@@ -155,24 +163,13 @@ export function AssistantView() {
     if (analysisId) preloadWorkspace();
   }, [analysisId]);
 
-  // Ao sair da tela ou fechar a aba, tenta entregar a limpeza mesmo durante a navegação.
+  // Encerra a análise ao trocar por outra, sair do Assistente ou fechar a aba.
+  const closedAnalyses = useAnalysisLifecycle(analysisId);
+  // Ids da tela atual, para callbacks que terminam depois (ex.: fim de um envio).
+  const currentIds = useRef({ analysisId, documentId });
   useEffect(() => {
-    if (!analysisId) return;
-    closedAnalyses.current.delete(analysisId);
-    const release = () => {
-      if (!closedAnalyses.current.has(analysisId)) {
-        closedAnalyses.current.add(analysisId);
-        void closeAnalysis(analysisId, true).catch(() => {
-          // O navegador pode interromper a rede durante o encerramento da aba.
-        });
-      }
-    };
-    window.addEventListener("pagehide", release);
-    return () => {
-      window.removeEventListener("pagehide", release);
-      release();
-    };
-  }, [analysisId]);
+    currentIds.current = { analysisId, documentId };
+  });
 
   const [zoomOverride, setZoomOverride] = useState<number | null>(null);
   const [page, setPage] = useState(1);
@@ -199,7 +196,11 @@ export function AssistantView() {
     return () => window.removeEventListener("keydown", onKey);
   }, [isOpen]);
 
-  const resetView = () => {
+  // Outro documento (ou nenhum) na URL: a visualização volta ao padrão. Ajuste durante a
+  // renderização, sem efeito: a tela nova já aparece com o estado certo.
+  const [viewFor, setViewFor] = useState(documentId);
+  if (viewFor !== documentId) {
+    setViewFor(documentId);
     setDatasetsOpen(false);
     setZoomOverride(null);
     setSelectedId(null);
@@ -207,8 +208,7 @@ export function AssistantView() {
     setMobileTab("rules");
     setLayout({ chat: false, rules: true, table: true });
     setSearchIndex(0);
-    upload.reset();
-  };
+  }
 
   /** Envia os arquivos para a análise atual e abre o primeiro. */
   const openFiles = async (picked: File[]) => {
@@ -233,9 +233,9 @@ export function AssistantView() {
       toast({ title: t("Não foi possível criar a análise"), description: errorMessage(error, t), variant: "error" });
       return;
     }
-    setPendingUpload({ name: first.name, file: isPdfFile(first) ? first : null });
-    setDocumentId(null);
-    resetView();
+    setPendingUpload({ name: first.name, file: isPdfFile(first) ? first : null, analysisId: target });
+    // Enviar outro documento a partir de um já aberto: volta para a tela da análise.
+    if (documentId) route.navigate({ analysisId: target, documentId: null });
     upload.mutate(
       { file: first, analysisId: target },
       {
@@ -245,8 +245,8 @@ export function AssistantView() {
             void closeAnalysis(target, true).catch(() => {});
             return;
           }
-          setDocumentId(created.id);
-          setPendingUpload(null);
+          // Só abre o documento se a pessoa continua na análise para a qual ele foi enviado.
+          if (currentIds.current.analysisId === target) route.navigate({ analysisId: target, documentId: created.id });
         },
         onError: (error) => toast({ title: t("Não foi possível enviar"), description: errorMessage(error, t), variant: "error" }),
       },
@@ -273,18 +273,23 @@ export function AssistantView() {
     // O histórico já trouxe o documento: PDF e regras começam a carregar sem esperar
     // outra consulta; a situação atual é conferida em segundo plano.
     seedDocument(queryClient, target);
-    setPendingUpload(null);
-    setDocumentId(target.id);
-    setReopenedId(target.status === "ready" ? target.id : null);
-    setAnalysisId(target.analysis_id);
-    resetView();
+    route.navigate({ analysisId: target.analysis_id, documentId: target.id });
   };
 
+  /** Análise atual; cria uma (e vai para o endereço dela) na primeira base enviada. */
   const ensureAnalysis = async () => {
     if (analysisId) return analysisId;
-    const created = await createAnalysis.mutateAsync(undefined);
-    setAnalysisId(created.id);
-    return created.id;
+    // Vários arquivos soltos de uma vez: todos esperam a mesma criação.
+    creatingAnalysis.current ??= createAnalysis
+      .mutateAsync(undefined)
+      .then((created) => {
+        route.navigate({ analysisId: created.id, documentId: null });
+        return created.id;
+      })
+      .finally(() => {
+        creatingAnalysis.current = null;
+      });
+    return creatingAnalysis.current;
   };
 
   const closeDocument = async () => {
@@ -300,9 +305,8 @@ export function AssistantView() {
       }
     }
     setPendingUpload(null);
-    setDocumentId(null);
-    setAnalysisId(null);
-    resetView();
+    upload.reset();
+    route.navigate({ analysisId: null, documentId: null });
   };
 
   const viewerRef = (el: HTMLDivElement | null) => {
@@ -432,6 +436,26 @@ export function AssistantView() {
     />
   );
 
+  // Endereço de uma análise ou documento que não existe (ou de outra conta).
+  const routeError = (documentId && docQuery.isError && !doc ? docQuery.error : null)
+    ?? (route.analysisId && analysisQuery.isError && !analysis ? analysisQuery.error : null);
+  if (routeError) {
+    return (
+      <div className="flex h-full items-center justify-center p-4">
+        <EmptyState
+          icon={FileSearch}
+          title={documentId ? t("Não foi possível abrir o documento") : t("Não foi possível abrir a análise")}
+          description={errorMessage(routeError, t)}
+          action={
+            <Button size="sm" variant="primary" onClick={() => route.navigate({ analysisId: null, documentId: null }, { replace: true })}>
+              {t("Nova análise")}
+            </Button>
+          }
+        />
+      </div>
+    );
+  }
+
   if (!isOpen) {
     return (
       <div className="relative flex h-full flex-col" {...dropHandlers}>
@@ -490,14 +514,15 @@ export function AssistantView() {
   const zoom = zoomOverride ?? fitZoom;
 
   // Etapa atual: 0 enviando, 1 lendo, 2 identificando regras, 3 pronto.
-  const step = upload.isPending ? 0 : !doc || doc.status === "processing" ? 1 : doc.status === "extracting_rules" ? 2 : 3;
-  const failed = upload.isError || doc?.status === "error";
-  const failedStep = upload.isError ? 0 : doc?.page_count ? 2 : 1;
+  const step = shownUpload?.isPending ? 0 : !doc || doc.status === "processing" ? 1 : doc.status === "extracting_rules" ? 2 : 3;
+  const failed = !!shownUpload?.isError || doc?.status === "error";
+  const failedStep = shownUpload?.isError ? 0 : doc?.page_count ? 2 : 1;
 
   // Regerando as buscas: as regras continuam na tela, com um aviso.
   const generating = doc?.status === "extracting_rules" && rules.length > 0;
-  // Documento aberto pelo histórico: a situação ainda não chegou, mostra o espaço de trabalho em skeleton.
-  const opening = !!documentId && documentId === reopenedId && !doc;
+  // Documento aberto pelo endereço ou pelo histórico: a situação ainda não chegou, mostra o
+  // espaço de trabalho em skeleton.
+  const opening = !!documentId && !doc;
   const showRules = ready || generating || opening;
   const rulesLoading = opening || (ready && rulesQuery.isPending);
 
@@ -696,7 +721,7 @@ export function AssistantView() {
           <ProcessingSteps current={failed ? failedStep : step} failed={failed} />
           <p className={cn("max-w-72 text-center text-[13px]", failed ? "text-danger" : "text-foreground-muted")}>
             {failed
-              ? (doc?.status_message ? t(doc.status_message) : errorMessage(upload.error, t))
+              ? (doc?.status_message ? t(doc.status_message) : errorMessage(shownUpload?.error, t))
               : t(doc?.status_message ?? msg("Isso leva de alguns segundos a poucos minutos, conforme o tamanho do documento."))}
           </p>
           {failed && (

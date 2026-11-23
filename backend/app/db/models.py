@@ -16,6 +16,7 @@ from sqlalchemy import (
     Integer,
     Text,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
@@ -319,3 +320,48 @@ class UserSession(Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
     user: Mapped[User] = relationship(lazy="joined")
+
+
+REQUEST_SOURCES = ("app", "simulacao")
+
+
+class RequestLog(Base):
+    """Uma requisição atendida pela API, com o tempo total e o tempo gasto no banco.
+
+    O "tipo" da requisição é o par `method` + `route` (o caminho com os parâmetros, ex.:
+    `/api/v1/documents/{document_id}`); `category` agrupa as rotas pelo recurso. Gravada
+    em segundo plano pelo `app.core.request_metrics`, sem atrasar a resposta.
+    """
+
+    __tablename__ = "request_logs"
+    __table_args__ = (
+        CheckConstraint(_in("source", REQUEST_SOURCES), name="ck_request_logs_source"),
+        Index("ix_request_logs_route", "route", "method", "created_at"),
+        Index("ix_request_logs_category", "category", "created_at"),
+        Index("ix_request_logs_created_at", "created_at"),
+        Index(
+            "ix_request_logs_simulation",
+            "simulation_id",
+            postgresql_where=text("simulation_id IS NOT NULL"),
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    method: Mapped[str] = mapped_column(Text)
+    route: Mapped[str] = mapped_column(Text)
+    # Nome da função da rota (ex.: `list_documents`); nulo quando nenhuma rota casou.
+    route_name: Mapped[str | None] = mapped_column(Text)
+    category: Mapped[str] = mapped_column(Text)
+    path: Mapped[str] = mapped_column(Text)
+    status_code: Mapped[int] = mapped_column(Integer)
+    # Do início da requisição até o último byte da resposta.
+    duration_ms: Mapped[float] = mapped_column(Float)
+    # Até o envio dos cabeçalhos (em respostas em streaming, bem menor que a duração).
+    headers_ms: Mapped[float | None] = mapped_column(Float)
+    db_ms: Mapped[float] = mapped_column(Float, default=0, server_default="0")
+    db_queries: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    response_bytes: Mapped[int] = mapped_column(BigInteger, default=0, server_default="0")
+    user_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    source: Mapped[str] = mapped_column(Text, default="app", server_default="app")
+    simulation_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))

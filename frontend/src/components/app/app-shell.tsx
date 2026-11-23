@@ -9,7 +9,7 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { Skeleton } from "@/components/ui/skeleton";
 import { errorMessage } from "@/lib/api";
 import { useCurrentUser } from "@/lib/auth";
-import { useT } from "@/lib/i18n";
+import { stripLocale, useLocalePath, useT } from "@/lib/i18n";
 import { useHydrated } from "@/lib/use-hydrated";
 import { DESKTOP_QUERY, useMediaQuery } from "@/lib/use-media-query";
 import { cn } from "@/lib/utils";
@@ -39,10 +39,12 @@ export function AppShell({ children }: { children: ReactNode }) {
   const [mobileOpen, setMobileOpen] = useState(false);
   const isDesktop = useMediaQuery(DESKTOP_QUERY);
   const t = useT();
+  const href = useLocalePath();
+  const loginPath = `${href("/login")}?next=${encodeURIComponent(stripLocale(pathname))}`;
 
   useEffect(() => {
-    if (!isPending && user === null) router.replace(`/login?next=${encodeURIComponent(pathname)}`);
-  }, [isPending, user, pathname, router]);
+    if (!isPending && user === null) router.replace(loginPath);
+  }, [isPending, user, loginPath, router]);
 
   useEffect(() => {
     if (!mobileOpen) return;
@@ -113,7 +115,7 @@ export function AppShell({ children }: { children: ReactNode }) {
 }
 
 /** Mesma estrutura da tela logada (menu, cabeçalho e conteúdo) enquanto a sessão é conferida. */
-function ShellSkeleton({ collapsed }: { collapsed: boolean }) {
+export function ShellSkeleton({ collapsed }: { collapsed: boolean }) {
   const t = useT();
   return (
     <div role="status" aria-busy className="flex h-dvh overflow-hidden">

@@ -3,11 +3,13 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 
 from app.api.v1.router import api_router
 from app.core.config import get_settings
 from app.core.errors import register_error_handlers
 from app.core.logging import setup_logging
+from app.core.request_metrics import RequestMetricsMiddleware, instrument_engine, writer
 from app.db.session import engine
 from app.processing.pipeline.ingest import recover_interrupted
 
@@ -23,6 +25,7 @@ async def lifespan(_: FastAPI):
         # Sem banco na subida, a API ainda responde (o /health mostra o problema).
         logger.warning("recover_interrupted_failed", exc_info=True)
     yield
+    await writer.stop()
     await engine.dispose()
 
 
@@ -41,6 +44,17 @@ def create_app() -> FastAPI:
         ),
         lifespan=lifespan,
     )
+    # Mede cada requisição (ver app.core.request_metrics). Fica por dentro do CORS, então
+    # as requisições de preflight (OPTIONS) não entram nas medições.
+    instrument_engine(engine)
+    app.add_middleware(RequestMetricsMiddleware)
+    if settings.gzip_min_bytes:
+        # PDFs já são comprimidos e o SSE do chat precisa sair pedaço a pedaço.
+        app.add_middleware(
+            GZipMiddleware,
+            minimum_size=settings.gzip_min_bytes,
+            exclude_content_types=("text/event-stream", "application/pdf"),
+        )
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,
@@ -49,6 +63,7 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
         expose_headers=["Content-Disposition"],
+        max_age=settings.cors_max_age_seconds,
     )
     register_error_handlers(app)
     app.include_router(api_router)

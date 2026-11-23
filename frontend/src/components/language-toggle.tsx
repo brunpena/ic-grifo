@@ -1,7 +1,6 @@
 "use client";
 
-import { useEffect } from "react";
-import { htmlLang, type Locale, LOCALES, setLocale, useLocale, useT } from "@/lib/i18n";
+import { htmlLang, type Locale, LOCALES, useLocale, useSetLocale, useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
 const NAMES: Record<Locale, string> = { pt: "Português", en: "English" };
@@ -13,11 +12,7 @@ const NAMES: Record<Locale, string> = { pt: "Português", en: "English" };
 export function LanguageToggle({ className }: { className?: string }) {
   const locale = useLocale();
   const t = useT();
-
-  // Mantém o `lang` do <html> (leitores de tela, hifenização) no idioma exibido.
-  useEffect(() => {
-    document.documentElement.lang = htmlLang(locale);
-  }, [locale]);
+  const setLocale = useSetLocale();
 
   return (
     <div

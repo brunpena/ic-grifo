@@ -2,6 +2,7 @@
 
 import { type QueryClient, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError, unwrap, type User } from "@/lib/api";
+import { stripLocale } from "@/lib/i18n";
 
 export const ME_QUERY_KEY = ["auth", "me"] as const;
 
@@ -118,9 +119,12 @@ export function useChangePassword() {
   });
 }
 
-/** Só aceita caminhos internos, para o `?next=` do login não virar um redirecionamento aberto. */
+/**
+ * Só aceita caminhos internos, para o `?next=` do login não virar um redirecionamento
+ * aberto. Devolve o caminho sem idioma: quem navega completa com o idioma atual.
+ */
 export function safeNextPath(value: string | null, fallback = "/assistente") {
-  return value && value.startsWith("/") && !value.startsWith("//") ? value : fallback;
+  return value && value.startsWith("/") && !value.startsWith("//") && !value.startsWith("/\\") ? stripLocale(value) : fallback;
 }
 
 export function firstName(name: string) {

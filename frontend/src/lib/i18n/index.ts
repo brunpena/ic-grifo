@@ -1,5 +1,15 @@
-import { useSyncExternalStore } from "react";
-import { en } from "./en";
+import { useRouter } from "next/navigation";
+import { useContext } from "react";
+import {
+  DEFAULT_LOCALE,
+  type Locale,
+  LOCALE_COOKIE,
+  localeOfPath,
+  localizePath,
+  translator,
+  type Translate,
+} from "./core";
+import { LocaleContext } from "./locale-provider";
 
 /**
  * Tradução da interface (português e inglês), no estilo gettext: o próprio texto em
@@ -9,94 +19,30 @@ import { en } from "./en";
  *
  * Variáveis entram com chaves: `t("Olá, {name}", { name })`. A mesma chave precisa
  * existir, com as mesmas variáveis, em `en.ts`.
+ *
+ * O idioma faz parte da URL (`/pt/assistente`, `/en/assistente`): é o segmento `[lang]`
+ * de `src/app/[lang]`. Assim o servidor já renderiza no idioma certo, cada idioma tem o
+ * seu link, e trocar de idioma é só navegar para o mesmo caminho com outro prefixo.
+ * Links sem prefixo são redirecionados pelo `src/proxy.ts` (cookie ou navegador).
  */
 
-export type Locale = "pt" | "en";
-export const LOCALES: Locale[] = ["pt", "en"];
+export {
+  DEFAULT_LOCALE,
+  htmlLang,
+  intlLocale,
+  isLocale,
+  LOCALES,
+  localeOfPath,
+  localizePath,
+  msg,
+  stripLocale,
+  translator,
+} from "./core";
+export type { Locale, Translate } from "./core";
 
-const STORAGE_KEY = "grifo:locale";
-const listeners = new Set<() => void>();
-let current: Locale | null = null;
-
-function detect(): Locale {
-  try {
-    const stored = localStorage.getItem(STORAGE_KEY);
-    if (stored === "pt" || stored === "en") return stored;
-  } catch {
-    // Sem localStorage: segue o idioma do navegador.
-  }
-  return navigator.language?.toLowerCase().startsWith("pt") ? "pt" : "en";
-}
-
-function getSnapshot(): Locale {
-  current ??= detect();
-  return current;
-}
-
-function subscribe(onChange: () => void) {
-  listeners.add(onChange);
-  // Outra aba trocou o idioma.
-  const onStorage = (event: StorageEvent) => {
-    if (event.key !== STORAGE_KEY) return;
-    current = detect();
-    onChange();
-  };
-  window.addEventListener("storage", onStorage);
-  return () => {
-    listeners.delete(onChange);
-    window.removeEventListener("storage", onStorage);
-  };
-}
-
-export function setLocale(locale: Locale) {
-  current = locale;
-  try {
-    localStorage.setItem(STORAGE_KEY, locale);
-  } catch {
-    // Sem localStorage: vale até recarregar a página.
-  }
-  document.documentElement.lang = htmlLang(locale);
-  for (const listener of listeners) listener();
-}
-
-/**
- * Idioma atual. No servidor e durante a hidratação vale português (o HTML pré-renderizado
- * está em português); o idioma salvo entra logo em seguida, sem divergência de HTML.
- */
+/** Idioma da rota atual (o segmento `[lang]` da URL, entregue pelo layout raiz). */
 export function useLocale(): Locale {
-  return useSyncExternalStore(subscribe, getSnapshot, () => "pt");
-}
-
-export const htmlLang = (locale: Locale) => (locale === "en" ? "en" : "pt-BR");
-/** Locale do Intl (números e datas). */
-export const intlLocale = (locale: Locale) => (locale === "en" ? "en-US" : "pt-BR");
-
-type Vars = Record<string, string | number>;
-
-export type Translate = {
-  (text: string, vars?: Vars): string;
-  /** Escolhe singular/plural pelo número `n` (também disponível como `{n}`). */
-  plural: (n: number, one: string, other: string, vars?: Vars) => string;
-  locale: Locale;
-  /** Formata um número no padrão do idioma. */
-  number: (n: number, options?: Intl.NumberFormatOptions) => string;
-};
-
-const fill = (text: string, vars?: Vars) =>
-  vars ? text.replace(/\{(\w+)\}/g, (match, key: string) => (key in vars ? String(vars[key]) : match)) : text;
-
-const cache = new Map<Locale, Translate>();
-
-export function translator(locale: Locale): Translate {
-  const cached = cache.get(locale);
-  if (cached) return cached;
-  const intl = intlLocale(locale);
-  const t = ((text: string, vars?: Vars) => fill(locale === "en" ? (en[text] ?? text) : text, vars)) as Translate;
-  t.plural = (n, one, other, vars) => t(n === 1 ? one : other, { n: t.number(n), ...vars });
-  t.locale = locale;
-  t.number = (n, options) => n.toLocaleString(intl, options);
-  cache.set(locale, t);
-  return t;
+  return useContext(LocaleContext);
 }
 
 /** Função de tradução do idioma atual; o componente renderiza de novo ao trocar o idioma. */
@@ -104,17 +50,48 @@ export function useT(): Translate {
   return translator(useLocale());
 }
 
+/** Guarda a escolha para o proxy usar em links sem idioma (ex.: `/assistente`). */
+export function rememberLocale(locale: Locale) {
+  document.cookie = `${LOCALE_COOKIE}=${locale}; path=/; max-age=31536000; samesite=lax`;
+}
+
 /**
- * Marca um texto de uma constante fora dos componentes (rótulos, menus) para tradução.
- * Não traduz nada: o componente traduz na hora de exibir, com `t(valor)`.
+ * Troca o idioma: vai para o mesmo caminho (e query) com o outro prefixo. Usa `replace`
+ * para o botão Voltar do navegador não ficar alternando entre idiomas.
  */
-export const msg = (text: string) => text;
+export function useSetLocale() {
+  const router = useRouter();
+  return (locale: Locale) => {
+    rememberLocale(locale);
+    // Lido no clique (não com `usePathname`), para não tornar dinâmica a página inteira.
+    const { pathname } = window.location;
+    if (localeOfPath(pathname) === locale) return;
+    switchingUntil = Date.now() + 5000;
+    router.replace(localizePath(locale, pathname) + window.location.search, { scroll: false });
+  };
+}
+
+let switchingUntil = 0;
+
+/**
+ * Verdadeiro logo depois de trocar o idioma. Mudar o prefixo da URL troca o layout raiz,
+ * e o Next recarrega a página: quem limpa recursos ao fechar a aba (`pagehide`) pode
+ * ignorar essa recarga, já que a mesma tela volta no outro idioma.
+ */
+export const isSwitchingLocale = () => Date.now() < switchingUntil;
+
+/** Monta caminhos internos no idioma atual: `href("/regras")` → `/en/regras`. */
+export function useLocalePath() {
+  const locale = useLocale();
+  return (path: string) => localizePath(locale, path);
+}
 
 /**
  * Tradução no idioma atual para código fora de componentes (ex.: mensagens de erro).
- * Não faz o componente renderizar de novo ao trocar o idioma; quem exibe o texto
- * normalmente já usa `useT()` e renderiza de novo.
+ * Lê o idioma da URL; não faz o componente renderizar de novo ao trocar o idioma (quem
+ * exibe o texto normalmente já usa `useT()`).
  */
 export function currentTranslator(): Translate {
-  return translator(typeof window === "undefined" ? "pt" : getSnapshot());
+  if (typeof window === "undefined") return translator(DEFAULT_LOCALE);
+  return translator(localeOfPath(window.location.pathname) ?? DEFAULT_LOCALE);
 }

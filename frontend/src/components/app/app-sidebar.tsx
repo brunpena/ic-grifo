@@ -7,9 +7,9 @@ import { BrandLogo } from "@/components/brand-logo";
 import { Avatar } from "@/components/ui/avatar";
 import { Tooltip } from "@/components/ui/tooltip";
 import type { User } from "@/lib/api";
-import { useT } from "@/lib/i18n";
+import { useLocalePath, useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
-import { MAIN_NAV, type NavItem, SETTINGS_NAV } from "./nav";
+import { MAIN_NAV, type NavItem, navItemFor, SETTINGS_NAV } from "./nav";
 import { useSignOut } from "./use-sign-out";
 
 type AppSidebarProps = {
@@ -24,7 +24,8 @@ export function AppSidebar({ user, collapsed, onNavigate, className }: AppSideba
   const pathname = usePathname();
   const { signOut, pending } = useSignOut();
   const t = useT();
-  const isActive = (item: NavItem) => pathname === item.href || pathname.startsWith(`${item.href}/`);
+  const href = useLocalePath();
+  const isActive = (item: NavItem) => navItemFor(pathname) === item;
 
   return (
     <aside
@@ -36,7 +37,7 @@ export function AppSidebar({ user, collapsed, onNavigate, className }: AppSideba
       )}
     >
       <Link
-        href="/assistente"
+        href={href("/assistente")}
         onClick={onNavigate}
         className={cn("flex h-14 shrink-0 items-center gap-2.5 rounded-md px-3.5", collapsed && "justify-center px-0")}
       >
@@ -54,7 +55,7 @@ export function AppSidebar({ user, collapsed, onNavigate, className }: AppSideba
         <SidebarLink item={SETTINGS_NAV} active={isActive(SETTINGS_NAV)} collapsed={collapsed} onNavigate={onNavigate} />
         <SidebarAction collapsed={collapsed} label={t("Sair")} icon={LogOut} onClick={signOut} disabled={pending} />
         <Link
-          href="/configuracoes"
+          href={href("/configuracoes")}
           onClick={onNavigate}
           className={cn(
             "mt-1 flex items-center gap-2.5 rounded-md p-1.5 transition-colors duration-150 ease-out hover:bg-surface-hover",
@@ -91,11 +92,12 @@ function SidebarLink({
   onNavigate?: () => void;
 }) {
   const t = useT();
+  const href = useLocalePath();
   const Icon = item.icon;
   const label = t(item.label);
   const link = (
     <Link
-      href={item.href}
+      href={href(item.href)}
       onClick={onNavigate}
       aria-current={active ? "page" : undefined}
       className={cn(ITEM, collapsed && "w-9 justify-center px-0", active && "bg-accent-soft text-foreground hover:bg-accent-soft")}

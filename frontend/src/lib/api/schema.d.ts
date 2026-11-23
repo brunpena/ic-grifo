@@ -492,6 +492,95 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/performance/summary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Tempo por tipo de requisição (método + rota) e por categoria */
+        get: operations["summary_api_v1_performance_summary_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/performance/requests": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Requisições individuais, das mais lentas ou das mais recentes */
+        get: operations["list_requests_api_v1_performance_requests_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/performance/timeline": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Evolução do tempo das requisições ao longo da janela */
+        get: operations["timeline_api_v1_performance_timeline_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/performance/operations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Operações que a simulação sabe executar */
+        get: operations["operations_api_v1_performance_operations_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/performance/simulations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Simulações já executadas, da mais recente à mais antiga */
+        get: operations["list_simulations_api_v1_performance_simulations_get"];
+        put?: never;
+        /**
+         * Executa uma operação várias vezes, com concorrência, e mede cada chamada
+         * @description As chamadas passam por toda a aplicação (middlewares, autenticação com a sua sessão, banco), dentro do próprio processo: não incluem a rede entre o navegador e a API. Ficam gravadas em `request_logs` com `source = simulacao`.
+         */
+        post: operations["run_simulation_api_v1_performance_simulations_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -567,6 +656,27 @@ export interface components {
              * @description Análise do documento
              */
             analysis_id?: string | null;
+        };
+        /** CategoryStats */
+        CategoryStats: {
+            /** Count */
+            count: number;
+            /** Avg Ms */
+            avg_ms: number | null;
+            /** P50 Ms */
+            p50_ms: number | null;
+            /** P95 Ms */
+            p95_ms: number | null;
+            /** P99 Ms */
+            p99_ms: number | null;
+            /** Max Ms */
+            max_ms: number | null;
+            /** Category */
+            category: string;
+            /** Server Errors */
+            server_errors: number;
+            /** Total Ms */
+            total_ms: number;
         };
         /** CitedRule */
         CitedRule: {
@@ -870,6 +980,21 @@ export interface components {
             /** Height */
             height: number;
         };
+        /** LatencyStats */
+        LatencyStats: {
+            /** Count */
+            count: number;
+            /** Avg Ms */
+            avg_ms: number | null;
+            /** P50 Ms */
+            p50_ms: number | null;
+            /** P95 Ms */
+            p95_ms: number | null;
+            /** P99 Ms */
+            p99_ms: number | null;
+            /** Max Ms */
+            max_ms: number | null;
+        };
         /** LoginIn */
         LoginIn: {
             /** Email */
@@ -913,6 +1038,23 @@ export interface components {
             current_password: string;
             /** New Password */
             new_password: string;
+        };
+        /** PerformanceSummaryOut */
+        PerformanceSummaryOut: {
+            /**
+             * Since
+             * Format: date-time
+             */
+            since: string;
+            totals: components["schemas"]["LatencyStats"];
+            /** Server Errors */
+            server_errors: number;
+            /** Avg Db Ms */
+            avg_db_ms: number | null;
+            /** Categories */
+            categories: components["schemas"]["CategoryStats"][];
+            /** Routes */
+            routes: components["schemas"]["RouteStats"][];
         };
         /**
          * ProfileUpdateIn
@@ -968,6 +1110,97 @@ export interface components {
             email: string;
             /** Password */
             password: string;
+        };
+        /** RequestLogOut */
+        RequestLogOut: {
+            /** Id */
+            id: number;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Method */
+            method: string;
+            /** Route */
+            route: string;
+            /** Category */
+            category: string;
+            /** Path */
+            path: string;
+            /** Status Code */
+            status_code: number;
+            /** Duration Ms */
+            duration_ms: number;
+            /** Headers Ms */
+            headers_ms: number | null;
+            /** Db Ms */
+            db_ms: number;
+            /** Db Queries */
+            db_queries: number;
+            /** Response Bytes */
+            response_bytes: number;
+            /** Source */
+            source: string;
+            /** Simulation Id */
+            simulation_id: string | null;
+        };
+        /**
+         * RouteStats
+         * @description Um tipo de requisição: método + rota.
+         */
+        RouteStats: {
+            /** Count */
+            count: number;
+            /** Avg Ms */
+            avg_ms: number | null;
+            /** P50 Ms */
+            p50_ms: number | null;
+            /** P95 Ms */
+            p95_ms: number | null;
+            /** P99 Ms */
+            p99_ms: number | null;
+            /** Max Ms */
+            max_ms: number | null;
+            /** Method */
+            method: string;
+            /** Route */
+            route: string;
+            /** Route Name */
+            route_name: string | null;
+            /**
+             * Summary
+             * @description Resumo da rota no OpenAPI, quando houver.
+             */
+            summary: string | null;
+            /** Category */
+            category: string;
+            /**
+             * Server Errors
+             * @description Respostas 5xx.
+             */
+            server_errors: number;
+            /**
+             * Client Errors
+             * @description Respostas 4xx.
+             */
+            client_errors: number;
+            /** Avg Db Ms */
+            avg_db_ms: number | null;
+            /** Avg Db Queries */
+            avg_db_queries: number | null;
+            /** Avg Response Bytes */
+            avg_response_bytes: number | null;
+            /**
+             * Total Ms
+             * @description Soma das durações: onde o sistema passa mais tempo.
+             */
+            total_ms: number;
+            /**
+             * Last At
+             * Format: date-time
+             */
+            last_at: string;
         };
         /** RuleCreateIn */
         RuleCreateIn: {
@@ -1136,6 +1369,140 @@ export interface components {
             /** Datasets */
             datasets?: components["schemas"]["DatasetValidation"][];
         };
+        /** ServerStats */
+        ServerStats: {
+            /** Count */
+            count: number;
+            /** Avg Ms */
+            avg_ms: number | null;
+            /** P50 Ms */
+            p50_ms: number | null;
+            /** P95 Ms */
+            p95_ms: number | null;
+            /** P99 Ms */
+            p99_ms: number | null;
+            /** Max Ms */
+            max_ms: number | null;
+            /** Avg Db Ms */
+            avg_db_ms: number | null;
+            /** Avg Db Queries */
+            avg_db_queries: number | null;
+        };
+        /** SimulationIn */
+        SimulationIn: {
+            /**
+             * Operation
+             * @description Chave de `/performance/operations` ou `custom`.
+             */
+            operation: string;
+            params?: components["schemas"]["SimulationParams"];
+            /**
+             * Path
+             * @description Só para `custom`: caminho GET dentro de /api/v1 (pode ter query string).
+             */
+            path?: string | null;
+            /**
+             * Iterations
+             * @default 20
+             */
+            iterations: number;
+            /**
+             * Concurrency
+             * @default 1
+             */
+            concurrency: number;
+        };
+        /** SimulationOperationOut */
+        SimulationOperationOut: {
+            /** Key */
+            key: string;
+            /** Method */
+            method: string;
+            /** Path */
+            path: string;
+            /** Param */
+            param: ("analysis" | "document" | "rule") | null;
+        };
+        /** SimulationOut */
+        SimulationOut: {
+            /**
+             * Simulation Id
+             * Format: uuid
+             */
+            simulation_id: string;
+            /** Operation */
+            operation: string;
+            /** Method */
+            method: string;
+            /** Path */
+            path: string;
+            /** Iterations */
+            iterations: number;
+            /** Concurrency */
+            concurrency: number;
+            /**
+             * Wall Ms
+             * @description Tempo total da simulação.
+             */
+            wall_ms: number;
+            /**
+             * Throughput Rps
+             * @description Requisições concluídas por segundo.
+             */
+            throughput_rps: number;
+            /** @description Tempos vistos por quem chamou (inclui a fila). */
+            client: components["schemas"]["LatencyStats"];
+            /** @description Tempos gravados pelo servidor em request_logs (nulo com a medição desligada). */
+            server: components["schemas"]["ServerStats"] | null;
+            /** Status Counts */
+            status_counts: {
+                [key: string]: number;
+            };
+            /**
+             * Durations Ms
+             * @description Duração de cada chamada, na ordem de término.
+             */
+            durations_ms: number[];
+        };
+        /** SimulationParams */
+        SimulationParams: {
+            /** Analysis Id */
+            analysis_id?: string | null;
+            /** Document Id */
+            document_id?: string | null;
+            /** Rule Id */
+            rule_id?: string | null;
+        };
+        /**
+         * SimulationRunOut
+         * @description Uma simulação já executada, montada a partir de `request_logs`.
+         */
+        SimulationRunOut: {
+            /**
+             * Simulation Id
+             * Format: uuid
+             */
+            simulation_id: string;
+            /**
+             * Started At
+             * Format: date-time
+             */
+            started_at: string;
+            /** Method */
+            method: string;
+            /** Route */
+            route: string;
+            /** Count */
+            count: number;
+            /** Avg Ms */
+            avg_ms: number;
+            /** P95 Ms */
+            p95_ms: number;
+            /** Avg Db Ms */
+            avg_db_ms: number;
+            /** Server Errors */
+            server_errors: number;
+        };
         /**
          * StructuredQuery
          * @description Sem condições, a busca devolve todos os registros da base.
@@ -1187,6 +1554,29 @@ export interface components {
              * @description Texto do documento.
              */
             content: string;
+        };
+        /** TimelineOut */
+        TimelineOut: {
+            /** Bucket Minutes */
+            bucket_minutes: number;
+            /** Points */
+            points: components["schemas"]["TimelinePoint"][];
+        };
+        /** TimelinePoint */
+        TimelinePoint: {
+            /**
+             * At
+             * Format: date-time
+             */
+            at: string;
+            /** Count */
+            count: number;
+            /** Avg Ms */
+            avg_ms: number;
+            /** P95 Ms */
+            p95_ms: number;
+            /** Server Errors */
+            server_errors: number;
         };
         /** UrlDocumentIn */
         UrlDocumentIn: {
@@ -2770,6 +3160,209 @@ export interface operations {
             };
             /** @description Conflict */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    summary_api_v1_performance_summary_get: {
+        parameters: {
+            query?: {
+                /** @description Janela, em horas. */
+                since_hours?: number;
+                /** @description Uso real, simulações ou ambos. */
+                source?: "app" | "simulacao" | "all";
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PerformanceSummaryOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_requests_api_v1_performance_requests_get: {
+        parameters: {
+            query?: {
+                /** @description Janela, em horas. */
+                since_hours?: number;
+                /** @description Uso real, simulações ou ambos. */
+                source?: "app" | "simulacao" | "all";
+                method?: string | null;
+                route?: string | null;
+                category?: string | null;
+                simulation_id?: string | null;
+                order?: "slowest" | "recent";
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RequestLogOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    timeline_api_v1_performance_timeline_get: {
+        parameters: {
+            query?: {
+                /** @description Janela, em horas. */
+                since_hours?: number;
+                /** @description Uso real, simulações ou ambos. */
+                source?: "app" | "simulacao" | "all";
+                method?: string | null;
+                route?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TimelineOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    operations_api_v1_performance_operations_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SimulationOperationOut"][];
+                };
+            };
+        };
+    };
+    list_simulations_api_v1_performance_simulations_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SimulationRunOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    run_simulation_api_v1_performance_simulations_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SimulationIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SimulationOut"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
                 headers: {
                     [name: string]: unknown;
                 };

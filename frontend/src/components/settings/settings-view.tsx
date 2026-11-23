@@ -13,7 +13,7 @@ import { PasswordInput } from "@/components/ui/password-input";
 import { useToast } from "@/components/ui/toast";
 import { errorMessage, type User } from "@/lib/api";
 import { useChangePassword, useCurrentUser, useUpdateProfile } from "@/lib/auth";
-import { intlLocale, type Locale, LOCALES, msg, setLocale, useLocale, useT } from "@/lib/i18n";
+import { intlLocale, type Locale, LOCALES, msg, useLocale, useSetLocale, useT } from "@/lib/i18n";
 import { applyTheme, clearStoredTheme, readStoredTheme, storeTheme, systemTheme } from "@/lib/theme";
 import { cn } from "@/lib/utils";
 
@@ -269,6 +269,7 @@ const LANGUAGE_OPTIONS: Record<Locale, string> = { pt: "Português (Brasil)", en
 /** Mesma escolha das bandeiras do cabeçalho, com o nome de cada idioma por extenso. */
 function LanguageSection() {
   const locale = useLocale();
+  const setLocale = useSetLocale();
   const t = useT();
   const name = useId();
   return (

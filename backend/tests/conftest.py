@@ -29,6 +29,8 @@ os.environ["GEMINI_API_KEY_2"] = ""
 os.environ["GEMINI_API_KEY_3"] = ""
 # O modo de demonstração do .env não pode trocar as respostas que os testes simulam.
 os.environ["LLM_MOCK"] = "false"
+# Os testes de desempenho ligam a medição só onde precisam (ver test_performance.py).
+os.environ["REQUEST_METRICS_ENABLED"] = "false"
 os.environ["CORS_ORIGINS"] = "http://localhost:3000,https://front.exemplo.com"
 
 import httpx  # noqa: E402

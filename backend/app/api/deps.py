@@ -17,6 +17,7 @@ from sqlalchemy.orm import make_transient_to_detached
 
 from app.core.config import get_settings
 from app.core.errors import UnauthorizedError
+from app.core.request_metrics import set_user
 from app.core.security import hash_token
 from app.db.models import User, UserSession
 from app.db.session import get_session
@@ -91,6 +92,7 @@ async def get_optional_auth(request: Request, db: SessionDep) -> AuthContext | N
         return None
     token_hash = hash_token(token)
     if settings.auth_cache_seconds and (cached := await _from_cache(db, token_hash)):
+        set_user(cached.user.id)
         return cached
     row = await db.scalar(
         select(UserSession).where(
@@ -108,6 +110,7 @@ async def get_optional_auth(request: Request, db: SessionDep) -> AuthContext | N
             session_expires_at=row.expires_at,
             cached_until=time.monotonic() + settings.auth_cache_seconds,
         )
+    set_user(row.user_id)
     return AuthContext(user=row.user, session=row)
 
 
