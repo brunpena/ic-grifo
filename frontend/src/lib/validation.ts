@@ -3,15 +3,17 @@
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { analysisKeys } from "@/lib/analyses";
 import { api, type Schemas, unwrap } from "@/lib/api";
+import { msg } from "@/lib/i18n";
 
 export type RuleValidation = Schemas["RuleValidationOut"];
 export type ValidationStatus = RuleValidation["status"];
 export type RecordVerdict = Schemas["ValidationRecord"]["verdict"];
 
+/** Em português; traduza ao exibir com `t(...)`. */
 export const VALIDATION_LABELS: Record<ValidationStatus, string> = {
-  conforme: "Conforme", violacao: "Violação", inconclusiva: "Inconclusiva",
-  nao_aplicavel: "Não se aplica", erro: "Erro na verificação",
-  desatualizada: "Validar novamente", ignorada: "Desconsiderada",
+  conforme: msg("Conforme"), violacao: msg("Violação"), inconclusiva: msg("Inconclusiva"),
+  nao_aplicavel: msg("Não se aplica"), erro: msg("Erro na verificação"),
+  desatualizada: msg("Validar novamente"), ignorada: msg("Desconsiderada"),
 };
 
 export function useValidateDocument(documentId: string) {
@@ -39,6 +41,7 @@ export function useValidationRecords(ruleId: string, datasetId: string | null, o
     })),
     enabled: !!datasetId,
     placeholderData: keepPreviousData,
-    staleTime: 0,
+    // Invalidada quando a validação roda de novo ou o documento volta a ficar pronto.
+    staleTime: 5 * 60_000,
   });
 }

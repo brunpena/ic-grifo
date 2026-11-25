@@ -2,6 +2,7 @@
 
 import { ArrowUp, Search } from "lucide-react";
 import { IconButton } from "@/components/ui/icon-button";
+import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
 type QuestionBarProps = {
@@ -19,9 +20,10 @@ export function QuestionBar({
   onChange,
   onSubmit,
   loading,
-  placeholder = "Pergunte sobre as regras validadas",
+  placeholder,
   className,
 }: QuestionBarProps) {
+  const t = useT();
   const canSend = value.trim().length > 0 && !loading;
   return (
     <form
@@ -41,14 +43,14 @@ export function QuestionBar({
         type="text"
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        placeholder={placeholder}
-        aria-label="Pergunta sobre as regras"
+        placeholder={placeholder ?? t("Pergunte sobre as regras validadas")}
+        aria-label={t("Pergunta sobre as regras")}
         className="h-full min-w-0 flex-1 bg-transparent text-sm text-foreground outline-none placeholder:text-foreground-subtle"
       />
       <IconButton
         type="submit"
         variant="primary"
-        aria-label="Enviar pergunta"
+        aria-label={t("Enviar pergunta")}
         icon={<ArrowUp size={16} strokeWidth={1.75} aria-hidden />}
         loading={loading}
         disabled={!canSend && !loading}

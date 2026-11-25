@@ -28,6 +28,7 @@ das rotas em `backend/app/api/v1`; não incluem as rotas internas de documentaç
 | Documentos, regras e chat | [documents.ts](../frontend/src/lib/documents.ts) | [documents.py](../backend/app/api/v1/documents.py) |
 | Buscas e registros | [queries.ts](../frontend/src/lib/queries.ts) | [documents.py](../backend/app/api/v1/documents.py) |
 | Cumprimento e evidência | [validation.ts](../frontend/src/lib/validation.ts) | [documents.py](../backend/app/api/v1/documents.py) |
+| Desempenho e simulações | [performance.ts](../frontend/src/lib/performance.ts) | [performance.py](../backend/app/api/v1/performance.py) |
 
 O transporte tipado fica em [client.ts](../frontend/src/lib/api/client.ts).
 Uploads de CSV usam XMLHttpRequest para progresso; o chat usa fetch para ler SSE.
@@ -88,6 +89,19 @@ Uploads de CSV usam XMLHttpRequest para progresso; o chat usa fetch para ler SSE
 | Método e caminho | Função | Sucesso | Acesso | Efeito |
 | --- | --- | --- | --- | --- |
 | `GET /api/v1/health` | [health](<../backend/app/api/v1/health.py>) | 200 | Público | Verifica se a API e o banco respondem |
+
+## Desempenho
+
+Medições de todo o sistema, gravadas em `request_logs`; liberadas para qualquer conta logada. Estas rotas não entram nas medições. `source` filtra uso real (`app`), simulações (`simulacao`) ou `all`.
+
+| Método e caminho | Função | Sucesso | Acesso | Efeito |
+| --- | --- | --- | --- | --- |
+| `GET /api/v1/performance/summary` | [summary](<../backend/app/api/v1/performance.py>) | 200 | Logado | Totais, categorias e cada método + rota com média, p50/p95/p99, banco, SQL, erros e tempo total |
+| `GET /api/v1/performance/requests` | [list_requests](<../backend/app/api/v1/performance.py>) | 200 | Logado | Chamadas individuais, das mais lentas ou mais recentes, filtráveis por rota, categoria ou simulação |
+| `GET /api/v1/performance/timeline` | [timeline](<../backend/app/api/v1/performance.py>) | 200 | Logado | Média e p95 por intervalo (1 min a 1 dia, conforme a janela) |
+| `GET /api/v1/performance/operations` | [operations](<../backend/app/api/v1/performance.py>) | 200 | Logado | Leituras que a simulação sabe montar |
+| `POST /api/v1/performance/simulations` | [run_simulation](<../backend/app/api/v1/performance.py>) | 200 | Logado | Repete uma leitura (até 500 vezes, até 20 simultâneas) e devolve os tempos vistos por quem chamou e pelo servidor |
+| `GET /api/v1/performance/simulations` | [list_simulations](<../backend/app/api/v1/performance.py>) | 200 | Logado | Simulações anteriores, agrupadas por `simulation_id` |
 
 
 ## Entradas e saídas dos fluxos principais

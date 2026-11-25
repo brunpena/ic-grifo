@@ -17,6 +17,13 @@ class Settings(BaseSettings):
     cors_origins: Annotated[list[str], NoDecode] = Field(
         default_factory=lambda: ["http://localhost:3000"]
     )
+    # Segundos em que o navegador reaproveita a resposta do preflight (OPTIONS) do CORS.
+    # Sem isso, cada POST/PATCH/DELETE com JSON faz uma ida e volta a mais à API. O Chrome
+    # limita a 2 h e o Firefox a 24 h.
+    cors_max_age_seconds: int = Field(default=7200, ge=0)
+    # Respostas JSON a partir deste tamanho saem comprimidas (gzip); 0 desliga. Listas de
+    # regras e registros encolhem bastante; PDFs e streams (SSE) nunca são comprimidos.
+    gzip_min_bytes: int = Field(default=1024, ge=0)
 
     # Sessão de login (cookie httpOnly com um token aleatório)
     session_cookie_name: str = "icgrifo_session"
@@ -44,6 +51,18 @@ class Settings(BaseSettings):
     local_storage_dir: Path = Path("./data/storage")
     # Cache analítico embarcado, independente do backend de armazenamento dos uploads.
     duckdb_cache_dir: Path = Path("./data/duckdb")
+    # Cópia local dos PDFs guardados no Supabase: abrir um documento não baixa o arquivo
+    # do Storage de novo. Os mais antigos saem quando a pasta passa do limite. 0 = desliga.
+    pdf_cache_dir: Path = Path("./data/cache/pdfs")
+    pdf_cache_max_mb: int = Field(default=500, ge=0)
+    # Segundos em que uma sessão já validada é reaproveitada sem consultar o banco.
+    # Logout e troca de senha limpam o cache neste processo; 0 = sempre consulta.
+    auth_cache_seconds: float = Field(default=60, ge=0)
+
+    # Desempenho: grava o tempo de cada requisição em `request_logs` (página de desempenho).
+    request_metrics_enabled: bool = True
+    # Dias que cada registro fica guardado; 0 = guarda para sempre.
+    request_log_retention_days: int = Field(default=30, ge=0)
 
     # Limites
     max_upload_mb: int = 50
@@ -72,7 +91,7 @@ class Settings(BaseSettings):
     # Cada reforço gasta uma requisição a mais da cota.
     llm_hedge_seconds: float = 0
     # Demonstração: respostas prontas da IA (trechos grifados, colunas e validação) sem chamar o
-    # Gemini. Ver app/services/llm_mock.py.
+    # Gemini. Ver app/processing/ai/llm_mock.py.
     llm_mock: bool = False
 
     # Embeddings

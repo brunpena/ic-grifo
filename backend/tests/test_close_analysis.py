@@ -13,7 +13,9 @@ from app.core.config import get_settings
 from app.db.models import Document
 from app.db.session import get_session
 from app.main import app
-from app.services import datasets, ingest, query_engine, rule_validation
+from app.processing.datasets import datasets, query_engine
+from app.processing.pipeline import ingest
+from app.processing.rules import rule_validation
 from tests.test_processing_performance import validation_data
 
 

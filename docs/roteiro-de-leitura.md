@@ -24,7 +24,7 @@ Abra, nesta ordem:
 2. [dev-backend.mjs](../scripts/dev-backend.mjs): siga a decisão sobre Docker, migrations e watchfiles.
 3. [main.py](../backend/app/main.py): leia `create_app` e `lifespan`.
 4. [router.py](../backend/app/api/v1/router.py): veja o prefixo e os grupos de endpoints.
-5. [layout.tsx](../frontend/src/app/layout.tsx) e [providers.tsx](../frontend/src/app/providers.tsx):
+5. [layout.tsx](<../frontend/src/app/[lang]/layout.tsx>) e [providers.tsx](<../frontend/src/app/[lang]/providers.tsx>):
    localize estilos, tema, TanStack Query e notificações.
 6. [app-shell.tsx](../frontend/src/components/app/app-shell.tsx): encontre a consulta da sessão e a navegação.
 
@@ -36,11 +36,11 @@ execução fazem a migration, enquanto `create_app` monta a aplicação.
 Percorra [dataset-uploader.tsx](../frontend/src/components/datasets/dataset-uploader.tsx)
 → [analyses.ts](../frontend/src/lib/analyses.ts)
 → [analyses.py](../backend/app/api/v1/analyses.py), função `upload_dataset`
-→ [ingest.py](../backend/app/services/ingest.py), função `process_dataset`.
+→ [ingest.py](../backend/app/processing/pipeline/ingest.py), função `process_dataset`.
 
-Depois leia [datasets.py](../backend/app/services/datasets.py), especialmente
+Depois leia [datasets.py](../backend/app/processing/datasets/datasets.py), especialmente
 `parse_csv`, `infer_column` e `parse_value`, e
-[validation_llm.py](../backend/app/services/validation_llm.py), função `interpret_columns`.
+[validation_llm.py](../backend/app/processing/ai/validation_llm.py), função `interpret_columns`.
 
 Responda: o que já aconteceu quando o POST devolve 202? O que ainda falta? O que fica
 no banco e o que fica apenas no arquivo? Por que uma base pode estar pronta para leitura
@@ -53,16 +53,16 @@ nas funções `openFiles`, `ensureAnalysis` e `openDocument`.
 
 Depois percorra [documents.ts](../frontend/src/lib/documents.ts)
 → [documents.py](../backend/app/api/v1/documents.py), função `_create_document`
-→ [registry.py](../backend/app/services/converters/registry.py)
-→ [pdf_text.py](../backend/app/services/pdf_text.py)
-→ [ingest.py](../backend/app/services/ingest.py), função `process_document`.
+→ [registry.py](../backend/app/processing/documents/converters/registry.py)
+→ [pdf_text.py](../backend/app/processing/documents/pdf_text.py)
+→ [ingest.py](../backend/app/processing/pipeline/ingest.py), função `process_document`.
 
 Finalize com o grifo: `onPageMouseUp` em
 [assistant-view.tsx](../frontend/src/components/assistant/assistant-view.tsx),
 [excerpt-panel.tsx](../frontend/src/components/excerpt/excerpt-panel.tsx),
 `analyze_excerpt` em [documents.py](../backend/app/api/v1/documents.py) e
-[llm.py](../backend/app/services/llm.py), `create_rule`, `rule_boxes` em
-[highlights.py](../backend/app/services/highlights.py) e
+[llm.py](../backend/app/processing/ai/llm.py), `create_rule`, `rule_boxes` em
+[highlights.py](../backend/app/processing/documents/highlights.py) e
 [highlight-layer.tsx](../frontend/src/components/document/highlight-layer.tsx).
 
 A pergunta central é: como um trecho grifado vira uma regra aprovada e, depois,
@@ -72,12 +72,12 @@ retângulos sobre uma página PDF? O [fluxograma de documentos](fluxos.md) ajuda
 
 Use o [exemplo de validação](validacao.md). Primeiro leia
 [schemas/queries.py](../backend/app/schemas/queries.py),
-[rule_queries.py](../backend/app/services/rule_queries.py) e
-[query_engine.py](../backend/app/services/query_engine.py).
+[rule_queries.py](../backend/app/processing/rules/rule_queries.py) e
+[query_engine.py](../backend/app/processing/datasets/query_engine.py).
 
 Em seguida leia [schemas/validation.py](../backend/app/schemas/validation.py),
-[rule_validation.py](../backend/app/services/rule_validation.py) e
-[compliance.py](../backend/app/services/compliance.py).
+[rule_validation.py](../backend/app/processing/rules/rule_validation.py) e
+[compliance.py](../backend/app/processing/rules/compliance.py).
 
 Compare os objetos retornados por `compile_query` e `compile_validation`. A busca
 seleciona linhas. A validação combina escopo, critérios, significado das colunas e dados

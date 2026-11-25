@@ -1,8 +1,8 @@
 "use client";
 
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { type QueryClient, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef } from "react";
-import { analysisKeys } from "@/lib/analyses";
+import { analysisKeys, isWatchingDocuments } from "@/lib/analyses";
 import { api, ApiError, apiUrl, type Schemas, unwrap } from "@/lib/api";
 
 export type DocumentInfo = Schemas["DocumentOut"];
@@ -15,6 +15,7 @@ export type RuleCreate = Schemas["RuleCreateIn"];
 export type ExcerptMessage = Schemas["ExcerptMessage"];
 export type RuleProposal = Schemas["RuleProposal"];
 export type QueryPreview = Schemas["QueryPreviewOut"];
+type DocumentStatus = DocumentInfo["status"];
 
 const keys = {
   list: ["documents"] as const,
@@ -29,28 +30,49 @@ export function useDocuments() {
   return useQuery({ queryKey: keys.list, queryFn: () => unwrap(api.GET("/api/v1/documents")) });
 }
 
-/** Status do documento; consulta de novo a cada 1,5 s enquanto ele é processado. */
+/**
+ * Status do documento. Consulta a cada 1,5 s só enquanto o servidor trabalha nele; pronto
+ * (ou com erro), para de consultar. Ações que o reprocessam devolvem o documento já em
+ * andamento e a consulta recomeça sozinha; uma base nova é tratada em `useAnalysis`.
+ */
 export function useDocument(id: string | null) {
   const client = useQueryClient();
-  const previous = useRef<string | null>(null);
+  const previous = useRef<{ id: string | null; status?: DocumentStatus }>({ id: null });
   const query = useQuery({
     queryKey: keys.doc(id ?? ""),
     queryFn: () => unwrap(api.GET("/api/v1/documents/{document_id}", { params: { path: { document_id: id! } } })),
     enabled: !!id,
-    refetchInterval: (query) => query.state.data?.status === "error" ? false : query.state.data?.status === "ready" ? 5000 : 1500,
+    refetchInterval: (query) => {
+      const doc = query.state.data;
+      if (!doc) return false;
+      const working = doc.status === "processing" || doc.status === "extracting_rules";
+      return working || isWatchingDocuments(doc.analysis_id) ? 1500 : false;
+    },
   });
   const status = query.data?.status;
   const analysisId = query.data?.analysis_id;
   useEffect(() => {
-    const current = `${id}:${status}`;
-    if (status === "ready" && previous.current !== current) {
-      void client.invalidateQueries({ queryKey: keys.rules(id!) });
-      void client.invalidateQueries({ queryKey: ["validation-records"] });
-      if (analysisId) void client.invalidateQueries({ queryKey: analysisKeys.detail(analysisId) });
-    }
-    previous.current = current;
+    const before = previous.current;
+    previous.current = { id, status };
+    // Só quando o documento acaba de ficar pronto: abrir um documento já pronto não
+    // precisa recarregar regras e registros que acabaram de ser buscados.
+    if (status !== "ready" || before.id !== id || !before.status || before.status === "ready") return;
+    void client.invalidateQueries({ queryKey: keys.rules(id!) });
+    void client.invalidateQueries({ queryKey: ["rules"] });
+    void client.invalidateQueries({ queryKey: ["validation-records"] });
+    if (analysisId) void client.invalidateQueries({ queryKey: analysisKeys.detail(analysisId) });
   }, [id, status, analysisId, client]);
   return query;
+}
+
+/**
+ * Coloca no cache um documento já conhecido (ex.: da lista do histórico), para a tela,
+ * o PDF e as regras começarem sem esperar a consulta do documento. Fica marcado como
+ * desatualizado, então a situação real é conferida em segundo plano.
+ */
+export function seedDocument(queryClient: QueryClient, doc: DocumentInfo) {
+  if (queryClient.getQueryData(keys.doc(doc.id))) return;
+  queryClient.setQueryData(keys.doc(doc.id), doc, { updatedAt: 0 });
 }
 
 /** Formatos aceitos no envio de arquivo (o back escolhe o conversor). */
@@ -150,9 +172,9 @@ export function useRules(documentId: string | null, enabled: boolean) {
     queryKey: keys.rules(documentId ?? ""),
     queryFn: () =>
       unwrap(api.GET("/api/v1/documents/{document_id}/rules", { params: { path: { document_id: documentId! } } })),
+    // Sem consulta periódica: as regras mudam pelas mutações (que atualizam o cache) ou
+    // quando o documento volta a ficar pronto (`useDocument` invalida esta consulta).
     enabled: !!documentId && enabled,
-    staleTime: 0,
-    refetchInterval: enabled ? 5000 : false,
   });
 }
 

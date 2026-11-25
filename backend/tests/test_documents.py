@@ -7,9 +7,10 @@ import pymupdf
 import pytest
 
 from app.main import app
-from app.services import llm, safe_fetch
-from app.services.pdf_text import PdfReadError, extract_pdf
-from app.services.text_match import find_excerpt
+from app.processing.ai import llm
+from app.processing.documents import safe_fetch
+from app.processing.documents.pdf_text import PdfReadError, extract_pdf
+from app.processing.documents.text_match import find_excerpt
 
 PARAGRAPHS = [
     "CLÁUSULA PRIMEIRA - DO OBJETO",

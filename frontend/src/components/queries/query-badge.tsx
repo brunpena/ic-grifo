@@ -3,6 +3,7 @@
 import { AlertTriangle, BookText, Database, Plus } from "lucide-react";
 import type { MouseEvent } from "react";
 import { Tooltip } from "@/components/ui/tooltip";
+import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 import type { RuleQuerySummary } from "@/components/rules/types";
 
@@ -22,6 +23,7 @@ export function QueryBadge({
   onClick?: () => void;
   className?: string;
 }) {
+  const t = useT();
   const handle = (e: MouseEvent) => {
     e.stopPropagation();
     onClick?.();
@@ -48,16 +50,16 @@ export function QueryBadge({
         className={cn(BADGE, "text-foreground-subtle hover:bg-surface-hover hover:text-foreground", className)}
       >
         <Plus size={14} strokeWidth={1.75} aria-hidden />
-        Criar<span className="hidden @2xl:inline"> busca</span>
+        {t("Criar")}<span className="hidden @2xl:inline"> {t("busca")}</span>
       </button>
     );
   }
   if (query.state === "erro") {
     return (
-      <Tooltip content={query.error ?? "Erro na busca"}>
+      <Tooltip content={query.error ?? t("Erro na busca")}>
         <button type="button" onClick={handle} className={cn(BADGE, "bg-danger-soft text-danger", className)}>
           <AlertTriangle size={14} strokeWidth={1.75} aria-hidden />
-          Corrigir<span className="hidden @2xl:inline"> busca</span>
+          {t("Corrigir")}<span className="hidden @2xl:inline"> {t("busca")}</span>
           <span className="sr-only">: {query.error}</span>
         </button>
       </Tooltip>
@@ -65,7 +67,7 @@ export function QueryBadge({
   }
   const count = query.match_count ?? 0;
   return (
-    <Tooltip content={`${query.dataset_name ?? "Base"}: ${query.description}`}>
+    <Tooltip content={`${query.dataset_name ?? t("Base")}: ${query.description}`}>
       <button
         type="button"
         onClick={handle}
@@ -73,16 +75,16 @@ export function QueryBadge({
       >
         <Database size={14} strokeWidth={1.75} aria-hidden />
         {query.state === "pendente" ? (
-          "Pronta"
+          t("Pronta")
         ) : (
           <span className="tabular-nums">
-            {count.toLocaleString("pt-BR")}
+            {t.number(count)}
             {/* Em painel estreito fica só o número (o leitor de tela ouve o texto completo). */}
-            <span className="hidden @2xl:inline"> {count === 1 ? "registro" : "registros"}</span>
-            <span className="sr-only @2xl:hidden"> {count === 1 ? "registro" : "registros"}</span>
+            <span className="hidden @2xl:inline"> {count === 1 ? t("registro") : t("registros")}</span>
+            <span className="sr-only @2xl:hidden"> {count === 1 ? t("registro") : t("registros")}</span>
           </span>
         )}
-        <span className="sr-only">. {query.description}. Editar busca</span>
+        <span className="sr-only">. {query.description}. {t("Editar busca")}</span>
       </button>
     </Tooltip>
   );

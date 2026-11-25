@@ -1,4 +1,5 @@
 import { Skeleton } from "@/components/ui/skeleton";
+import { msg, useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
 /** Larguras alternadas para as células não parecerem uma grade uniforme. */
@@ -24,7 +25,7 @@ const CELL = "border-b border-border px-3 py-2";
  */
 export function RecordsTableSkeleton({
   columns,
-  leading = [{ label: "Linha", sticky: true, skeletonClassName: "w-8" }],
+  leading = [{ label: msg("Linha"), sticky: true, skeletonClassName: "w-8" }],
   rows = 10,
   className,
 }: {
@@ -33,17 +34,18 @@ export function RecordsTableSkeleton({
   rows?: number;
   className?: string;
 }) {
+  const t = useT();
   const known = !!columns?.length;
   const names = known ? columns : Array.from({ length: GENERIC_COLUMNS }, (_, i) => `coluna-${i}`);
   return (
     <div role="status" aria-busy className={cn("min-h-0 flex-1 overflow-auto", className)}>
-      <span className="sr-only">Carregando registros</span>
+      <span className="sr-only">{t("Carregando registros")}</span>
       <table aria-hidden className="border-separate border-spacing-0 text-left text-[13px]">
         <thead className="sticky top-0 z-10 bg-surface-muted">
           <tr>
             {leading.map((c) => (
               <th key={c.label} scope="col" className={cn(HEAD, c.sticky && "sticky left-0 z-10 bg-surface-muted")}>
-                {c.label}
+                {t(c.label)}
               </th>
             ))}
             {names.map((name) => (
@@ -90,9 +92,10 @@ export function PaginationSkeleton() {
 
 /** Lista de regras (visão geral da tabela) enquanto as regras carregam. */
 export function RulesOverviewSkeleton({ rows = 8 }: { rows?: number }) {
+  const t = useT();
   return (
     <div role="status" aria-busy className="min-h-0 flex-1 overflow-hidden">
-      <span className="sr-only">Carregando regras</span>
+      <span className="sr-only">{t("Carregando regras")}</span>
       <ul aria-hidden className="divide-y divide-border">
         {Array.from({ length: rows }, (_, i) => (
           <li key={i} className="flex items-center gap-3 px-3 py-2.5">

@@ -5,7 +5,9 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import type { ComponentProps, ReactNode } from "react";
 import { ThemeToggle } from "@/components/theme-toggle";
+import { LanguageToggle } from "@/components/language-toggle";
 import { IconButton } from "@/components/ui/icon-button";
+import { useLocalePath, useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 import { navItemFor } from "./nav";
 import { useSignOut } from "./use-sign-out";
@@ -19,38 +21,41 @@ export function AppHeader({ sidebarOpen, onToggleSidebar }: AppHeaderProps) {
   const pathname = usePathname();
   const current = navItemFor(pathname);
   const { signOut, pending } = useSignOut();
+  const t = useT();
+  const href = useLocalePath();
 
   return (
     <header className="relative z-20 flex h-14 shrink-0 items-center gap-2 bg-surface pr-3 pl-2 sm:pr-4 dark:bg-brand-navy">
       <IconButton
-        aria-label={sidebarOpen ? "Recolher menu" : "Abrir menu"}
+        aria-label={sidebarOpen ? t("Recolher menu") : t("Abrir menu")}
         aria-expanded={sidebarOpen}
         icon={<PanelLeft size={16} strokeWidth={1.75} aria-hidden />}
         tooltipSide="bottom"
         onClick={onToggleSidebar}
       />
 
-      <nav aria-label="Você está em" className="flex min-w-0 items-center gap-1.5 text-[13px]">
+      <nav aria-label={t("Você está em")} className="flex min-w-0 items-center gap-1.5 text-[13px]">
         <Link
-          href="/assistente"
-          aria-label="Início"
+          href={href("/assistente")}
+          aria-label={t("Início")}
           className="hidden size-8 items-center justify-center rounded-md text-foreground-muted transition-colors duration-150 ease-out hover:bg-surface-hover hover:text-foreground sm:inline-flex"
         >
           <LayoutGrid size={16} strokeWidth={1.75} aria-hidden />
         </Link>
         <ChevronRight size={14} strokeWidth={1.75} aria-hidden className="hidden shrink-0 text-foreground-subtle sm:block" />
         <span aria-current="page" className="truncate font-semibold text-foreground">
-          {current?.title ?? "IC Grifo"}
+          {current ? t(current.title) : "IC Grifo"}
         </span>
       </nav>
 
       <div className="ml-auto flex items-center gap-1.5">
-        <HeaderLink href="/configuracoes" icon={<UserRound size={15} strokeWidth={1.75} aria-hidden />}>
-          Minha conta
+        <HeaderLink href={href("/configuracoes")} icon={<UserRound size={15} strokeWidth={1.75} aria-hidden />}>
+          {t("Minha conta")}
         </HeaderLink>
+        <LanguageToggle />
         <ThemeToggle className="border border-border bg-surface/60 dark:bg-white/[0.03]" />
         <HeaderButton icon={<LogOut size={15} strokeWidth={1.75} aria-hidden />} onClick={signOut} disabled={pending}>
-          Sair
+          {t("Sair")}
         </HeaderButton>
       </div>
 

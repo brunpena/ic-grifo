@@ -5,6 +5,7 @@ import type { ColumnType } from "@/lib/analyses";
 import { api, type Schemas, unwrap } from "@/lib/api";
 import { rememberColumns } from "@/lib/column-cache";
 import type { Rule } from "@/lib/documents";
+import { msg, type Translate } from "@/lib/i18n";
 
 export type StructuredQuery = Schemas["StructuredQuery-Input"];
 export type QueryCondition = Schemas["Condition"];
@@ -14,22 +15,23 @@ export type RuleQuery = Schemas["RuleQueryOut"];
 export type RuleRecords = Schemas["RecordsOut"];
 export type ConditionValue = QueryCondition["value"];
 
+/** Em português; traduza ao exibir com `t(...)`. */
 export const OPERATOR_LABELS: Record<QueryOperator, string> = {
-  eq: "igual a",
-  ne: "diferente de",
-  gt: "maior que",
-  gte: "maior ou igual a",
-  lt: "menor que",
-  lte: "menor ou igual a",
-  between: "entre",
-  in: "é um de",
-  not_in: "não é nenhum de",
-  contains: "contém",
-  not_contains: "não contém",
-  starts_with: "começa com",
-  ends_with: "termina com",
-  is_null: "está vazio",
-  not_null: "está preenchido",
+  eq: msg("igual a"),
+  ne: msg("diferente de"),
+  gt: msg("maior que"),
+  gte: msg("maior ou igual a"),
+  lt: msg("menor que"),
+  lte: msg("menor ou igual a"),
+  between: msg("entre"),
+  in: msg("é um de"),
+  not_in: msg("não é nenhum de"),
+  contains: msg("contém"),
+  not_contains: msg("não contém"),
+  starts_with: msg("começa com"),
+  ends_with: msg("termina com"),
+  is_null: msg("está vazio"),
+  not_null: msg("está preenchido"),
 };
 
 const ORDERED: QueryOperator[] = ["eq", "ne", "gt", "gte", "lt", "lte", "between", "in", "not_in", "is_null", "not_null"];
@@ -56,25 +58,35 @@ export function isFlat(query: { conditions?: (QueryCondition | ConditionGroup)[]
   return (query.conditions ?? []).every((c) => !isGroup(c));
 }
 
-function formatValue(value: ConditionValue): string {
-  if (Array.isArray(value)) return value.map(formatValue).join(", ");
-  if (typeof value === "boolean") return value ? "sim" : "não";
-  if (typeof value === "number") return value.toLocaleString("pt-BR");
+function formatValue(value: ConditionValue, t: Translate): string {
+  if (Array.isArray(value)) return value.map((v) => formatValue(v, t)).join(", ");
+  if (typeof value === "boolean") return value ? t("sim") : t("não");
+  if (typeof value === "number") return t.number(value);
   return value == null ? "" : `“${value}”`;
 }
 
-/** Busca em português, para listas e tooltips: Valor maior que 50.000 e Garantia está vazio. */
-export function describeQuery(query: { logic: "and" | "or"; conditions?: (QueryCondition | ConditionGroup)[] }): string {
+/**
+ * Busca em palavras, para listas e tooltips, no idioma de `t`:
+ * Valor maior que 50.000 e Garantia está vazio.
+ */
+export function describeQuery(
+  query: { logic: "and" | "or"; conditions?: (QueryCondition | ConditionGroup)[] },
+  t: Translate,
+): string {
   const parts = (query.conditions ?? []).map((c) =>
     isGroup(c)
-      ? `(${describeQuery(c)})`
+      ? `(${describeQuery(c, t)})`
       : NO_VALUE_OPERATORS.has(c.op)
-        ? `${c.column} ${OPERATOR_LABELS[c.op]}`
+        ? `${c.column} ${t(OPERATOR_LABELS[c.op])}`
         : c.op === "between" && Array.isArray(c.value)
-          ? `${c.column} entre ${formatValue(c.value[0])} e ${formatValue(c.value[1])}`
-          : `${c.column} ${OPERATOR_LABELS[c.op]} ${formatValue(c.value)}`,
+          ? t("{column} entre {from} e {to}", {
+              column: c.column,
+              from: formatValue(c.value[0], t),
+              to: formatValue(c.value[1], t),
+            })
+          : `${c.column} ${t(OPERATOR_LABELS[c.op])} ${formatValue(c.value, t)}`,
   );
-  return parts.length ? parts.join(query.logic === "and" ? " e " : " ou ") : "todos os registros";
+  return parts.length ? parts.join(query.logic === "and" ? ` ${t("e")} ` : ` ${t("ou")} `) : t("todos os registros");
 }
 
 const ruleKeys = {
@@ -146,8 +158,9 @@ export function useRuleRecords(ruleId: string | null, offset: number, limit: num
     },
     enabled: !!ruleId && enabled,
     placeholderData: keepPreviousData,
-    staleTime: 0,
-    refetchOnMount: "always",
-    refetchOnWindowFocus: false,
+    // Os registros só mudam com a busca da regra ou com as bases, e esses casos invalidam
+    // esta consulta (`useReplaceRule`, `useDocument`, `useDeleteDataset`). Voltar a uma
+    // regra ou página já vista usa o cache em vez de consultar o DuckDB de novo.
+    staleTime: 5 * 60_000,
   });
 }

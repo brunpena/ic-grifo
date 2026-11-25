@@ -247,9 +247,9 @@ quando a cobertura conhecida é parcial.
 ## Arquivos para acompanhar o exemplo
 
 1. [schemas/validation.py](../backend/app/schemas/validation.py): forma do plano e dos resultados.
-2. [validation_llm.py](../backend/app/services/validation_llm.py): significado e plano propostos pela IA.
-3. [rule_validation.py](../backend/app/services/rule_validation.py): coordenação, persistência e fontes.
-4. [compliance.py](../backend/app/services/compliance.py): execução dos critérios.
+2. [validation_llm.py](../backend/app/processing/ai/validation_llm.py): significado e plano propostos pela IA.
+3. [rule_validation.py](../backend/app/processing/rules/rule_validation.py): coordenação, persistência e fontes.
+4. [compliance.py](../backend/app/processing/rules/compliance.py): execução dos critérios.
 5. [validation-details.tsx](../frontend/src/components/validation/validation-details.tsx): evidências na interface.
 6. [test_compliance.py](../backend/tests/test_compliance.py) e
    [test_validation_api.py](../backend/tests/test_validation_api.py): exemplos executáveis.

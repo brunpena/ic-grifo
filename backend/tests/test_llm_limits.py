@@ -6,7 +6,7 @@ import pytest
 from pydantic import SecretStr
 
 from app.core.config import get_settings
-from app.services import llm, validation_llm
+from app.processing.ai import llm, validation_llm
 
 
 @pytest.fixture(autouse=True)

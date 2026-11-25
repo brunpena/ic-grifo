@@ -1,16 +1,12 @@
 "use client";
 
-import { ListChecks, MessageSquare, Sparkles, Table2 } from "lucide-react";
 import { type ReactNode, useEffect } from "react";
 import { Group, Panel, Separator, useDefaultLayout, usePanelRef } from "react-resizable-panels";
 import { cn } from "@/lib/utils";
 import { safeLayoutStorage, usePersistentState } from "@/lib/use-persistent-state";
+import type { AnalysisLayout } from "./panel-toggles";
 
-/**
- * Painéis visíveis na tela de análise. Sem "rules" nem "table", o painel lateral fecha.
- * `ai` (opcional) é o painel da IA sobre o trecho grifado, só nas telas que o oferecem.
- */
-export type AnalysisLayout = { chat: boolean; rules: boolean; table: boolean; ai?: boolean };
+export { type AnalysisLayout, PanelToggles } from "./panel-toggles";
 
 const DEFAULT_LAYOUT: AnalysisLayout = { chat: true, rules: true, table: false };
 
@@ -24,55 +20,6 @@ function parseLayout(value: unknown): AnalysisLayout | null {
 /** Quais painéis estão abertos, lembrado entre recarregamentos (as larguras ficam no Group). */
 export function useAnalysisLayout() {
   return usePersistentState("grifo:analysis-layout", DEFAULT_LAYOUT, parseLayout);
-}
-
-const TOGGLES: { key: keyof AnalysisLayout; label: string; icon: typeof ListChecks }[] = [
-  { key: "chat", label: "Conversa", icon: MessageSquare },
-  { key: "ai", label: "IA", icon: Sparkles },
-  { key: "rules", label: "Regras", icon: ListChecks },
-  { key: "table", label: "Tabela", icon: Table2 },
-];
-
-/** Botões de liga/desliga dos painéis (ficam sempre visíveis na barra do documento). */
-export function PanelToggles({
-  layout,
-  onChange,
-  counts,
-  hiddenPanels = [],
-}: {
-  layout: AnalysisLayout;
-  onChange: (layout: AnalysisLayout) => void;
-  /** Número exibido ao lado do rótulo (ex.: regras). */
-  counts?: Partial<Record<keyof AnalysisLayout, number>>;
-  hiddenPanels?: (keyof AnalysisLayout)[];
-}) {
-  return (
-    <div role="group" aria-label="Painéis" className="flex items-center gap-0.5 rounded-md bg-surface-muted p-0.5">
-      {TOGGLES.filter(({ key }) => !hiddenPanels.includes(key) && layout[key] !== undefined).map(({ key, label, icon: Icon }) => {
-        const on = !!layout[key];
-        const count = counts?.[key];
-        return (
-          <button
-            key={key}
-            type="button"
-            aria-pressed={on}
-            title={`${on ? "Esconder" : "Mostrar"} ${label.toLowerCase()}`}
-            onClick={() => onChange({ ...layout, [key]: !on })}
-            className={cn(
-              "inline-flex h-7 items-center gap-1.5 rounded-sm px-2 text-xs font-medium text-foreground-muted transition-colors duration-150 ease-out hover:text-foreground",
-              on && "bg-surface text-foreground shadow-sm",
-            )}
-          >
-            <Icon size={14} strokeWidth={1.75} aria-hidden />
-            <span className="hidden xl:inline">{label}</span>
-            {count !== undefined && count > 0 && (
-              <span className="font-mono text-[11px] text-foreground-subtle tabular-nums">{count}</span>
-            )}
-          </button>
-        );
-      })}
-    </div>
-  );
 }
 
 type AnalysisWorkspaceProps = {

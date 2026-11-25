@@ -10,8 +10,8 @@ from sqlalchemy import update
 from app.db.models import Rule
 from app.db.session import SessionLocal
 from app.main import app
+from app.processing.ai import llm, validation_llm
 from app.schemas.validation import ValidationPlan
-from app.services import llm, validation_llm
 
 CSV = (
     b"Contrato;Assinatura;Entrega;Valor;Garantia\n"
@@ -241,7 +241,7 @@ async def test_rule_without_datasets_is_explicitly_inconclusive(migrated_db, cli
 async def test_dataset_finishing_during_validation_invalidates_and_revalidation_is_explicit(
     migrated_db, client, validation_ai, monkeypatch
 ):
-    from app.services import rule_validation
+    from app.processing.rules import rule_validation
 
     await register(client)
     analysis = (await client.post("/api/v1/analyses", json={})).json()

@@ -16,7 +16,7 @@ PyMuPDF e Gemini.
 
 Os pontos de entrada são [app/main.py](app/main.py),
 [app/api/v1/router.py](app/api/v1/router.py) e
-[app/services/ingest.py](app/services/ingest.py).
+[app/processing/pipeline/ingest.py](app/processing/pipeline/ingest.py).
 
 ## Executar localmente
 
@@ -52,13 +52,13 @@ enquanto HTTP 429 com uma métrica diária identifica o limite diário do projet
 
 ## Consultas CSV com DuckDB embarcado
 
-`CsvDuckDBCache`, em [duckdb_cache.py](app/services/duckdb_cache.py), importa o CSV uma
+`CsvDuckDBCache`, em [duckdb_cache.py](app/processing/datasets/duckdb_cache.py), importa o CSV uma
 vez e persiste registros tipados em um arquivo `.duckdb`. Não exige servidor, Docker
 ou serviço analítico. O PostgreSQL existente continua guardando usuários, documentos
 e metadados da aplicação.
 
 ```python
-from app.services.duckdb_cache import CsvDuckDBCache
+from app.processing.datasets.duckdb_cache import CsvDuckDBCache
 
 cache = CsvDuckDBCache("./data/contratos.duckdb")
 atualizou = cache.sincronizar_csv("./contratos.csv")

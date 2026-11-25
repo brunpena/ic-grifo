@@ -10,12 +10,13 @@ from pathlib import Path
 
 import pytest
 
+from app.processing.datasets import query_engine
+from app.processing.datasets.datasets import parse_csv
+from app.processing.datasets.duckdb_cache import CsvCacheError, CsvDuckDBCache
+from app.processing.datasets.query_engine import DatasetRef, compile_query, run
+from app.processing.rules import compliance
 from app.schemas.queries import StructuredQuery
 from app.schemas.validation import DatasetCheck
-from app.services import compliance, query_engine
-from app.services.datasets import parse_csv
-from app.services.duckdb_cache import CsvCacheError, CsvDuckDBCache
-from app.services.query_engine import DatasetRef, compile_query, run
 from tests.test_queries import CSV
 
 
@@ -95,7 +96,7 @@ def test_threads_and_processes_can_share_cache(local_cache):
     with ThreadPoolExecutor(max_workers=4) as executor:
         assert list(executor.map(read, range(12))) == ["001"] * 12
     script = (
-        "import sys; from app.services.duckdb_cache import CsvDuckDBCache; "
+        "import sys; from app.processing.datasets.duckdb_cache import CsvDuckDBCache; "
         "assert CsvDuckDBCache(sys.argv[1]).buscar_por_id('001', 'Número')['Número'] == '001'"
     )
     children = [
@@ -182,7 +183,7 @@ def test_large_integer_ids_remain_exact(tmp_path):
 async def test_rule_query_keeps_total_and_fetches_only_pages(local_cache, monkeypatch):
     from types import SimpleNamespace
 
-    from app.services import rule_queries
+    from app.processing.rules import rule_queries
 
     cache, _ = local_cache
     columns = cache.metadata()["columns"]

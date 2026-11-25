@@ -3,6 +3,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, postFormWithProgress, type Schemas, type UploadProgress, unwrap } from "@/lib/api";
 import { rememberColumns } from "@/lib/column-cache";
+import { msg } from "@/lib/i18n";
 
 export type Analysis = Schemas["AnalysisDetailOut"];
 export type AnalysisSummary = Schemas["AnalysisOut"];
@@ -15,26 +16,53 @@ export const analysisKeys = {
   detail: (id: string) => ["analyses", id] as const,
 };
 
+/** Em português; traduza ao exibir com `t(...)`. */
 export const COLUMN_TYPE_LABELS: Record<ColumnType, string> = {
-  integer: "Inteiro",
-  decimal: "Decimal",
-  date: "Data",
-  datetime: "Data e hora",
-  boolean: "Sim/não",
-  text: "Texto",
+  integer: msg("Inteiro"),
+  decimal: msg("Decimal"),
+  date: msg("Data"),
+  datetime: msg("Data e hora"),
+  boolean: msg("Sim/não"),
+  text: msg("Texto"),
 };
 
 export function useAnalyses() {
   return useQuery({ queryKey: analysisKeys.list, queryFn: () => unwrap(api.GET("/api/v1/analyses")) });
 }
 
+/**
+ * Quando uma base termina de ser lida, o servidor volta a preparar as buscas dos documentos
+ * já prontos da análise. Durante esta janela, `useDocument` consulta o documento para
+ * perceber essa mudança; fora dela, um documento pronto não é consultado de novo.
+ */
+const DOCUMENT_WATCH_MS = 10_000;
+const watchedUntil = new Map<string, number>();
+
+export function isWatchingDocuments(analysisId: string | undefined) {
+  return !!analysisId && (watchedUntil.get(analysisId) ?? 0) > Date.now();
+}
+
 export function useAnalysis(id: string | null) {
+  const queryClient = useQueryClient();
   return useQuery({
     queryKey: analysisKeys.detail(id ?? ""),
     queryFn: async () => {
+      const before = queryClient.getQueryData<Analysis>(analysisKeys.detail(id!));
       const analysis = await unwrap(api.GET("/api/v1/analyses/{analysis_id}", { params: { path: { analysis_id: id! } } }));
       // O cabeçalho já vem do processamento inicial: guarda para os skeletons das tabelas.
       for (const dataset of analysis.datasets) rememberColumns(dataset.id, dataset.columns.map((c) => c.name));
+      const finished = analysis.datasets.some(
+        (d) => d.status === "ready" && before?.datasets.find((p) => p.id === d.id)?.status === "processing",
+      );
+      if (finished) {
+        watchedUntil.set(id!, Date.now() + DOCUMENT_WATCH_MS);
+        void queryClient.invalidateQueries({
+          predicate: (q) =>
+            q.queryKey[0] === "documents" &&
+            q.queryKey.length === 2 &&
+            (q.state.data as { analysis_id?: string } | undefined)?.analysis_id === id,
+        });
+      }
       return analysis;
     },
     enabled: !!id,
@@ -103,6 +131,12 @@ export function useDeleteDataset() {
         analysis ? { ...analysis, datasets: analysis.datasets.filter((d) => d.id !== dataset.id) } : analysis,
       );
       void queryClient.invalidateQueries({ queryKey: analysisKeys.list, exact: true });
+      // O servidor marca com erro as buscas que usavam a base e invalida as validações.
+      void queryClient.invalidateQueries({
+        predicate: (q) => q.queryKey[0] === "documents" && q.queryKey[2] === "rules",
+      });
+      void queryClient.invalidateQueries({ queryKey: ["rules"] });
+      void queryClient.invalidateQueries({ queryKey: ["validation-records"] });
     },
   });
 }

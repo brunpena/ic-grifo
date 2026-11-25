@@ -35,12 +35,111 @@ No celular, o Assistente usa abas em vez dos painéis redimensionáveis.
 | Grifo | Coordenadas da API renderizadas na interface | O navegador desenha as marcações. |
 
 `useAnalysis` consulta a cada 1,5 segundo enquanto há base em processamento.
-`useDocument` consulta a cada 1,5 segundo durante processamento e a cada 5 segundos
-quando pronto; para no erro. `useRules` acompanha regras habilitadas a cada 5 segundos.
-A transição para pronto invalida os caches de regras, análise e evidências.
+`useDocument` consulta a cada 1,5 segundo só enquanto o documento está em processamento;
+pronto ou com erro, para. Quando uma base termina de ser lida, o servidor volta a preparar
+as buscas dos documentos prontos: `useAnalysis` percebe essa transição, recarrega o
+documento e o acompanha por 10 segundos. Ações como gerar buscas ou validar devolvem o
+documento já em andamento, e a consulta recomeça sozinha.
+
+`useRules`, `useRuleRecords` e `useValidationRecords` não fazem consultas periódicas.
+A transição do documento para pronto (não a abertura de um documento já pronto) invalida
+regras, registros, evidências e análise; remover uma base também invalida esses caches.
+Registros e evidências ficam 5 minutos em cache, então voltar a uma regra já vista não
+consulta o DuckDB de novo. Ao reabrir pelo histórico, o documento da lista entra no
+cache (`seedDocument`), e PDF, regras e situação atual carregam em paralelo.
+
+O último usuário logado fica em `localStorage` (`grifo:user`). Logo após a hidratação,
+`seedStoredUser` o coloca no cache como desatualizado: menu, cabeçalho e as consultas da
+página começam sem esperar `/auth/me`, que confere a sessão em paralelo. Um 401 apaga a
+cópia e o AppShell manda para o login; login e cadastro só redirecionam com o usuário
+confirmado pela API (`dataUpdatedAt > 0`). O PDF de cada documento volta com
+`Cache-Control: private, immutable`, então o navegador o reaproveita ao recarregar a página.
+
+A tela de entrada não carrega o espaço de trabalho: `AnalysisWorkspace`, `RulesTable`,
+`RecordsPanel`, `QueryEditorDialog` e `CreateRulePopover` usam `next/dynamic` e são
+pré-carregados assim que existe uma análise (`preloadWorkspace`).
 
 O envio de CSV usa XMLHttpRequest para medir bytes. O chat usa fetch e leitura de SSE
 porque a operação precisa de POST. Consultas comuns usam o cliente OpenAPI tipado.
+
+## Idiomas (português e inglês)
+
+A interface tem português e inglês. As bandeiras (`LanguageToggle`) ficam no cabeçalho e
+nas telas de login/cadastro; em Configurações há a mesma escolha por extenso.
+
+O idioma faz parte da URL: todas as páginas ficam em `src/app/[lang]` (`/pt/assistente`,
+`/en/assistente`). O layout raiz valida o `[lang]` (outro valor dá 404), define
+`<html lang>` e entrega o idioma por contexto (`LocaleProvider`); `useLocale()` lê esse
+contexto. Por isso o servidor já renderiza no idioma certo e cada idioma tem o seu link.
+
+- **Trocar de idioma** (`useSetLocale`) vai para o mesmo caminho e query com o outro
+  prefixo, com `replace` (o Voltar do navegador não alterna idiomas), e grava o cookie
+  `grifo-locale`.
+- **Links sem idioma** (favoritos antigos, `/`): o [proxy](<../frontend/src/proxy.ts>)
+  redireciona para o idioma do cookie ou, na primeira visita, do `Accept-Language`.
+- **Links internos** usam `useLocalePath()`: `href("/regras")` → `/en/regras`. O menu
+  (`nav.ts`) guarda os caminhos sem idioma, e `navItemFor` aceita os dois formatos. O
+  `?next=` do login guarda o caminho sem idioma, completado na volta.
+- **Títulos da aba** são traduzidos no servidor com `localizedMetadata(msg("…"))`
+  ([metadata.ts](<../frontend/src/lib/i18n/metadata.ts>)), que lê o idioma com
+  `next/root-params`. Código de servidor importa de `@/lib/i18n/core` (sem hooks).
+
+- **Como traduzir um texto:** em componentes, `const t = useT()` e `t("Texto em português")`.
+  O texto em português é a própria chave; a versão em inglês fica em
+  [src/lib/i18n/en.ts](<../frontend/src/lib/i18n/en.ts>). Sem tradução, aparece em português.
+- **Variáveis e plural:** `t("Remover {name}", { name })`, `t.plural(n, "{n} linha", "{n} linhas")`;
+  números com `t.number(n)` e datas com `intlLocale(t.locale)`.
+- **Constantes fora de componentes** (rótulos de tipos, operadores, menus): marque com
+  `msg("…")` e traduza ao exibir com `t(valor)`.
+- **Funções que montam texto** recebem `t` como argumento (`describeQuery(query, t)`,
+  `errorMessage(error, t)`): o React Compiler memoriza resultados pelos argumentos, e o
+  idioma precisa ser um deles para o texto mudar ao trocar de idioma.
+- **Conferência:** `npm run i18n:check` lista textos sem tradução, variáveis diferentes e
+  traduções sem uso.
+- **Hidratação:** o HTML pré-renderizado já está no idioma da URL. O AppShell só mostra o
+  usuário guardado no navegador depois de `useHydrated()`, para o HTML coincidir.
+
+Continuam em português: mensagens do servidor montadas com valores ou não listadas em
+[server-messages.ts](<../frontend/src/lib/api/server-messages.ts>), o que a IA gera (resumos
+das regras, interpretações, explicações), os dados de exemplo da Base de regras e a
+vitrine `/dev/ui`.
+
+## Etapas do Assistente na URL
+
+Cada etapa tem o seu endereço, então Voltar/Avançar, recarregar e compartilhar funcionam:
+
+| URL | Tela |
+| --- | --- |
+| `/{lang}/assistente` | Nova análise: envio das bases e histórico. |
+| `/{lang}/assistente/analises/{id}` | Análise com as bases, esperando o documento. |
+| `/{lang}/assistente/documentos/{id}` | Documento aberto no espaço de trabalho; a análise vem do documento. |
+
+`AssistantView` fica no [layout de /assistente](<../frontend/src/app/[lang]/(app)/assistente/layout.tsx>),
+e as páginas de cada etapa não renderizam nada: trocar de etapa muda só a URL, sem
+desmontar a tela (envios em andamento e o PDF aberto continuam). Os ids saem de
+[assistant-route.ts](<../frontend/src/components/assistant/assistant-route.ts>):
+`useAssistantRoute` lê a URL e `navigate` empilha a etapa no histórico (até a URL mudar,
+a tela já usa o destino, sem piscar a etapa anterior). A primeira base cria a análise e
+vai para `analises/{id}`; o documento enviado abre `documentos/{id}`; o histórico e
+"Nova análise" também navegam. Um id inexistente (ou de outra conta) mostra um aviso com
+o botão "Nova análise".
+
+`useAnalysisLifecycle` encerra a análise (`POST /analyses/{id}/close`) quando outra
+análise entra no lugar, ao sair do Assistente ou ao fechar a aba. Voltar para a tela
+inicial não encerra, e trocar de idioma (que recarrega a página) também não.
+
+As páginas com id só são conhecidas no pedido; com `cacheComponents`, o AppShell fica em
+`<Suspense>` e o HTML pré-renderizado delas é o skeleton da estrutura.
+
+## Conexão com a API
+
+- O layout raiz inclui `<link rel="preconnect">` para `NEXT_PUBLIC_API_URL`: DNS, TCP e TLS
+  com a API começam enquanto o JavaScript carrega.
+- A API devolve `Access-Control-Max-Age` (`CORS_MAX_AGE_SECONDS`): o navegador guarda o
+  preflight em vez de repeti-lo antes de cada POST/PATCH/DELETE.
+- Respostas JSON grandes saem com gzip (`GZIP_MIN_BYTES`); PDFs e o SSE do chat não.
+- No Docker, o uvicorn mantém a conexão aberta por 75 s (`UVICORN_KEEP_ALIVE`; o padrão
+  dele é 5 s), evitando um novo handshake entre as ações da pessoa.
 
 ## Roteiro dentro de AssistantView
 
@@ -55,20 +154,22 @@ porque a operação precisa de POST. Consultas comuns usam o cliente OpenAPI tip
 
 | Arquivo | Responsabilidade e pontos de entrada |
 | --- | --- |
-| [src/app/layout.tsx](<../frontend/src/app/layout.tsx>) | Layout raiz, idioma, Geist, metadados, tema inicial e Providers. |
-| [src/app/providers.tsx](<../frontend/src/app/providers.tsx>) | Disponibiliza QueryClient e ToastProvider; configura cache, tentativas e comportamento de foco. |
-| [src/app/page.tsx](<../frontend/src/app/page.tsx>) | Redireciona / para /assistente. |
+| [src/proxy.ts](<../frontend/src/proxy.ts>) | Redireciona caminhos sem idioma para `/pt/...` ou `/en/...` (cookie ou navegador). |
+| [src/app/[lang]/layout.tsx](<../frontend/src/app/[lang]/layout.tsx>) | Layout raiz: valida o idioma, `<html lang>`, Geist, metadados, preconnect da API, tema inicial, LocaleProvider e Providers. |
+| [src/app/[lang]/providers.tsx](<../frontend/src/app/[lang]/providers.tsx>) | Disponibiliza QueryClient e ToastProvider; configura cache, tentativas e comportamento de foco. |
+| [src/app/[lang]/page.tsx](<../frontend/src/app/[lang]/page.tsx>) | Redireciona /{lang} para /{lang}/assistente. |
 | [src/app/globals.css](<../frontend/src/app/globals.css>) | Estilos globais, tokens, temas e integração Tailwind. |
-| [src/app/(app)/layout.tsx](<../frontend/src/app/(app)/layout.tsx>) | Envolve as telas principais em AppShell; o grupo entre parênteses não faz parte da URL. |
-| [src/app/(app)/assistente/page.tsx](<../frontend/src/app/(app)/assistente/page.tsx>) | Metadados de /assistente e montagem de AssistantView. |
-| [src/app/(app)/regras/page.tsx](<../frontend/src/app/(app)/regras/page.tsx>) | Rota /regras com KnowledgeBaseView demonstrativa. |
-| [src/app/(app)/configuracoes/page.tsx](<../frontend/src/app/(app)/configuracoes/page.tsx>) | Rota /configuracoes com SettingsView. |
-| [src/app/(auth)/layout.tsx](<../frontend/src/app/(auth)/layout.tsx>) | Composição visual das telas de login/cadastro e controle de tema. |
-| [src/app/(auth)/login/page.tsx](<../frontend/src/app/(auth)/login/page.tsx>) | Monta o formulário de login. |
-| [src/app/(auth)/cadastro/page.tsx](<../frontend/src/app/(auth)/cadastro/page.tsx>) | Monta o formulário de cadastro. |
-| [src/app/dev/ui/page.tsx](<../frontend/src/app/dev/ui/page.tsx>) | Entrada da galeria /dev/ui. |
-| [src/app/dev/ui/ui-demo.tsx](<../frontend/src/app/dev/ui/ui-demo.tsx>) | Galeria visual de componentes; usa SystemDemo. |
-| [src/app/dev/ui/system-demo.tsx](<../frontend/src/app/dev/ui/system-demo.tsx>) | Demonstrações locais de telas, conversa, envio e estados; não executa o processamento real. |
+| [src/app/[lang]/(app)/layout.tsx](<../frontend/src/app/[lang]/(app)/layout.tsx>) | Envolve as telas principais em AppShell (dentro de Suspense); o grupo entre parênteses não faz parte da URL. |
+| [src/app/[lang]/(app)/assistente/layout.tsx](<../frontend/src/app/[lang]/(app)/assistente/layout.tsx>) | Monta AssistantView uma vez para todas as etapas do Assistente (`/assistente`, `analises/[analysisId]`, `documentos/[documentId]`); as páginas de cada etapa só têm metadados. |
+| [src/app/[lang]/(app)/regras/page.tsx](<../frontend/src/app/[lang]/(app)/regras/page.tsx>) | Rota /regras com KnowledgeBaseView demonstrativa. |
+| [src/app/[lang]/(app)/configuracoes/page.tsx](<../frontend/src/app/[lang]/(app)/configuracoes/page.tsx>) | Rota /configuracoes com SettingsView. |
+| [src/app/[lang]/(app)/desempenho/page.tsx](<../frontend/src/app/[lang]/(app)/desempenho/page.tsx>) | Rota /desempenho com PerformanceView. |
+| [src/app/[lang]/(auth)/layout.tsx](<../frontend/src/app/[lang]/(auth)/layout.tsx>) | Composição visual das telas de login/cadastro e controle de tema. |
+| [src/app/[lang]/(auth)/login/page.tsx](<../frontend/src/app/[lang]/(auth)/login/page.tsx>) | Monta o formulário de login. |
+| [src/app/[lang]/(auth)/cadastro/page.tsx](<../frontend/src/app/[lang]/(auth)/cadastro/page.tsx>) | Monta o formulário de cadastro. |
+| [src/app/[lang]/dev/ui/page.tsx](<../frontend/src/app/[lang]/dev/ui/page.tsx>) | Entrada da galeria /dev/ui. |
+| [src/app/[lang]/dev/ui/ui-demo.tsx](<../frontend/src/app/[lang]/dev/ui/ui-demo.tsx>) | Galeria visual de componentes; usa SystemDemo. |
+| [src/app/[lang]/dev/ui/system-demo.tsx](<../frontend/src/app/[lang]/dev/ui/system-demo.tsx>) | Demonstrações locais de telas, conversa, envio e estados; não executa o processamento real. |
 | [src/app/opengraph-image.tsx](<../frontend/src/app/opengraph-image.tsx>) | Gera imagem de compartilhamento usando logo e fontes locais. |
 
 ## Estrutura, autenticação e configurações
@@ -83,6 +184,10 @@ porque a operação precisa de POST. Consultas comuns usam o cliente OpenAPI tip
 | [src/components/auth/login-form.tsx](<../frontend/src/components/auth/login-form.tsx>) | Login, erros e redirecionamento next; reconhece sessão existente. |
 | [src/components/auth/register-form.tsx](<../frontend/src/components/auth/register-form.tsx>) | Cadastro, validação de formulário, erros e navegação após criar a conta. |
 | [src/components/settings/settings-view.tsx](<../frontend/src/components/settings/settings-view.tsx>) | Perfil/senha via API, aparência, sessão e status do servidor. |
+| [src/components/performance/performance-view.tsx](<../frontend/src/components/performance/performance-view.tsx>) | Página de desempenho: indicadores, linha do tempo, tempo por categoria, tabela ordenável por rota e detalhe com chamadas lentas e sugestões. |
+| [src/components/performance/simulation-panel.tsx](<../frontend/src/components/performance/simulation-panel.tsx>) | Formulário e resultado das simulações (quem chamou × servidor, histograma) e histórico. |
+| [src/components/performance/charts.tsx](<../frontend/src/components/performance/charts.tsx>) | Gráfico de média/p95 no tempo e histograma de durações, em SVG/HTML sem bibliotecas. |
+| [src/components/performance/format.ts](<../frontend/src/components/performance/format.ts>) | Formatação de milissegundos, contagens e bytes no idioma atual. |
 | [src/components/api-status.tsx](<../frontend/src/components/api-status.tsx>) | Consulta health e apresenta a disponibilidade da API/banco. |
 | [src/components/brand-logo.tsx](<../frontend/src/components/brand-logo.tsx>) | Identidade visual reutilizável. |
 | [src/components/theme-toggle.tsx](<../frontend/src/components/theme-toggle.tsx>) | Controle de alternância do tema. |
@@ -93,7 +198,8 @@ porque a operação precisa de POST. Consultas comuns usam o cliente OpenAPI tip
 | --- | --- |
 | [src/components/assistant/assistant-view.tsx](<../frontend/src/components/assistant/assistant-view.tsx>) | Coordena a tela real: análise/documento, envio, conversa, seleção, PDF, filtros, painéis e validação. |
 | [src/components/assistant/assistant-composer.tsx](<../frontend/src/components/assistant/assistant-composer.tsx>) | Campo de pergunta, anexos e aviso do Assistente real. |
-| [src/components/analysis/analysis-workspace.tsx](<../frontend/src/components/analysis/analysis-workspace.tsx>) | Painéis redimensionáveis e PanelToggles; persiste visibilidade e larguras. |
+| [src/components/analysis/analysis-workspace.tsx](<../frontend/src/components/analysis/analysis-workspace.tsx>) | Painéis redimensionáveis; persiste visibilidade e larguras. Carregado sob demanda. |
+| [src/components/analysis/panel-toggles.tsx](<../frontend/src/components/analysis/panel-toggles.tsx>) | Botões de liga/desliga dos painéis e tipo AnalysisLayout, separados para não puxar o `react-resizable-panels` na tela inicial. |
 | [src/components/datasets/dataset-uploader.tsx](<../frontend/src/components/datasets/dataset-uploader.tsx>) | Envio paralelo de CSVs, progresso, estado de leitura, remoção e significado das colunas. |
 | [src/components/documents/document-source-dialog.tsx](<../frontend/src/components/documents/document-source-dialog.tsx>) | Entrada por texto ou link; garante análise e chama os hooks de criação. |
 | [src/components/chat/chat-message.tsx](<../frontend/src/components/chat/chat-message.tsx>) | Mensagens, streaming e chips de regras citadas. |
@@ -143,7 +249,8 @@ porque a operação precisa de POST. Consultas comuns usam o cliente OpenAPI tip
 | [src/lib/api/schema.d.ts](<../frontend/src/lib/api/schema.d.ts>) | Tipos gerados do OpenAPI. Atualizar com gen:api, nunca à mão. |
 | [src/lib/auth.ts](<../frontend/src/lib/auth.ts>) | Sessão, login/cadastro/logout, perfil/senha, validação de next e formatação do nome. |
 | [src/lib/analyses.ts](<../frontend/src/lib/analyses.ts>) | Consultas de análises, criação, upload/remoção de CSVs e polling das bases em processamento. |
-| [src/lib/documents.ts](<../frontend/src/lib/documents.ts>) | Documentos/PDF, regras, análise do trecho grifado, prévia da busca, aprovação, histórico e leitura de SSE. |
+| [src/lib/documents.ts](<../frontend/src/lib/documents.ts>) | Documentos/PDF, regras, análise do trecho grifado, prévia da busca, aprovação, histórico, atualização otimista da revisão e leitura de SSE. |
+| [src/lib/performance.ts](<../frontend/src/lib/performance.ts>) | Consultas da página de desempenho (resumo, linha do tempo, chamadas), simulações e rótulos das janelas e operações. |
 | [src/lib/queries.ts](<../frontend/src/lib/queries.ts>) | Operadores, descrição de filtros, edição/execução de buscas e paginação de registros. |
 | [src/lib/validation.ts](<../frontend/src/lib/validation.ts>) | Rótulos, comando de revalidação e consulta das evidências. |
 | [src/lib/theme.ts](<../frontend/src/lib/theme.ts>) | Leitura, aplicação e persistência do tema e preferência do sistema. |

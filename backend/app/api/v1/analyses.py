@@ -11,6 +11,11 @@ from app.api.deps import SessionDep, UserDep
 from app.core.config import get_settings
 from app.core.errors import AppError, NotFoundError, PayloadTooLargeError
 from app.db.models import Analysis, Dataset, Document, RuleQuery, User
+from app.processing.datasets.datasets import dataset_display_name, fit_to_size
+from app.processing.datasets.query_engine import delete_dataset_cache
+from app.processing.pipeline import ingest
+from app.processing.rules import rule_validation
+from app.processing.shared import storage
 from app.schemas.analyses import (
     AnalysisCreateIn,
     AnalysisDetailOut,
@@ -20,9 +25,6 @@ from app.schemas.analyses import (
 )
 from app.schemas.common import error_responses
 from app.schemas.documents import DocumentOut
-from app.services import ingest, rule_validation, storage
-from app.services.datasets import dataset_display_name, fit_to_size
-from app.services.query_engine import delete_dataset_cache
 
 router = APIRouter(tags=["análises"])
 

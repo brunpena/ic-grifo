@@ -2,6 +2,7 @@
 
 import type { PDFDocumentProxy, RenderTask, TextLayer } from "pdfjs-dist";
 import { type ReactNode, useEffect, useRef, useState } from "react";
+import { msg } from "@/lib/i18n";
 import { Skeleton } from "@/components/ui/skeleton";
 import { PdfPage } from "./pdf-viewer";
 
@@ -49,8 +50,8 @@ export function usePdfDocument(file: File | null): LoadState {
       if (cancelled) return;
       const message =
         error instanceof Error && error.name === "PasswordException"
-          ? "Este PDF é protegido por senha."
-          : "Não foi possível abrir este PDF. Confira se o arquivo não está corrompido.";
+          ? msg("Este PDF é protegido por senha.")
+          : msg("Não foi possível abrir este PDF. Confira se o arquivo não está corrompido.");
       setState({ status: "error", file, message });
     });
 

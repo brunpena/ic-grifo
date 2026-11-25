@@ -2,6 +2,7 @@
 
 import { Moon, Sun } from "lucide-react";
 import { useEffect, useSyncExternalStore } from "react";
+import { useT } from "@/lib/i18n";
 import { applyTheme, readStoredTheme, storeTheme } from "@/lib/theme";
 import { IconButton } from "./ui/icon-button";
 
@@ -19,6 +20,7 @@ const isDarkNow = () => document.documentElement.classList.contains("dark");
 export function ThemeToggle({ className }: { className?: string }) {
   // No servidor o tema é desconhecido; o valor real chega logo após a hidratação.
   const isDark = useSyncExternalStore(subscribe, isDarkNow, () => false);
+  const t = useT();
 
   // Enquanto a pessoa não escolher, acompanha mudanças do tema do sistema.
   useEffect(() => {
@@ -30,7 +32,7 @@ export function ThemeToggle({ className }: { className?: string }) {
     return () => media.removeEventListener("change", onSystemChange);
   }, []);
 
-  const label = isDark ? "Usar tema claro" : "Usar tema escuro";
+  const label = isDark ? t("Usar tema claro") : t("Usar tema escuro");
 
   return (
     <IconButton

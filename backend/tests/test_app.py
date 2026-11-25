@@ -89,3 +89,32 @@ async def test_migration_creates_schema(migrated_db):
         "ix_rules_embedding_hnsw",
     } <= indexes
     assert "hnsw" in hnsw and "vector_cosine_ops" in hnsw
+
+
+async def test_cors_preflight_is_cacheable(client):
+    resp = await client.options(
+        "/api/v1/health",
+        headers={"Origin": "http://localhost:3000", "Access-Control-Request-Method": "PATCH"},
+    )
+    assert resp.status_code == 200
+    # O navegador reaproveita o preflight em vez de repeti-lo a cada POST/PATCH/DELETE.
+    assert int(resp.headers["access-control-max-age"]) > 0
+
+
+async def test_large_json_is_gzipped_but_pdf_is_not(client):
+    from fastapi.responses import Response
+
+    @app.get("/_test/big-json")
+    async def _big_json():
+        return {"items": ["regra"] * 2000}
+
+    @app.get("/_test/big-pdf")
+    async def _big_pdf():
+        return Response(b"%PDF-" + b"0" * 5000, media_type="application/pdf")
+
+    resp = await client.get("/_test/big-json", headers={"Accept-Encoding": "gzip"})
+    assert resp.headers.get("content-encoding") == "gzip"
+    assert len(resp.json()["items"]) == 2000
+
+    resp = await client.get("/_test/big-pdf", headers={"Accept-Encoding": "gzip"})
+    assert "content-encoding" not in resp.headers

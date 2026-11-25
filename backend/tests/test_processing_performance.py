@@ -8,8 +8,9 @@ from types import SimpleNamespace
 
 import pytest
 
+from app.processing.datasets import datasets, query_engine
+from app.processing.rules import compliance, rule_validation
 from app.schemas.validation import ValidationPlan
-from app.services import compliance, datasets, query_engine, rule_validation
 
 CSV = b"value,label\n1,one\n2,two\n3,three\n"
 

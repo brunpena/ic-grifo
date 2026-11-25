@@ -1,5 +1,6 @@
 import { CircleCheck, CircleDashed, CircleX, type LucideIcon } from "lucide-react";
 import { RULE_STATUS, RULE_TYPES, type RuleStatus, type RuleType } from "@/lib/design/tokens";
+import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
 const BADGE =
@@ -17,10 +18,11 @@ export function RuleTypeDot({ type, className }: { type: RuleType; className?: s
 }
 
 export function RuleTypeBadge({ type, className }: { type: RuleType; className?: string }) {
+  const t = useT();
   return (
     <span className={cn(BADGE, "bg-surface-muted text-foreground", className)}>
       <RuleTypeDot type={type} />
-      {RULE_TYPES[type].label}
+      {t(RULE_TYPES[type].label)}
     </span>
   );
 }
@@ -34,10 +36,11 @@ const STATUS_STYLE: Record<RuleStatus, { Icon: LucideIcon; className: string }> 
 /** O ícone é obrigatório para não confundir "validada" com o verde do tipo obrigação. */
 export function RuleStatusBadge({ status, className }: { status: RuleStatus; className?: string }) {
   const { Icon, className: tone } = STATUS_STYLE[status];
+  const t = useT();
   return (
     <span className={cn(BADGE, tone, className)}>
       <Icon size={14} strokeWidth={1.75} aria-hidden />
-      {RULE_STATUS[status].label}
+      {t(RULE_STATUS[status].label)}
     </span>
   );
 }

@@ -3,10 +3,10 @@ import uuid
 
 import pytest
 
+from app.processing.ai import llm
+from app.processing.datasets.datasets import parse_csv, parse_value
+from app.processing.datasets.query_engine import DatasetRef, QueryError, compile_query, run
 from app.schemas.queries import StructuredQuery
-from app.services import llm
-from app.services.datasets import parse_csv, parse_value
-from app.services.query_engine import DatasetRef, QueryError, compile_query, run
 
 CSV = (
     "Número;Fornecedor;Valor;Assinatura;Ativo;Modalidade;Garantia\n"
@@ -198,7 +198,7 @@ def fake_ai(monkeypatch):
             },
         )
 
-    from app.services import validation_llm
+    from app.processing.ai import validation_llm
 
     async def meanings(name, columns):
         return [{**c, "semantic": {"meaning": c["name"], "confidence": "high"}} for c in columns]
@@ -382,7 +382,7 @@ async def test_highlighted_rule_becomes_an_approved_query(migrated_db, client, f
 
 
 def test_readable_sql_uses_real_names_and_inline_values():
-    from app.services.duckdb_sql import readable_sql
+    from app.processing.datasets.duckdb_sql import readable_sql
 
     query = StructuredQuery.model_validate(
         {

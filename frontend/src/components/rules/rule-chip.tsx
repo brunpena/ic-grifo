@@ -2,6 +2,7 @@
 
 import { RuleTypeDot } from "@/components/ui/badge";
 import { RULE_TYPES, type RuleType } from "@/lib/design/tokens";
+import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
 type RuleChipProps = {
@@ -16,6 +17,7 @@ type RuleChipProps = {
 
 /** Regra citada numa resposta: bolinha da cor do tipo e o resumo curto. */
 export function RuleChip({ type, summary, onHighlight, onClick, className }: RuleChipProps) {
+  const t = useT();
   return (
     <button
       type="button"
@@ -31,7 +33,7 @@ export function RuleChip({ type, summary, onHighlight, onClick, className }: Rul
       )}
     >
       <RuleTypeDot type={type} />
-      <span className="sr-only">{RULE_TYPES[type].label}: </span>
+      <span className="sr-only">{t(RULE_TYPES[type].label)}: </span>
       <span className="truncate">{summary}</span>
     </button>
   );

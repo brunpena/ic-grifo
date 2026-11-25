@@ -8,6 +8,7 @@ import { IconButton } from "@/components/ui/icon-button";
 import { Input, Textarea } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
 import { COLUMN_TYPE_LABELS, type ColumnType, type Dataset, type DatasetColumn } from "@/lib/analyses";
+import { useT } from "@/lib/i18n";
 import {
   type ConditionValue,
   isFlat,
@@ -76,6 +77,7 @@ export type QueryBuilderState = ReturnType<typeof useQueryBuilder>;
  * `build()` devolve a busca pronta ou `null`, com o motivo em `error`.
  */
 export function useQueryBuilder(initial: StructuredQuery, datasets: Dataset[]) {
+  const t = useT();
   const [mode, setMode] = useState<"form" | "json">(isFlat(initial) ? "form" : "json");
   const [draft, setDraft] = useState<Draft>(() => toDraft(initial));
   const [json, setJson] = useState(() => JSON.stringify(initial, null, 2));
@@ -91,12 +93,12 @@ export function useQueryBuilder(initial: StructuredQuery, datasets: Dataset[]) {
       try {
         const parsed = JSON.parse(json) as StructuredQuery;
         if (!isFlat(parsed)) {
-          setError("Buscas com grupos (condições dentro de condições) só podem ser editadas em JSON.");
+          setError(t("Buscas com grupos (condições dentro de condições) só podem ser editadas em JSON."));
           return;
         }
         setDraft(toDraft(parsed));
       } catch {
-        setError("O JSON não é válido.");
+        setError(t("O JSON não é válido."));
         return;
       }
     }
@@ -109,12 +111,12 @@ export function useQueryBuilder(initial: StructuredQuery, datasets: Dataset[]) {
       try {
         return JSON.parse(json) as StructuredQuery;
       } catch {
-        setError("O JSON não é válido.");
+        setError(t("O JSON não é válido."));
         return null;
       }
     }
     if (!draft.dataset) {
-      setError("Escolha a base de dados.");
+      setError(t("Escolha a base de dados."));
       return null;
     }
     return fromDraft(draft, columns);
@@ -134,6 +136,7 @@ type QueryBuilderProps = {
 
 /** Formulário da busca: base, lógica e condições, ou o JSON da busca. */
 export function QueryBuilder({ state, datasets, onEdit, compact }: QueryBuilderProps) {
+  const t = useT();
   const { mode, switchMode, draft, json, dataset, columns } = state;
   const columnOf = (name: string) => columns.find((c) => c.name === name);
   const setDraft: typeof state.setDraft = (value) => {
@@ -146,19 +149,19 @@ export function QueryBuilder({ state, datasets, onEdit, compact }: QueryBuilderP
   return (
     <div className="flex min-w-0 flex-col gap-3">
       <div className="flex items-center justify-between gap-2">
-        <p className="text-xs text-foreground-subtle">Encontre os registros aos quais a regra se aplica.</p>
+        <p className="text-xs text-foreground-subtle">{t("Encontre os registros aos quais esta regra se aplica.")}</p>
         <Button
           size="sm"
           variant="ghost"
           icon={mode === "form" ? <Braces size={16} strokeWidth={1.75} aria-hidden /> : <ListFilter size={16} strokeWidth={1.75} aria-hidden />}
           onClick={() => switchMode(mode === "form" ? "json" : "form")}
         >
-          {mode === "form" ? "JSON" : "Formulário"}
+          {mode === "form" ? t("Editar como JSON") : t("Editar no formulário")}
         </Button>
       </div>
 
       {mode === "json" ? (
-        <Field label="Busca (JSON)" htmlFor="query-json" hint="Formato: dataset, logic (and/or) e conditions.">
+        <Field label={t("Busca (JSON)")} htmlFor="query-json" hint={t("Formato: dataset, logic (and/or) e conditions.")}>
           <Textarea
             id="query-json"
             rows={compact ? 10 : 14}
@@ -174,13 +177,13 @@ export function QueryBuilder({ state, datasets, onEdit, compact }: QueryBuilderP
       ) : (
         <>
           <div className={cn("grid gap-3", !compact && "sm:grid-cols-2")}>
-            <Field label="Base de dados" htmlFor="query-dataset">
+            <Field label={t("Base de dados")} htmlFor="query-dataset">
               <Select
                 id="query-dataset"
                 value={draft.dataset}
                 onChange={(e) => setDraft({ ...draft, dataset: e.target.value, conditions: [] })}
               >
-                {!dataset && <option value="">{draft.dataset ? `${draft.dataset} (não existe)` : "Escolha a base"}</option>}
+                {!dataset && <option value="">{draft.dataset ? t("{name} (removida)", { name: draft.dataset }) : t("Escolha a base")}</option>}
                 {datasets.map((d) => (
                   <option key={d.id} value={d.name}>
                     {d.name}
@@ -188,23 +191,23 @@ export function QueryBuilder({ state, datasets, onEdit, compact }: QueryBuilderP
                 ))}
               </Select>
             </Field>
-            <Field label="Registros que atendem a" htmlFor="query-logic">
+            <Field label={t("Registros que atendem a")} htmlFor="query-logic">
               <Select
                 id="query-logic"
                 value={draft.logic}
                 onChange={(e) => setDraft({ ...draft, logic: e.target.value === "or" ? "or" : "and" })}
               >
-                <option value="and">todas as condições</option>
-                <option value="or">qualquer condição</option>
+                <option value="and">{t("todas as condições")}</option>
+                <option value="or">{t("qualquer condição")}</option>
               </Select>
             </Field>
           </div>
 
           <fieldset className="flex flex-col gap-2">
-            <legend className="mb-1.5 text-[13px] font-medium">Condições</legend>
+            <legend className="mb-1.5 text-[13px] font-medium">{t("Condições")}</legend>
             {draft.conditions.length === 0 && (
               <p className="rounded-md border border-dashed border-border px-3 py-2 text-[13px] text-foreground-muted">
-                Sem condições, a busca traz todos os registros da base.
+                {t("Sem condições, a busca traz todos os registros da base.")}
               </p>
             )}
             {draft.conditions.map((c, index) => {
@@ -213,7 +216,7 @@ export function QueryBuilder({ state, datasets, onEdit, compact }: QueryBuilderP
               return (
                 <div key={c.key} className="flex flex-wrap items-start gap-2 rounded-md bg-surface-muted p-2">
                   <Select
-                    aria-label={`Coluna da condição ${index + 1}`}
+                    aria-label={t("Coluna da condição {n}", { n: index + 1 })}
                     value={column ? c.column : ""}
                     onChange={(e) => {
                       const next = columnOf(e.target.value);
@@ -227,15 +230,15 @@ export function QueryBuilder({ state, datasets, onEdit, compact }: QueryBuilderP
                     }}
                     className="min-w-40 flex-1"
                   >
-                    {!column && <option value="">{c.column ? `${c.column} (não existe)` : "Coluna"}</option>}
+                    {!column && <option value="">{c.column ? t("{name} (não existe)", { name: c.column }) : t("Coluna")}</option>}
                     {columns.map((col) => (
                       <option key={col.name} value={col.name}>
-                        {col.name} · {COLUMN_TYPE_LABELS[col.type]}
+                        {col.name} · {t(COLUMN_TYPE_LABELS[col.type])}
                       </option>
                     ))}
                   </Select>
                   <Select
-                    aria-label={`Operador da condição ${index + 1}`}
+                    aria-label={t("Operador da condição {n}", { n: index + 1 })}
                     value={c.op}
                     onChange={(e) => update(c.key, { op: e.target.value as QueryOperator })}
                     className="w-44"
@@ -243,7 +246,7 @@ export function QueryBuilder({ state, datasets, onEdit, compact }: QueryBuilderP
                   >
                     {(operators.length ? operators : [c.op]).map((op) => (
                       <option key={op} value={op}>
-                        {OPERATOR_LABELS[op]}
+                        {t(OPERATOR_LABELS[op])}
                       </option>
                     ))}
                   </Select>
@@ -251,7 +254,7 @@ export function QueryBuilder({ state, datasets, onEdit, compact }: QueryBuilderP
                     <ValueInputs condition={c} column={column} index={index} onChange={(changes) => update(c.key, changes)} />
                   )}
                   <IconButton
-                    aria-label={`Remover condição ${index + 1}`}
+                    aria-label={t("Remover condição {n}", { n: index + 1 })}
                     icon={<Trash2 size={16} strokeWidth={1.75} aria-hidden />}
                     onClick={() => setDraft((d) => ({ ...d, conditions: d.conditions.filter((x) => x.key !== c.key) }))}
                     className="mt-0.5"
@@ -277,7 +280,7 @@ export function QueryBuilder({ state, datasets, onEdit, compact }: QueryBuilderP
               }}
               className="self-start"
             >
-              Adicionar condição
+              {t("Adicionar condição")}
             </Button>
           </fieldset>
         </>
@@ -304,14 +307,15 @@ function ValueInputs({
   index: number;
   onChange: (changes: Partial<DraftCondition>) => void;
 }) {
-  const label = `Valor da condição ${index + 1}`;
+  const t = useT();
+  const label = t("Valor da condição {n}", { n: index + 1 });
   const listId = `query-values-${condition.key}`;
   if (column?.type === "boolean") {
     return (
       <Select aria-label={label} value={condition.value} onChange={(e) => onChange({ value: e.target.value })} className="w-32">
         <option value="">—</option>
-        <option value="true">sim</option>
-        <option value="false">não</option>
+        <option value="true">{t("sim")}</option>
+        <option value="false">{t("não")}</option>
       </Select>
     );
   }
@@ -321,8 +325,8 @@ function ValueInputs({
         aria-label={label}
         value={condition.value}
         onChange={(e) => onChange({ value: e.target.value })}
-        placeholder="Valores separados por ;"
-        title={column?.values.length ? `Valores da base: ${column.values.join("; ")}` : undefined}
+        placeholder={t("Valores separados por ;")}
+        title={column?.values.length ? t("Valores da base: {values}", { values: column.values.join("; ") }) : undefined}
         className="min-w-40 flex-1"
       />
     );
@@ -332,7 +336,7 @@ function ValueInputs({
   return (
     <div className="flex min-w-40 flex-1 items-center gap-2">
       <Input
-        aria-label={condition.op === "between" ? `${label} (mínimo)` : label}
+        aria-label={condition.op === "between" ? t("{label} (mínimo)", { label }) : label}
         type={type}
         step={step}
         list={column?.values.length ? listId : undefined}
@@ -341,9 +345,9 @@ function ValueInputs({
       />
       {condition.op === "between" && (
         <>
-          <span className="text-xs text-foreground-subtle">e</span>
+          <span className="text-xs text-foreground-subtle">{t("e")}</span>
           <Input
-            aria-label={`${label} (máximo)`}
+            aria-label={t("{label} (máximo)", { label })}
             type={type}
             step={step}
             value={condition.value2}

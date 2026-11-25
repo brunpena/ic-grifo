@@ -9,6 +9,7 @@ import { useToast } from "@/components/ui/toast";
 import type { Dataset } from "@/lib/analyses";
 import { errorMessage } from "@/lib/api";
 import type { Rule } from "@/lib/documents";
+import { useT } from "@/lib/i18n";
 import { type StructuredQuery, useDeleteRuleQuery, useSetRuleQuery } from "@/lib/queries";
 
 function initialQuery(rule: Rule, datasets: Dataset[]): StructuredQuery {
@@ -26,11 +27,12 @@ type QueryEditorDialogProps = {
 
 /** Edita (ou cria) a busca de uma regra. A validação final é a do back, que explica o erro. */
 export function QueryEditorDialog({ rule, datasets, documentId, onClose }: QueryEditorDialogProps) {
+  const t = useT();
   return (
     <Dialog
       open={!!rule}
       onOpenChange={(open) => !open && onClose()}
-      title="Busca da regra"
+      title={t("Busca da regra")}
       description={rule?.summary}
       className="w-[760px]"
     >
@@ -42,6 +44,7 @@ export function QueryEditorDialog({ rule, datasets, documentId, onClose }: Query
 
 function QueryEditorForm({ rule, datasets, documentId, onClose }: Omit<QueryEditorDialogProps, "rule"> & { rule: Rule }) {
   const toast = useToast();
+  const t = useT();
   const builder = useQueryBuilder(initialQuery(rule, datasets), datasets);
   const save = useSetRuleQuery(documentId);
   const remove = useDeleteRuleQuery(documentId);
@@ -55,13 +58,13 @@ function QueryEditorForm({ rule, datasets, documentId, onClose }: Omit<QueryEdit
       {
         onSuccess: () => {
           toast({
-            title: "Busca salva",
-            description: "Selecione a regra para consultar os registros na tabela.",
+            title: t("Busca salva"),
+            description: t("Selecione a regra para consultar os registros na tabela."),
             variant: "success",
           });
           onClose();
         },
-        onError: (err) => builder.setError(errorMessage(err)),
+        onError: (err) => builder.setError(errorMessage(err, t)),
       },
     );
   };
@@ -69,7 +72,7 @@ function QueryEditorForm({ rule, datasets, documentId, onClose }: Omit<QueryEdit
   if (!datasets.length) {
     return (
       <p className="text-[13px] text-foreground-muted">
-        Esta análise não tem bases de dados. Envie um CSV para transformar a regra em busca.
+        {t("Esta análise não tem bases de dados. Envie um CSV para transformar a regra em busca.")}
       </p>
     );
   }
@@ -82,13 +85,13 @@ function QueryEditorForm({ rule, datasets, documentId, onClose }: Omit<QueryEdit
 
       {rule.category === "geral" && !rule.query && (
         <p className="text-xs text-foreground-muted">
-          Esta regra foi registrada como geral (não verificável no CSV). Ao salvar uma busca, ela passa para as regras verificáveis.
+          {t("Esta regra foi registrada como geral (não verificável no CSV). Ao salvar uma busca, ela passa para as regras verificáveis.")}
         </p>
       )}
 
       <QueryBuilder state={builder} datasets={datasets} />
 
-      {rule.query?.state === "erro" && !builder.error && <FormError>Erro na busca atual: {rule.query.error}</FormError>}
+      {rule.query?.state === "erro" && !builder.error && <FormError>{t("Erro na busca atual: {error}", { error: t(rule.query.error ?? "") })}</FormError>}
       {builder.error && <FormError>{builder.error}</FormError>}
 
       <div className="flex flex-wrap items-center justify-end gap-2">
@@ -100,18 +103,18 @@ function QueryEditorForm({ rule, datasets, documentId, onClose }: Omit<QueryEdit
             onClick={() =>
               remove.mutate(rule.id, {
                 onSuccess: onClose,
-                onError: (err) => builder.setError(errorMessage(err)),
+                onError: (err) => builder.setError(errorMessage(err, t)),
               })
             }
           >
-            Remover busca
+            {t("Remover busca")}
           </Button>
         )}
         <Button variant="ghost" onClick={onClose}>
-          Cancelar
+          {t("Cancelar")}
         </Button>
         <Button type="submit" variant="primary" loading={save.isPending}>
-          Salvar e buscar
+          {t("Salvar e buscar")}
         </Button>
       </div>
     </form>

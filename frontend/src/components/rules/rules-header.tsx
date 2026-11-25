@@ -6,6 +6,7 @@ import { ProgressBar } from "@/components/ui/progress-bar";
 import { RuleTypeSelect } from "@/components/ui/rule-type-select";
 import { Select } from "@/components/ui/select";
 import { RULE_STATUS, type RuleStatus, type RuleType } from "@/lib/design/tokens";
+import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
 const STATUSES = Object.keys(RULE_STATUS) as RuleStatus[];
@@ -54,6 +55,7 @@ export function RulesHeader({
   categories,
   className,
 }: RulesHeaderProps) {
+  const t = useT();
   return (
     <div className={cn("flex shrink-0 flex-col gap-3 border-b border-border bg-surface p-3", className)}>
       {categories ? (
@@ -83,9 +85,10 @@ export function RulesHeader({
       ) : (
       <div className="flex flex-col gap-1.5">
         <p className="text-[13px] text-foreground-muted tabular-nums">
-          <span className="font-medium text-foreground">{validated}</span> de {total} regras validadas
+          <span className="font-medium text-foreground">{t.number(validated)}</span>{" "}
+          {t.plural(total, "de {n} regra validada", "de {n} regras validadas")}
         </p>
-        <ProgressBar value={validated} max={total} label="Regras validadas" />
+        <ProgressBar value={validated} max={total} label={t("Regras validadas")} />
       </div>
       )}
       <div className="flex flex-wrap gap-2">
@@ -93,19 +96,19 @@ export function RulesHeader({
           allowAll
           value={typeFilter}
           onChange={onTypeFilterChange}
-          aria-label="Filtrar por tipo"
+          aria-label={t("Filtrar por tipo")}
           className="w-44"
         />
         <Select
-          aria-label="Filtrar por situação"
+          aria-label={t("Filtrar por situação")}
           value={statusFilter ?? ""}
           onChange={(e) => onStatusFilterChange((e.target.value || null) as RuleStatus | null)}
           className="w-44"
         >
-          <option value="">Todas as situações</option>
+          <option value="">{t("Todas as situações")}</option>
           {STATUSES.map((s) => (
             <option key={s} value={s}>
-              {RULE_STATUS[s].label}
+              {t(RULE_STATUS[s].label)}
             </option>
           ))}
         </Select>
@@ -131,6 +134,7 @@ export function RulesFilterNotice({
   onShowAll: () => void;
   className?: string;
 }) {
+  const t = useT();
   return (
     <div
       role="status"
@@ -141,7 +145,7 @@ export function RulesFilterNotice({
     >
       <Info size={16} strokeWidth={1.75} aria-hidden className="shrink-0 text-foreground-subtle" />
       <span>
-        Mostrando {count} {count === 1 ? "regra" : "regras"} da resposta
+        {t.plural(count, "Mostrando {n} regra da resposta", "Mostrando {n} regras da resposta")}
       </span>
       <span aria-hidden>·</span>
       <button
@@ -149,7 +153,7 @@ export function RulesFilterNotice({
         onClick={onShowAll}
         className="rounded-sm text-accent underline-offset-2 hover:underline"
       >
-        mostrar todas as regras
+        {t("mostrar todas as regras")}
       </button>
     </div>
   );

@@ -8,6 +8,7 @@ import { Field, FormError, fieldDescribedBy } from "@/components/ui/field";
 import { Input, Textarea } from "@/components/ui/input";
 import { errorMessage } from "@/lib/api";
 import { type DocumentInfo, useCreateTextDocument, useCreateUrlDocument } from "@/lib/documents";
+import { msg, useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
 export type DocumentSourceMode = "text" | "url";
@@ -22,12 +23,13 @@ type DocumentSourceDialogProps = {
 };
 
 const MODES: { value: DocumentSourceMode; label: string; icon: typeof Type }[] = [
-  { value: "text", label: "Colar texto", icon: Type },
-  { value: "url", label: "Link", icon: Link2 },
+  { value: "text", label: msg("Colar texto"), icon: Type },
+  { value: "url", label: msg("Link"), icon: Link2 },
 ];
 
 /** Novo documento a partir de texto colado ou de um link (PDF ou página HTML). */
 export function DocumentSourceDialog({ mode, onModeChange, ensureAnalysis, onCreated }: DocumentSourceDialogProps) {
+  const t = useT();
   const [title, setTitle] = useState("");
   const [content, setContent] = useState("");
   const [url, setUrl] = useState("");
@@ -49,11 +51,11 @@ export function DocumentSourceDialog({ mode, onModeChange, ensureAnalysis, onCre
     setError(null);
     setUrlError(null);
     if (mode === "url" && !/^https?:\/\/\S+$/i.test(url.trim())) {
-      setUrlError("Use um link completo, começando com http:// ou https://.");
+      setUrlError(t("Use um link completo, começando com http:// ou https://."));
       return;
     }
     if (mode === "text" && !content.trim()) {
-      setError("Cole o texto do documento.");
+      setError(t("Cole o texto do documento."));
       return;
     }
     try {
@@ -68,7 +70,7 @@ export function DocumentSourceDialog({ mode, onModeChange, ensureAnalysis, onCre
       onModeChange(null);
       onCreated(doc);
     } catch (err) {
-      setError(errorMessage(err));
+      setError(errorMessage(err, t));
     }
   };
 
@@ -76,16 +78,16 @@ export function DocumentSourceDialog({ mode, onModeChange, ensureAnalysis, onCre
     <Dialog
       open={mode !== null}
       onOpenChange={(open) => !open && close()}
-      title="Adicionar documento"
+      title={t("Adicionar documento")}
       description={
         mode === "url"
-          ? "O Grifo baixa o PDF ou a página HTML do link e lê o texto."
-          : "Cole o texto de um contrato, edital ou regulamento."
+          ? t("O Grifo baixa o PDF ou a página HTML do link e lê o texto.")
+          : t("Cole o texto de um contrato, edital ou regulamento.")
       }
       className="w-[600px]"
     >
       <form onSubmit={submit} className="flex flex-col gap-4">
-        <div role="tablist" aria-label="Origem do documento" className="flex gap-1 rounded-md bg-surface-muted p-1">
+        <div role="tablist" aria-label={t("Origem do documento")} className="flex gap-1 rounded-md bg-surface-muted p-1">
           {MODES.map(({ value, label, icon: Icon }) => (
             <button
               key={value}
@@ -103,16 +105,16 @@ export function DocumentSourceDialog({ mode, onModeChange, ensureAnalysis, onCre
               )}
             >
               <Icon size={14} strokeWidth={1.75} aria-hidden />
-              {label}
+              {t(label)}
             </button>
           ))}
         </div>
 
         {mode === "url" ? (
           <Field
-            label="Link"
+            label={t("Link")}
             htmlFor="doc-url"
-            hint="Apenas endereços públicos. Páginas que exigem login não funcionam."
+            hint={t("Apenas endereços públicos. Páginas que exigem login não funcionam.")}
             error={urlError}
           >
             <Input
@@ -120,7 +122,7 @@ export function DocumentSourceDialog({ mode, onModeChange, ensureAnalysis, onCre
               type="url"
               inputMode="url"
               autoFocus
-              placeholder="https://www.exemplo.gov.br/edital.pdf"
+              placeholder={t("https://www.exemplo.gov.br/edital.pdf")}
               value={url}
               onChange={(e) => setUrl(e.target.value)}
               aria-invalid={!!urlError || undefined}
@@ -130,17 +132,17 @@ export function DocumentSourceDialog({ mode, onModeChange, ensureAnalysis, onCre
           </Field>
         ) : (
           <>
-            <Field label="Título (opcional)" htmlFor="doc-title">
+            <Field label={t("Título (opcional)")} htmlFor="doc-title">
               <Input
                 id="doc-title"
                 maxLength={200}
-                placeholder="Usa a primeira linha do texto se ficar vazio"
+                placeholder={t("Usa a primeira linha do texto se ficar vazio")}
                 value={title}
                 onChange={(e) => setTitle(e.target.value)}
                 disabled={busy}
               />
             </Field>
-            <Field label="Texto" htmlFor="doc-content">
+            <Field label={t("Texto")} htmlFor="doc-content">
               <Textarea
                 id="doc-content"
                 autoFocus
@@ -158,10 +160,10 @@ export function DocumentSourceDialog({ mode, onModeChange, ensureAnalysis, onCre
 
         <div className="flex justify-end gap-2">
           <Button variant="ghost" onClick={close} disabled={busy}>
-            Cancelar
+            {t("Cancelar")}
           </Button>
           <Button type="submit" variant="primary" loading={busy}>
-            {mode === "url" ? (busy ? "Baixando…" : "Baixar e analisar") : "Analisar texto"}
+            {mode === "url" ? (busy ? t("Baixando…") : t("Baixar e analisar")) : t("Analisar texto")}
           </Button>
         </div>
       </form>

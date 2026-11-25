@@ -9,6 +9,8 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { Skeleton } from "@/components/ui/skeleton";
 import { errorMessage } from "@/lib/api";
 import { useCurrentUser } from "@/lib/auth";
+import { stripLocale, useLocalePath, useT } from "@/lib/i18n";
+import { useHydrated } from "@/lib/use-hydrated";
 import { DESKTOP_QUERY, useMediaQuery } from "@/lib/use-media-query";
 import { cn } from "@/lib/utils";
 import { AppHeader } from "./app-header";
@@ -18,7 +20,7 @@ const SIDEBAR_KEY = "sidebar-collapsed";
 /** Recolhida por padrão, como no lineFlow; a escolha da pessoa fica salva. */
 function readCollapsed() {
   try {
-    return typeof window === "undefined" || localStorage.getItem(SIDEBAR_KEY) !== "0";
+    return localStorage.getItem(SIDEBAR_KEY) !== "0";
   } catch {
     return true;
   }
@@ -28,14 +30,21 @@ function readCollapsed() {
 export function AppShell({ children }: { children: ReactNode }) {
   const router = useRouter();
   const pathname = usePathname();
+  const hydrated = useHydrated();
   const { data: user, isPending, error, refetch, isRefetching } = useCurrentUser();
-  const [collapsed, setCollapsed] = useState(readCollapsed);
+  // `null` = a pessoa ainda não mexeu nesta aba; vale o que ficou salvo no navegador.
+  const [collapsedChoice, setCollapsed] = useState<boolean | null>(null);
+  // Durante a hidratação, o mesmo padrão do HTML do servidor (recolhida).
+  const collapsed = hydrated ? (collapsedChoice ?? readCollapsed()) : true;
   const [mobileOpen, setMobileOpen] = useState(false);
   const isDesktop = useMediaQuery(DESKTOP_QUERY);
+  const t = useT();
+  const href = useLocalePath();
+  const loginPath = `${href("/login")}?next=${encodeURIComponent(stripLocale(pathname))}`;
 
   useEffect(() => {
-    if (!isPending && user === null) router.replace(`/login?next=${encodeURIComponent(pathname)}`);
-  }, [isPending, user, pathname, router]);
+    if (!isPending && user === null) router.replace(loginPath);
+  }, [isPending, user, loginPath, router]);
 
   useEffect(() => {
     if (!mobileOpen) return;
@@ -51,11 +60,11 @@ export function AppShell({ children }: { children: ReactNode }) {
       <div className="flex min-h-dvh flex-1 items-center justify-center p-4">
         <EmptyState
           icon={CloudOff}
-          title="Não foi possível conectar"
-          description={errorMessage(error)}
+          title={t("Não foi possível conectar")}
+          description={errorMessage(error, t)}
           action={
             <Button size="sm" icon={<RotateCcw size={16} strokeWidth={1.75} aria-hidden />} loading={isRefetching} onClick={() => refetch()}>
-              Tentar novamente
+              {t("Tentar novamente")}
             </Button>
           }
         />
@@ -63,7 +72,9 @@ export function AppShell({ children }: { children: ReactNode }) {
     );
   }
 
-  if (!user) return <ShellSkeleton collapsed={collapsed} />;
+  // O servidor sempre envia o skeleton; o usuário guardado no navegador só aparece depois
+  // da hidratação, senão o HTML não coincide.
+  if (!user || !hydrated) return <ShellSkeleton collapsed={collapsed} />;
 
   const toggleSidebar = () => {
     if (isDesktop) {
@@ -104,10 +115,11 @@ export function AppShell({ children }: { children: ReactNode }) {
 }
 
 /** Mesma estrutura da tela logada (menu, cabeçalho e conteúdo) enquanto a sessão é conferida. */
-function ShellSkeleton({ collapsed }: { collapsed: boolean }) {
+export function ShellSkeleton({ collapsed }: { collapsed: boolean }) {
+  const t = useT();
   return (
     <div role="status" aria-busy className="flex h-dvh overflow-hidden">
-      <span className="sr-only">Carregando</span>
+      <span className="sr-only">{t("Carregando")}</span>
       <aside
         aria-hidden
         className={cn(

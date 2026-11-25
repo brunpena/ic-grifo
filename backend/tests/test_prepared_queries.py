@@ -10,9 +10,11 @@ from app.core.config import get_settings
 from app.db.models import RuleQuery
 from app.db.session import get_session
 from app.main import app
+from app.processing.ai import llm
+from app.processing.datasets import query_engine
+from app.processing.datasets.datasets import parse_csv
+from app.processing.rules import rule_queries
 from app.schemas.queries import StructuredQuery
-from app.services import llm, query_engine, rule_queries
-from app.services.datasets import parse_csv
 
 CSV = (
     b"id;Fornecedor;Valor;Assinatura\n001;Alfa;60000;01/01/2026\n"

@@ -8,8 +8,9 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 
 from app.api.v1 import documents
-from app.services import document_upload, storage
-from app.services.converters import ConversionError, SourceFile, UnsupportedFormatError
+from app.processing.documents import document_upload
+from app.processing.documents.converters import ConversionError, SourceFile, UnsupportedFormatError
+from app.processing.shared import storage
 
 
 @pytest.mark.parametrize(

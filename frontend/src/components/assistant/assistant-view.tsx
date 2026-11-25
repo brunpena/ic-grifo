@@ -12,8 +12,10 @@ import {
   Type,
   X,
 } from "lucide-react";
+import { useQueryClient } from "@tanstack/react-query";
+import dynamic from "next/dynamic";
 import { type DragEvent, useEffect, useRef, useState } from "react";
-import { AnalysisWorkspace, PanelToggles, type AnalysisLayout } from "@/components/analysis/analysis-workspace";
+import { type AnalysisLayout, PanelToggles } from "@/components/analysis/panel-toggles";
 import { BrandLogo } from "@/components/brand-logo";
 import { ProcessingSteps } from "@/components/chat/processing-steps";
 import { DatasetUploader } from "@/components/datasets/dataset-uploader";
@@ -25,13 +27,12 @@ import { ExcerptPanel, ExcerptPanelEmpty, type ExcerptSelection } from "@/compon
 import { PDF_TO_CSS, PdfDocumentPages, usePdfDocument } from "@/components/document/pdf-document";
 import { PdfPage, PdfViewer } from "@/components/document/pdf-viewer";
 import { PdfToolbar } from "@/components/document/pdf-toolbar";
-import { QueryEditorDialog } from "@/components/queries/query-editor-dialog";
-import { RecordsPanel } from "@/components/records/records-panel";
+import { RecordsTableSkeleton, RulesOverviewSkeleton } from "@/components/records/records-skeleton";
 import { RuleLegend } from "@/components/document/rule-legend";
 import { SearchBar } from "@/components/document/search-bar";
 import { usePdfSearch } from "@/components/document/use-pdf-search";
 import { type RuleCategoryFilter, RulesHeader } from "@/components/rules/rules-header";
-import { RulesTable } from "@/components/rules/rules-table";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import { Dialog } from "@/components/ui/dialog";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -40,6 +41,8 @@ import { useToast } from "@/components/ui/toast";
 import { closeAnalysis, useAnalysis, useCloseAnalysis, useCreateAnalysis } from "@/lib/analyses";
 import { errorMessage } from "@/lib/api";
 import { firstName, useCurrentUser } from "@/lib/auth";
+import { msg, useT } from "@/lib/i18n";
+import { useAnalysisLifecycle, useAssistantRoute } from "./assistant-route";
 import type { RuleStatus, RuleType } from "@/lib/design/tokens";
 import {
   DOCUMENT_ACCEPT,
@@ -51,6 +54,7 @@ import {
   useDocumentFile,
   useRules,
   useResumeDocument,
+  seedDocument,
   useUpdateRule,
   useUploadDocument,
 } from "@/lib/documents";
@@ -59,9 +63,32 @@ import { describeQuery } from "@/lib/queries";
 import { DESKTOP_QUERY, useMediaQuery } from "@/lib/use-media-query";
 import { cn } from "@/lib/utils";
 
-type MobileTab = "document" | "excerpt" | "rules" | "table";
+// Peças do espaço de trabalho (documento aberto) ficam fora do pacote inicial: a tela de
+// entrada só mostra o envio das bases e o histórico. `preloadWorkspace` baixa esses
+// pacotes assim que uma análise começa, antes de o documento ficar pronto.
+const loadWorkspace = () => import("@/components/analysis/analysis-workspace");
+const loadRulesTable = () => import("@/components/rules/rules-table");
+const loadRecordsPanel = () => import("@/components/records/records-panel");
+const loadQueryEditor = () => import("@/components/queries/query-editor-dialog");
 
-const DOCUMENT_STEPS = ["Enviando", "Lendo o documento", "Pronto para grifar"] as const;
+function preloadWorkspace() {
+  void Promise.all([loadWorkspace(), loadRulesTable(), loadRecordsPanel(), loadQueryEditor()]).catch(() => {
+    // Sem rede agora: cada parte tenta de novo quando for exibida.
+  });
+}
+
+const AnalysisWorkspace = dynamic(() => loadWorkspace().then((m) => m.AnalysisWorkspace), {
+  loading: () => <Skeleton className="m-4 h-[calc(100%-2rem)]" />,
+});
+const RulesTable = dynamic(() => loadRulesTable().then((m) => m.RulesTable), {
+  loading: () => <RulesOverviewSkeleton />,
+});
+const RecordsPanel = dynamic(() => loadRecordsPanel().then((m) => m.RecordsPanel), {
+  loading: () => <RecordsTableSkeleton columns={null} />,
+});
+const QueryEditorDialog = dynamic(() => loadQueryEditor().then((m) => m.QueryEditorDialog));
+
+type MobileTab = "document" | "excerpt" | "rules" | "table";
 
 const EMPTY_RULES: Rule[] = [];
 
@@ -70,36 +97,45 @@ const rectsOn = (rule: Rule, page: number): PageRect[] =>
 
 export function AssistantView() {
   const toast = useToast();
+  const t = useT();
+  const queryClient = useQueryClient();
   const { data: user } = useCurrentUser();
   const isDesktop = useMediaQuery(DESKTOP_QUERY);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const [viewerWidth, setViewerWidth] = useState(0);
 
-  // Primeiro envio ainda sem resposta: o nome e, se for PDF, o arquivo para já exibir.
-  const [pendingUpload, setPendingUpload] = useState<{ name: string; file: File | null } | null>(null);
+  // Análise e documento vêm da URL (ver o layout de /assistente); `navigate` troca a URL.
+  const route = useAssistantRoute();
+  const { documentId } = route;
+  const docQuery = useDocument(documentId);
+  const { data: doc } = docQuery;
+  // Na página do documento, a análise vem do próprio documento.
+  const analysisId = route.analysisId ?? doc?.analysis_id ?? null;
+  const analysisQuery = useAnalysis(analysisId);
+  const { data: analysis } = analysisQuery;
+
+  // Primeiro envio ainda sem resposta: o nome e, se for PDF, o arquivo para já exibir. Só
+  // aparece na análise para a qual foi enviado (Voltar/Avançar levam a outras telas).
+  const [pendingUpload, setPendingUpload] = useState<{ name: string; file: File | null; analysisId: string } | null>(null);
+  const showPending = !documentId && !!pendingUpload && pendingUpload.analysisId === analysisId;
   const [datasetsOpen, setDatasetsOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [sourceMode, setSourceMode] = useState<DocumentSourceMode | null>(null);
-  // Análise em montagem: as bases vão antes do documento.
-  const [analysisId, setAnalysisId] = useState<string | null>(null);
-  const { data: analysis } = useAnalysis(analysisId);
   const createAnalysis = useCreateAnalysis();
+  const creatingAnalysis = useRef<Promise<string> | null>(null);
   const endAnalysis = useCloseAnalysis();
-  const closedAnalyses = useRef(new Set<string>());
-  const [documentId, setDocumentId] = useState<string | null>(null);
-  // Documento reaberto pelo histórico (não um envio novo): carrega já no espaço de trabalho.
-  const [reopenedId, setReopenedId] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
   const upload = useUploadDocument();
+  // O estado do envio só vale enquanto a tela mostra esse envio.
+  const shownUpload = showPending ? upload : null;
   const resumeDocument = useResumeDocument();
   const uploadMore = useUploadDocument();
-  const { data: doc } = useDocument(documentId);
   // Texto, HTML e links viram PDF no back; o PDF exibido vem sempre de lá (ou do cache).
   const documentFile = useDocumentFile(doc);
-  const file = documentId ? (documentFile.data ?? null) : (pendingUpload?.file ?? null);
-  const documentName = doc?.title ?? pendingUpload?.name ?? "";
-  const isOpen = !!documentId || !!pendingUpload;
+  const file = documentId ? (documentFile.data ?? null) : showPending ? pendingUpload.file : null;
+  const documentName = doc?.title ?? (showPending ? pendingUpload.name : "");
+  const isOpen = !!documentId || showPending;
   const pdf = usePdfDocument(file);
   const [layout, setLayout] = useState<AnalysisLayout>({ chat: false, ai: false, rules: true, table: true });
   // Busca no documento (Ctrl+F).
@@ -118,24 +154,18 @@ export function AssistantView() {
     (d) => d.status !== "error" && d.columns.length > 0,
   );
 
-  // Ao sair da tela ou fechar a aba, tenta entregar a limpeza mesmo durante a navegação.
+  // Uma análise começou (base enviada ou histórico reaberto): o espaço de trabalho vem a seguir.
   useEffect(() => {
-    if (!analysisId) return;
-    closedAnalyses.current.delete(analysisId);
-    const release = () => {
-      if (!closedAnalyses.current.has(analysisId)) {
-        closedAnalyses.current.add(analysisId);
-        void closeAnalysis(analysisId, true).catch(() => {
-          // O navegador pode interromper a rede durante o encerramento da aba.
-        });
-      }
-    };
-    window.addEventListener("pagehide", release);
-    return () => {
-      window.removeEventListener("pagehide", release);
-      release();
-    };
+    if (analysisId) preloadWorkspace();
   }, [analysisId]);
+
+  // Encerra a análise ao trocar por outra, sair do Assistente ou fechar a aba.
+  const closedAnalyses = useAnalysisLifecycle(analysisId);
+  // Ids da tela atual, para callbacks que terminam depois (ex.: fim de um envio).
+  const currentIds = useRef({ analysisId, documentId });
+  useEffect(() => {
+    currentIds.current = { analysisId, documentId };
+  });
 
   const [zoomOverride, setZoomOverride] = useState<number | null>(null);
   const [page, setPage] = useState(1);
@@ -167,7 +197,11 @@ export function AssistantView() {
     return () => window.removeEventListener("keydown", onKey);
   }, [isOpen]);
 
-  const resetView = () => {
+  // Outro documento (ou nenhum) na URL: a visualização volta ao padrão. Ajuste durante a
+  // renderização, sem efeito: a tela nova já aparece com o estado certo.
+  const [viewFor, setViewFor] = useState(documentId);
+  if (viewFor !== documentId) {
+    setViewFor(documentId);
     setDatasetsOpen(false);
     setZoomOverride(null);
     setSelectedId(null);
@@ -176,9 +210,10 @@ export function AssistantView() {
     setLayout({ chat: false, ai: false, rules: true, table: true });
     setSearchIndex(0);
     setCategoryFilter(null);
-    closeExcerpt();
-    upload.reset();
-  };
+    setActionOpen(false);
+    setExcerpt(null);
+    setDraftHighlight(null);
+  }
 
   const closeExcerpt = () => {
     setExcerpt(null);
@@ -205,14 +240,14 @@ export function AssistantView() {
   /** Envia os arquivos para a análise atual e abre o primeiro. */
   const openFiles = async (picked: File[]) => {
     if (!canUploadDocument) {
-      toast({ title: "Envie a base de dados primeiro", description: "Aguarde a leitura da base antes de enviar o documento.", variant: "error" });
+      toast({ title: t("Envie a base de dados primeiro"), description: t("Aguarde a leitura da base antes de enviar o documento."), variant: "error" });
       return;
     }
     const invalid = picked.filter((f) => !isDocumentFile(f));
     if (invalid.length) {
       toast({
-        title: "Formato não suportado",
-        description: `${invalid.map((f) => `“${f.name}”`).join(", ")}: envie PDF, HTML ou TXT.`,
+        title: t("Formato não suportado"),
+        description: t("{files}: envie PDF, HTML ou TXT.", { files: invalid.map((f) => `“${f.name}”`).join(", ") }),
         variant: "error",
       });
     }
@@ -222,12 +257,12 @@ export function AssistantView() {
     try {
       target = await ensureAnalysis();
     } catch (error) {
-      toast({ title: "Não foi possível criar a análise", description: errorMessage(error), variant: "error" });
+      toast({ title: t("Não foi possível criar a análise"), description: errorMessage(error, t), variant: "error" });
       return;
     }
-    setPendingUpload({ name: first.name, file: isPdfFile(first) ? first : null });
-    setDocumentId(null);
-    resetView();
+    setPendingUpload({ name: first.name, file: isPdfFile(first) ? first : null, analysisId: target });
+    // Enviar outro documento a partir de um já aberto: volta para a tela da análise.
+    if (documentId) route.navigate({ analysisId: target, documentId: null });
     upload.mutate(
       { file: first, analysisId: target },
       {
@@ -237,10 +272,10 @@ export function AssistantView() {
             void closeAnalysis(target, true).catch(() => {});
             return;
           }
-          setDocumentId(created.id);
-          setPendingUpload(null);
+          // Só abre o documento se a pessoa continua na análise para a qual ele foi enviado.
+          if (currentIds.current.analysisId === target) route.navigate({ analysisId: target, documentId: created.id });
         },
-        onError: (error) => toast({ title: "Não foi possível enviar", description: errorMessage(error), variant: "error" }),
+        onError: (error) => toast({ title: t("Não foi possível enviar"), description: errorMessage(error, t), variant: "error" }),
       },
     );
     for (const extra of rest) {
@@ -253,7 +288,7 @@ export function AssistantView() {
             }
           },
           onError: (error) =>
-            toast({ title: `Não foi possível enviar “${extra.name}”`, description: errorMessage(error), variant: "error" }),
+            toast({ title: t("Não foi possível enviar “{name}”", { name: extra.name }), description: errorMessage(error, t), variant: "error" }),
         },
       );
     }
@@ -262,18 +297,26 @@ export function AssistantView() {
   const openDocument = (target: DocumentInfo) => {
     setHistoryOpen(false);
     if (target.id === documentId) return;
-    setPendingUpload(null);
-    setDocumentId(target.id);
-    setReopenedId(target.status === "ready" ? target.id : null);
-    setAnalysisId(target.analysis_id);
-    resetView();
+    // O histórico já trouxe o documento: PDF e regras começam a carregar sem esperar
+    // outra consulta; a situação atual é conferida em segundo plano.
+    seedDocument(queryClient, target);
+    route.navigate({ analysisId: target.analysis_id, documentId: target.id });
   };
 
+  /** Análise atual; cria uma (e vai para o endereço dela) na primeira base enviada. */
   const ensureAnalysis = async () => {
     if (analysisId) return analysisId;
-    const created = await createAnalysis.mutateAsync(undefined);
-    setAnalysisId(created.id);
-    return created.id;
+    // Vários arquivos soltos de uma vez: todos esperam a mesma criação.
+    creatingAnalysis.current ??= createAnalysis
+      .mutateAsync(undefined)
+      .then((created) => {
+        route.navigate({ analysisId: created.id, documentId: null });
+        return created.id;
+      })
+      .finally(() => {
+        creatingAnalysis.current = null;
+      });
+    return creatingAnalysis.current;
   };
 
   const closeDocument = async () => {
@@ -284,14 +327,13 @@ export function AssistantView() {
         await endAnalysis.mutateAsync(analysisId);
       } catch (error) {
         closedAnalyses.current.delete(analysisId);
-        toast({ title: "Não foi possível encerrar a análise", description: errorMessage(error), variant: "error" });
+        toast({ title: t("Não foi possível encerrar a análise"), description: errorMessage(error, t), variant: "error" });
         return;
       }
     }
     setPendingUpload(null);
-    setDocumentId(null);
-    setAnalysisId(null);
-    resetView();
+    upload.reset();
+    route.navigate({ analysisId: null, documentId: null });
   };
 
   const viewerRef = (el: HTMLDivElement | null) => {
@@ -422,6 +464,26 @@ export function AssistantView() {
     />
   );
 
+  // Endereço de uma análise ou documento que não existe (ou de outra conta).
+  const routeError = (documentId && docQuery.isError && !doc ? docQuery.error : null)
+    ?? (route.analysisId && analysisQuery.isError && !analysis ? analysisQuery.error : null);
+  if (routeError) {
+    return (
+      <div className="flex h-full items-center justify-center p-4">
+        <EmptyState
+          icon={FileSearch}
+          title={documentId ? t("Não foi possível abrir o documento") : t("Não foi possível abrir a análise")}
+          description={errorMessage(routeError, t)}
+          action={
+            <Button size="sm" variant="primary" onClick={() => route.navigate({ analysisId: null, documentId: null }, { replace: true })}>
+              {t("Nova análise")}
+            </Button>
+          }
+        />
+      </div>
+    );
+  }
+
   if (!isOpen) {
     return (
       <div className="relative flex h-full flex-col" {...dropHandlers}>
@@ -430,31 +492,33 @@ export function AssistantView() {
           <div className="my-auto flex w-full max-w-2xl flex-col gap-6">
             <WorkflowSteps current={canUploadDocument ? 2 : 1} />
             <div className="text-center">
-              <h1 className="text-3xl font-medium tracking-tight">Vamos validar seus dados{user ? `, ${firstName(user.name)}` : ""}?</h1>
-              <p className="mt-3 text-sm text-foreground-muted">Envie a base de dados, adicione o documento de regras e confira o resultado em tabelas.</p>
+              <h1 className="text-3xl font-medium tracking-tight">
+                {user ? t("Vamos validar seus dados, {name}?", { name: firstName(user.name) }) : t("Vamos validar seus dados?")}
+              </h1>
+              <p className="mt-3 text-sm text-foreground-muted">{t("Envie a base de dados, adicione o documento de regras e confira o resultado em tabelas.")}</p>
             </div>
             <section aria-labelledby="step-datasets" className="flex flex-col gap-3 rounded-xl border border-border bg-surface p-5">
-              <h2 id="step-datasets" className="font-medium">1. Envie a base de dados</h2>
+              <h2 id="step-datasets" className="font-medium">{t("1. Envie a base de dados")}</h2>
               <DatasetUploader datasets={analysis?.datasets ?? []} ensureAnalysis={ensureAnalysis} />
             </section>
             {canUploadDocument ? (
               <section aria-labelledby="step-document" className="flex flex-col gap-3 rounded-xl border border-border bg-surface p-5">
-                <h2 id="step-document" className="font-medium">2. Envie o documento com as regras</h2>
-                <p className="text-sm text-foreground-muted">Depois, grife no documento cada trecho que for uma regra. A IA interpreta o trecho, diz se ele pode ser verificado na base e propõe a consulta; a regra só é salva quando você aprova.</p>
+                <h2 id="step-document" className="font-medium">{t("2. Envie o documento com as regras")}</h2>
+                <p className="text-sm text-foreground-muted">{t("Depois, grife no documento cada trecho que for uma regra. A IA interpreta o trecho, diz se ele pode ser verificado na base e propõe a consulta; a regra só é salva quando você aprova.")}</p>
                 <div className="flex flex-wrap gap-2">
-                  <Button variant="primary" icon={<FileUp size={16} aria-hidden />} onClick={attach}>Enviar documento</Button>
-                  <Button icon={<Type size={16} aria-hidden />} onClick={() => setSourceMode("text")}>Colar texto</Button>
-                  <Button icon={<Link2 size={16} aria-hidden />} onClick={() => setSourceMode("url")}>Usar um link</Button>
+                  <Button variant="primary" icon={<FileUp size={16} aria-hidden />} onClick={attach}>{t("Enviar documento")}</Button>
+                  <Button icon={<Type size={16} aria-hidden />} onClick={() => setSourceMode("text")}>{t("Colar texto")}</Button>
+                  <Button icon={<Link2 size={16} aria-hidden />} onClick={() => setSourceMode("url")}>{t("Usar um link")}</Button>
                 </div>
-                <p className="text-xs text-foreground-subtle">PDF, HTML ou TXT.</p>
+                <p className="text-xs text-foreground-subtle">{t("PDF, HTML ou TXT.")}</p>
               </section>
-            ) : <p role="status" className="text-center text-sm text-foreground-muted">O envio do documento fica disponível após a leitura da base de dados.</p>}
+            ) : <p role="status" className="text-center text-sm text-foreground-muted">{t("O envio do documento fica disponível após a leitura da base de dados.")}</p>}
             {!analysisId && (
               <section aria-labelledby="history" className="flex flex-col gap-3 rounded-xl border border-border bg-surface p-5">
                 <h2 id="history" className="flex items-center gap-2 font-medium">
-                  <History size={16} aria-hidden /> Histórico de análises
+                  <History size={16} aria-hidden /> {t("Histórico de análises")}
                 </h2>
-                <p className="text-sm text-foreground-muted">Reabra uma análise anterior com as regras, as consultas e a tabela já prontas.</p>
+                <p className="text-sm text-foreground-muted">{t("Reabra uma análise anterior com as regras, as consultas e a tabela já prontas.")}</p>
                 <AnalysisHistory onOpen={openDocument} className="max-h-80 overflow-y-auto" />
               </section>
             )}
@@ -485,14 +549,15 @@ export function AssistantView() {
   const zoom = zoomOverride ?? fitZoom;
 
   // Etapa atual: 0 enviando, 1 lendo, 2 pronto para grifar.
-  const step = upload.isPending ? 0 : !doc || doc.status === "processing" ? 1 : 2;
-  const failed = upload.isError || doc?.status === "error";
-  const failedStep = upload.isError ? 0 : 1;
+  const step = shownUpload?.isPending ? 0 : !doc || doc.status === "processing" ? 1 : 2;
+  const failed = !!shownUpload?.isError || doc?.status === "error";
+  const failedStep = shownUpload?.isError ? 0 : 1;
 
   // Validação geral em andamento: as regras continuam na tela, com um aviso.
   const generating = doc?.status === "extracting_rules";
-  // Documento aberto pelo histórico: a situação ainda não chegou, mostra o espaço de trabalho em skeleton.
-  const opening = !!documentId && documentId === reopenedId && !doc;
+  // Documento aberto pelo endereço ou pelo histórico: a situação ainda não chegou, mostra o
+  // espaço de trabalho em skeleton.
+  const opening = !!documentId && !doc;
   const showRules = ready || generating || opening;
   const rulesLoading = opening || (ready && rulesQuery.isPending);
 
@@ -501,10 +566,10 @@ export function AssistantView() {
                 onClick={() => {
                   if (!doc) return;
                   resumeDocument.mutate(doc.id, {
-                  onError: (error) => toast({ title: "Não foi possível continuar", description: errorMessage(error), variant: "error" }),
+                  onError: (error) => toast({ title: t("Não foi possível continuar"), description: errorMessage(error, t), variant: "error" }),
                   });
                 }}>
-                {resumeDocument.isPending ? "Retomando..." : "Continuar processamento"}
+                {resumeDocument.isPending ? t("Retomando...") : t("Continuar processamento")}
               </Button>
   ) : null;
 
@@ -524,7 +589,7 @@ export function AssistantView() {
             actions={
               <>
                 <IconButton
-                  aria-label="Buscar no documento (Ctrl+F)"
+                  aria-label={t("Buscar no documento (Ctrl+F)")}
                   icon={<Search size={16} strokeWidth={1.75} aria-hidden />}
                   onClick={() => setSearchOpen(true)}
                   disabled={pdf.status !== "ready"}
@@ -564,24 +629,24 @@ export function AssistantView() {
     >
       {doc?.status === "error" && pdf.status === "ready" && (
         <div role="alert" className="m-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-danger/40 bg-danger-soft p-4 text-sm">
-          <p>{doc.status_message} O arquivo enviado foi preservado.</p>
+          <p>{t(doc.status_message ?? "")} {t("O arquivo enviado foi preservado.")}</p>
           {resumeAction}
         </div>
       )}
       {documentFile.isError ? (
         <EmptyState
           icon={FileText}
-          title="Não foi possível baixar o documento"
-          description={errorMessage(documentFile.error)}
+          title={t("Não foi possível baixar o documento")}
+          description={errorMessage(documentFile.error, t)}
           action={
             <Button size="sm" onClick={() => void documentFile.refetch()}>
-              Tentar de novo
+              {t("Tentar de novo")}
             </Button>
           }
           className="mt-16"
         />
       ) : pdf.status === "error" ? (
-        <EmptyState icon={FileText} title="Não foi possível abrir" description={pdf.message} className="mt-16" />
+        <EmptyState icon={FileText} title={t("Não foi possível abrir")} description={t(pdf.message)} className="mt-16" />
       ) : pdf.status === "ready" ? (
         <PdfDocumentPages
           doc={pdf.doc}
@@ -616,7 +681,7 @@ export function AssistantView() {
   );
 
   const rulesPanel = (
-    <section aria-label="Regras" className="flex h-full min-h-0 flex-col bg-surface">
+    <section aria-label={t("Regras")} className="flex h-full min-h-0 flex-col bg-surface">
       {showRules ? (
         <>
           <RulesHeader
@@ -626,13 +691,13 @@ export function AssistantView() {
             onTypeFilterChange={setTypeFilter}
             statusFilter={statusFilter}
             onStatusFilterChange={setStatusFilter}
-            notice={generating ? (doc?.status_message ?? "Verificando as regras nas bases…") : doc?.status_message}
+            notice={generating ? t(doc?.status_message ?? msg("Verificando as regras nas bases…")) : doc?.status_message && t(doc.status_message)}
             categories={{ value: categoryFilter, onChange: setCategoryFilter, counts: categoryCounts }}
             actions={
               <>
                 {isDesktop && (
                   <IconButton
-                    aria-label="Esconder regras"
+                    aria-label={t("Esconder regras")}
                     icon={<X size={16} strokeWidth={1.75} aria-hidden />}
                     onClick={() => setLayout({ ...layout, rules: false })}
                   />
@@ -646,7 +711,7 @@ export function AssistantView() {
             rules={visibleRules.map((r) => ({
               ...r,
               page: r.page ?? undefined,
-              query: r.query ? { ...r.query, description: describeQuery(r.query.query) } : null,
+              query: r.query ? { ...r.query, description: describeQuery(r.query.query, t) } : null,
             }))}
             onEditQuery={datasets.length ? (r) => setEditingQueryId(r.id) : undefined}
             selectedId={selectedId}
@@ -657,7 +722,7 @@ export function AssistantView() {
                 { id: rule.id, status },
                 {
                   onError: (error) =>
-                    toast({ title: "Não foi possível salvar", description: errorMessage(error), variant: "error" }),
+                    toast({ title: t("Não foi possível salvar"), description: errorMessage(error, t), variant: "error" }),
                 },
               )
             }
@@ -665,8 +730,8 @@ export function AssistantView() {
               rules.length === 0 ? (
                 <EmptyState
                   icon={MousePointerClick}
-                  title="Nenhuma regra ainda"
-                  description="Selecione um trecho do documento e clique em “Grifar e analisar com IA”. A IA propõe a regra e você aprova."
+                  title={t("Nenhuma regra ainda")}
+                  description={t("Selecione um trecho do documento e clique em “Grifar e analisar com IA”. A IA propõe a regra e você aprova.")}
                 />
               ) : undefined
             }
@@ -675,17 +740,17 @@ export function AssistantView() {
       ) : (
         <div className="flex flex-1 flex-col items-center justify-center gap-6 p-6" aria-live="polite">
           <FileSearch size={32} strokeWidth={1.5} aria-hidden className={failed ? "text-danger" : "text-accent"} />
-          <ProcessingSteps current={failed ? failedStep : step} failed={failed} steps={DOCUMENT_STEPS} />
+          <ProcessingSteps current={failed ? failedStep : step} failed={failed} />
           <p className={cn("max-w-72 text-center text-[13px]", failed ? "text-danger" : "text-foreground-muted")}>
             {failed
-              ? (doc?.status_message ?? errorMessage(upload.error))
-              : (doc?.status_message ?? "Isso leva alguns segundos, conforme o tamanho do documento.")}
+              ? (doc?.status_message ? t(doc.status_message) : errorMessage(shownUpload?.error, t))
+              : t(doc?.status_message ?? msg("Isso leva alguns segundos, conforme o tamanho do documento."))}
           </p>
           {failed && (
             doc?.status === "error" ? (
               resumeAction
             ) : (
-              <Button size="sm" variant="primary" onClick={attach}>Enviar de novo</Button>
+              <Button size="sm" variant="primary" onClick={attach}>{t("Enviar de novo")}</Button>
             )
           )}
         </div>
@@ -719,11 +784,11 @@ export function AssistantView() {
         if (isDesktop) setLayout((l) => ({ ...l, rules: true }));
         else setMobileTab("rules");
         toast({
-          title: "Regra aprovada",
+          title: t("Regra aprovada"),
           description:
             rule.category === "csv"
-              ? "Ela entrou nas regras verificáveis no CSV, com a consulta pronta."
-              : "Ela foi registrada nas regras gerais, sem consulta nas bases.",
+              ? t("Ela entrou nas regras verificáveis no CSV, com a consulta pronta.")
+              : t("Ela foi registrada nas regras gerais, sem consulta nas bases."),
           variant: "success",
         });
       }}
@@ -737,9 +802,9 @@ export function AssistantView() {
       {fileInput}
       <div className="flex shrink-0 flex-wrap items-center gap-3 border-b border-border bg-surface px-4 py-3">
         <div className="min-w-0 flex-1"><WorkflowSteps current={showRules ? 3 : 2} /><p className="mt-1 truncate text-xs text-foreground-muted">{documentName}</p></div>
-        <Button size="sm" icon={<History size={16} aria-hidden />} onClick={() => setHistoryOpen(true)}>Histórico</Button>
-        <Button size="sm" icon={<Database size={16} aria-hidden />} onClick={() => setDatasetsOpen(true)}>Bases de dados</Button>
-        <Button size="sm" loading={endAnalysis.isPending} onClick={() => void closeDocument()}>Nova análise</Button>
+        <Button size="sm" icon={<History size={16} aria-hidden />} onClick={() => setHistoryOpen(true)}>{t("Histórico")}</Button>
+        <Button size="sm" icon={<Database size={16} aria-hidden />} onClick={() => setDatasetsOpen(true)}>{t("Bases de dados")}</Button>
+        <Button size="sm" loading={endAnalysis.isPending} onClick={() => void closeDocument()}>{t("Nova análise")}</Button>
       </div>
       <div className="min-h-0 flex-1">
       {!showRules ? rulesPanel : isDesktop ? (
@@ -773,8 +838,8 @@ export function AssistantView() {
       <Dialog
         open={datasetsOpen}
         onOpenChange={setDatasetsOpen}
-        title="Bases da análise"
-        description="Confira o significado das colunas usadas nas consultas das regras."
+        title={t("Bases da análise")}
+        description={t("Confira o significado das colunas usadas nas consultas das regras.")}
         className="max-h-[85dvh] w-[760px] overflow-y-auto"
       >
         <DatasetUploader datasets={analysis?.datasets ?? []} ensureAnalysis={ensureAnalysis} />
@@ -782,8 +847,8 @@ export function AssistantView() {
       <Dialog
         open={historyOpen}
         onOpenChange={setHistoryOpen}
-        title="Histórico de análises"
-        description="Seus documentos analisados, do mais recente ao mais antigo."
+        title={t("Histórico de análises")}
+        description={t("Seus documentos analisados, do mais recente ao mais antigo.")}
         className="max-h-[85dvh] w-[560px] overflow-y-auto"
       >
         {historyOpen && <AnalysisHistory currentDocumentId={documentId} onOpen={openDocument} />}
@@ -805,12 +870,15 @@ export function AssistantView() {
   );
 }
 
+const WORKFLOW_STEPS = [msg("Base de dados"), msg("Documento de regras"), msg("Resultado")];
+
 function WorkflowSteps({ current }: { current: 1 | 2 | 3 }) {
+  const t = useT();
   return (
-    <ol aria-label="Etapas" className="flex flex-wrap gap-x-5 gap-y-2 text-xs">
-      {["Base de dados", "Documento de regras", "Resultado"].map((label, index) => (
+    <ol aria-label={t("Etapas")} className="flex flex-wrap gap-x-5 gap-y-2 text-xs">
+      {WORKFLOW_STEPS.map((label, index) => (
         <li key={label} aria-current={current === index + 1 ? "step" : undefined} className={cn("flex items-center gap-2", current === index + 1 ? "font-semibold text-accent" : "text-foreground-muted")}>
-          <span className="flex size-6 items-center justify-center rounded-full border border-current">{index + 1}</span>{label}
+          <span className="flex size-6 items-center justify-center rounded-full border border-current">{index + 1}</span>{t(label)}
         </li>
       ))}
     </ol>
@@ -827,20 +895,21 @@ function Glow() {
 }
 
 function DropOverlay() {
+  const t = useT();
   return (
     <div className="pointer-events-none absolute inset-3 z-30 flex flex-col items-center justify-center gap-3 rounded-lg border-2 border-dashed border-accent bg-accent-soft/80 backdrop-blur-sm">
       <BrandLogo size={40} />
-      <p className="text-sm font-medium">Solte os arquivos para analisar</p>
-      <p className="text-xs text-foreground-muted">PDF, HTML ou TXT</p>
+      <p className="text-sm font-medium">{t("Solte os arquivos para analisar")}</p>
+      <p className="text-xs text-foreground-muted">{t("PDF, HTML ou TXT")}</p>
     </div>
   );
 }
 
 const TABS: { value: MobileTab; label: string }[] = [
-  { value: "document", label: "Documento" },
-  { value: "excerpt", label: "IA" },
-  { value: "rules", label: "Regras" },
-  { value: "table", label: "Tabela" },
+  { value: "document", label: msg("Documento") },
+  { value: "excerpt", label: msg("IA") },
+  { value: "rules", label: msg("Regras") },
+  { value: "table", label: msg("Tabela") },
 ];
 
 function MobileTabs({
@@ -852,8 +921,9 @@ function MobileTabs({
   onChange: (tab: MobileTab) => void;
   ruleCount: number;
 }) {
+  const t = useT();
   return (
-    <div role="tablist" aria-label="Painéis" className="flex h-11 shrink-0 border-b border-border bg-surface px-2">
+    <div role="tablist" aria-label={t("Painéis")} className="flex h-11 shrink-0 border-b border-border bg-surface px-2">
       {TABS.map((tab) => (
         <button
           key={tab.value}
@@ -866,7 +936,7 @@ function MobileTabs({
             value === tab.value && "text-foreground",
           )}
         >
-          {tab.label}
+          {t(tab.label)}
           {tab.value === "rules" && ruleCount > 0 && (
             <span className="rounded-full bg-surface-muted px-1.5 font-mono text-[11px] tabular-nums">{ruleCount}</span>
           )}

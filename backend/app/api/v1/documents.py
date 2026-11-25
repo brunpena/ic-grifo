@@ -6,7 +6,7 @@ import re
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, File, Form, Query, Response, UploadFile, status
+from fastapi import APIRouter, File, Form, Query, Request, Response, UploadFile, status
 from pydantic import ValidationError
 from sqlalchemy import delete, func, select, update
 from sse_starlette.sse import EventSourceResponse
@@ -27,6 +27,21 @@ from app.db.models import (
     Word,
 )
 from app.db.session import SessionLocal
+from app.processing.ai import llm
+from app.processing.datasets.duckdb_sql import readable_sql
+from app.processing.datasets.query_engine import QueryError
+from app.processing.documents import document_upload, safe_fetch
+from app.processing.documents.converters import (
+    ConversionError,
+    SourceFile,
+    UnsupportedFormatError,
+)
+from app.processing.documents.converters.text import title_from_text
+from app.processing.documents.highlights import page_range, rule_boxes
+from app.processing.documents.text_match import find_excerpt
+from app.processing.pipeline import ingest
+from app.processing.rules import rule_queries, rule_validation
+from app.processing.shared import storage
 from app.schemas.common import error_responses
 from app.schemas.documents import (
     CitedRule,
@@ -45,28 +60,12 @@ from app.schemas.documents import (
 )
 from app.schemas.queries import RecordsOut, RuleQueryOut, StructuredQuery
 from app.schemas.validation import RecordVerdict, ValidationRecordsOut
-from app.services import (
-    document_upload,
-    ingest,
-    llm,
-    rule_queries,
-    rule_validation,
-    safe_fetch,
-    storage,
-)
-from app.services.converters import (
-    ConversionError,
-    SourceFile,
-    UnsupportedFormatError,
-)
-from app.services.converters.text import title_from_text
-from app.services.duckdb_sql import readable_sql
-from app.services.highlights import page_range, rule_boxes
-from app.services.query_engine import QueryError
-from app.services.text_match import find_excerpt
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["documentos"])
+
+# Uma semana: o mesmo documento nunca recebe outro PDF (ver `get_document_file`).
+PDF_CACHE_CONTROL = "private, max-age=604800, immutable"
 
 CITATION = re.compile(r"\[(R\d+(?:\s*,\s*R\d+)*)\]")
 CITATION_WITH_SPACE = re.compile(r"\s*\[R\d+(?:\s*,\s*R\d+)*\]")
@@ -358,15 +357,22 @@ async def get_document(document_id: uuid.UUID, user: UserDep, db: SessionDep) ->
     response_class=Response,
     responses=error_responses(404),
 )
-async def get_document_file(document_id: uuid.UUID, user: UserDep, db: SessionDep) -> Response:
+async def get_document_file(
+    document_id: uuid.UUID, user: UserDep, db: SessionDep, request: Request
+) -> Response:
     doc = await _owned_document(db, document_id, user)
     stored_id = doc.id
     await db.commit()
+    # O PDF é gravado uma única vez, na conversão: o navegador pode guardá-lo. `private`
+    # impede caches compartilhados (proxies) de guardar um arquivo de um usuário logado.
+    headers = {"Cache-Control": PDF_CACHE_CONTROL, "ETag": f'"{stored_id}"'}
+    if request.headers.get("if-none-match") == headers["ETag"]:
+        return Response(status_code=status.HTTP_304_NOT_MODIFIED, headers=headers)
     try:
         data = await storage.read_pdf(stored_id)
     except storage.StorageError as exc:
         raise NotFoundError("Arquivo não encontrado.") from exc
-    return Response(data, media_type="application/pdf")
+    return Response(data, media_type="application/pdf", headers=headers)
 
 
 @router.delete(
