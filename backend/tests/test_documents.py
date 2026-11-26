@@ -170,8 +170,14 @@ async def test_upload_highlight_approve_and_chat(migrated_db, client, fake_llm):
         interpretation=proposal["interpretation"],
         category="geral",
         origin="ia",
+        messages=[
+            {"role": "user", "content": "É um prazo?"},
+            {"role": "assistant", "content": analysis["reply"]},
+        ],
     )
     assert prazo["status"] == "validada" and prazo["category"] == "geral"
+    # A conversa fica guardada na regra: é o histórico do documento.
+    assert [m["role"] for m in prazo["conversation"]] == ["user", "assistant"]
     assert prazo["origin"] == "ia" and prazo["query"] is None
     assert prazo["interpretation"].startswith("O relatório mensal")
     box = prazo["boxes"][0]
@@ -182,6 +188,17 @@ async def test_upload_highlight_approve_and_chat(migrated_db, client, fake_llm):
         client, doc["id"], "A contratada deverá  entregar o relatório mensal", page=2
     )
     assert manual["page"] == 2 and manual["origin"] == "manual"
+    assert manual["conversation"] == []
+
+    # A próxima análise recebe as regras já aprovadas como histórico.
+    fake_llm.clear()
+    resp = await client.post(
+        f"{url}/excerpt-analysis", json={"page": 1, "excerpt": "em até 10 dias úteis"}
+    )
+    assert resp.status_code == 200, resp.text
+    previous = fake_llm[0].previous_rules
+    assert len(previous) == 2 and previous[0].startswith("- p. 1 · geral")
+    assert prazo["summary"] in previous[0]
     resp = await client.post(
         f"{url}/rules",
         json={"type": "obrigacao", "summary": "x", "page": 1, "excerpt": "trecho que não existe"},

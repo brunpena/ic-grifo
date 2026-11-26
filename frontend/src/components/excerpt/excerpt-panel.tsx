@@ -1,9 +1,10 @@
 "use client";
 
-import { AlertTriangle, Check, Database, FileText, MousePointerClick, Play, RotateCcw, X } from "lucide-react";
+import { AlertTriangle, Check, Database, FileText, MousePointerClick, Play, RotateCcw, Sparkles, X } from "lucide-react";
 import { type Ref, useEffect, useId, useImperativeHandle, useRef, useState } from "react";
 import { AssistantMessage, UserMessage } from "@/components/chat/chat-message";
 import { ChatComposer } from "@/components/chat/chat-composer";
+import { ExcerptHistory } from "@/components/excerpt/excerpt-history";
 import { QueryBuilder, useQueryBuilder } from "@/components/queries/query-builder";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -23,6 +24,7 @@ import {
   useAnalyzeExcerpt,
   useCreateRule,
   usePreviewQuery,
+  useSuggestQuery,
 } from "@/lib/documents";
 import type { StructuredQuery } from "@/lib/queries";
 import { cn } from "@/lib/utils";
@@ -40,6 +42,8 @@ type ExcerptPanelProps = {
   /** Encerra a conversa sem salvar nada. */
   onDiscard: () => void;
   onApproved: (rule: Rule) => void;
+  /** Leva ao trecho de uma regra já aprovada (histórico do documento). */
+  onGoToRule?: (ruleId: string) => void;
   className?: string;
 };
 
@@ -50,9 +54,20 @@ const OPENING = "Analise o trecho grifado.";
  * propõe a regra; a pessoa revisa, ajusta (à mão ou pedindo à IA) e só então aprova.
  * Nada é salvo antes da aprovação.
  */
-export function ExcerptPanel({ selection, documentId, datasets, onHide, onDiscard, onApproved, className }: ExcerptPanelProps) {
+export function ExcerptPanel({
+  selection,
+  documentId,
+  datasets,
+  onHide,
+  onDiscard,
+  onApproved,
+  onGoToRule,
+  className,
+}: ExcerptPanelProps) {
   const analyze = useAnalyzeExcerpt(documentId);
+  const suggest = useSuggestQuery(documentId);
   const create = useCreateRule(documentId);
+  const busy = analyze.isPending || suggest.isPending;
   const [messages, setMessages] = useState<ExcerptMessage[]>([]);
   // A cada resposta da IA a revisão recomeça da nova proposta (versão nova = formulário novo).
   const [proposal, setProposal] = useState<{ value: RuleProposal; version: number } | null>(null);
@@ -94,9 +109,27 @@ export function ExcerptPanel({ selection, documentId, datasets, onHide, onDiscar
     endRef.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
   }, [messages.length, analyze.isPending]);
 
+  // Depois da conversa: a IA monta só as condições de busca, a partir da regra revisada.
+  const generate = () => {
+    const current = review.current?.current();
+    if (!current || busy) return;
+    setFailure(null);
+    suggest.mutate(
+      { page: selection.page, excerpt: selection.text, messages, current: { ...current, category: "csv" } },
+      {
+        onSuccess: (result) => {
+          const base = messages.length ? messages : [{ role: "user" as const, content: OPENING }];
+          setMessages([...base, { role: "assistant", content: result.reply }]);
+          review.current?.load(result);
+        },
+        onError: (error) => review.current?.fail(errorMessage(error)),
+      },
+    );
+  };
+
   const send = () => {
     const content = draft.trim();
-    if (!content || analyze.isPending) return;
+    if (!content || busy) return;
     setDraft("");
     const base = messages.length ? messages : [{ role: "user" as const, content: OPENING }];
     const history = [...base, { role: "user" as const, content }];
@@ -126,6 +159,8 @@ export function ExcerptPanel({ selection, documentId, datasets, onHide, onDiscar
           <span className="max-h-40 overflow-y-auto">{selection.text}</span>
         </blockquote>
 
+        <ExcerptHistory documentId={documentId} onGoToRule={onGoToRule} />
+
         <div role="log" aria-live="polite" aria-label="Conversa com a IA" className="flex flex-col gap-3">
           {visible.map((m, i) =>
             m.role === "user" ? (
@@ -138,6 +173,12 @@ export function ExcerptPanel({ selection, documentId, datasets, onHide, onDiscar
             <p className="flex items-center gap-2 text-[13px] text-foreground-muted">
               <Spinner className="text-accent" />
               {proposal ? "Ajustando a proposta…" : "Analisando o trecho…"}
+            </p>
+          )}
+          {suggest.isPending && (
+            <p className="flex items-center gap-2 text-[13px] text-foreground-muted">
+              <Spinner className="text-accent" />
+              Gerando as condições de busca…
             </p>
           )}
           {failure && (
@@ -161,7 +202,9 @@ export function ExcerptPanel({ selection, documentId, datasets, onHide, onDiscar
             datasets={datasets}
             documentId={documentId}
             handleRef={review}
-            busy={analyze.isPending}
+            busy={busy}
+            generating={suggest.isPending}
+            onGenerate={generate}
           />
         )}
         <div ref={endRef} />
@@ -172,7 +215,7 @@ export function ExcerptPanel({ selection, documentId, datasets, onHide, onDiscar
           value={draft}
           onChange={setDraft}
           onSubmit={send}
-          sending={analyze.isPending}
+          sending={busy}
           disabled={!proposal && !failure}
           placeholder="Pergunte ou peça um ajuste à IA"
         />
@@ -183,13 +226,13 @@ export function ExcerptPanel({ selection, documentId, datasets, onHide, onDiscar
           <Button
             variant="primary"
             icon={<Check size={16} strokeWidth={1.75} aria-hidden />}
-            disabled={!proposal || analyze.isPending}
+            disabled={!proposal || busy}
             loading={create.isPending}
             onClick={() => {
               const body = review.current?.approve();
               if (!body) return;
               create.mutate(
-                { ...body, page: selection.page, excerpt: selection.text, origin: "ia" },
+                { ...body, page: selection.page, excerpt: selection.text, origin: "ia", messages: visible.slice(-60) },
                 {
                   onSuccess: onApproved,
                   onError: (error) => review.current?.fail(errorMessage(error)),
@@ -206,7 +249,18 @@ export function ExcerptPanel({ selection, documentId, datasets, onHide, onDiscar
 }
 
 /** Painel da IA aberto sem trecho grifado: explica como começar. */
-export function ExcerptPanelEmpty({ onHide, className }: { onHide: () => void; className?: string }) {
+export function ExcerptPanelEmpty({
+  documentId,
+  onHide,
+  onGoToRule,
+  className,
+}: {
+  /** Com documento aberto, mostra o histórico das regras já analisadas. */
+  documentId?: string | null;
+  onHide: () => void;
+  onGoToRule?: (ruleId: string) => void;
+  className?: string;
+}) {
   return (
     <aside aria-label="IA" className={cn("flex h-full min-h-0 flex-col bg-surface", className)}>
       <header className="flex shrink-0 items-center gap-2 border-b border-border px-4 py-3">
@@ -217,8 +271,13 @@ export function ExcerptPanelEmpty({ onHide, className }: { onHide: () => void; c
         icon={MousePointerClick}
         title="Nenhum trecho em análise"
         description="Selecione um trecho do documento e clique em “Grifar e analisar com IA”. A conversa aparece aqui."
-        className="flex-1"
+        className={documentId ? "py-8" : "flex-1"}
       />
+      {documentId && (
+        <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-4">
+          <ExcerptHistory documentId={documentId} onGoToRule={onGoToRule} defaultOpen />
+        </div>
+      )}
     </aside>
   );
 }
@@ -237,6 +296,15 @@ type ReviewHandle = {
   /** Valida a revisão e devolve o que será salvo, ou `null` mostrando o problema. */
   approve: () => ReviewedRule | null;
   fail: (message: string) => void;
+  /** Põe no editor a busca gerada pela IA, com a SQL e a contagem (ou o erro). */
+  load: (suggestion: QuerySuggestion) => void;
+};
+
+type QuerySuggestion = {
+  query: StructuredQuery | null;
+  sql_display: string | null;
+  match_count: number | null;
+  query_error: string | null;
 };
 
 const EMPTY_QUERY = (datasets: Dataset[]): StructuredQuery => ({ dataset: datasets[0]?.name ?? "", logic: "and", conditions: [] });
@@ -247,12 +315,16 @@ function ProposalReview({
   documentId,
   handleRef,
   busy,
+  generating,
+  onGenerate,
 }: {
   proposal: RuleProposal;
   datasets: Dataset[];
   documentId: string;
   handleRef: Ref<ReviewHandle>;
   busy: boolean;
+  generating: boolean;
+  onGenerate: () => void;
 }) {
   const ids = useId();
   const [category, setCategory] = useState<RuleCategory>(proposal.category);
@@ -288,7 +360,29 @@ function ProposalReview({
       return value;
     },
     fail: setError,
+    load: (suggestion) => {
+      setError(null);
+      setCategory("csv");
+      if (suggestion.query) builder.load(suggestion.query);
+      setResult(
+        suggestion.query
+          ? { sql: suggestion.sql_display, count: suggestion.match_count, error: suggestion.query_error }
+          : null,
+      );
+    },
   }));
+
+  const generateButton = (
+    <Button
+      size="sm"
+      icon={<Sparkles size={14} strokeWidth={1.75} aria-hidden />}
+      loading={generating}
+      disabled={busy && !generating}
+      onClick={onGenerate}
+    >
+      Gerar condições de busca
+    </Button>
+  );
 
   const test = () => {
     const query = builder.build();
@@ -340,10 +434,13 @@ function ProposalReview({
           <p className="text-[13px] text-foreground-muted">Não há bases prontas nesta análise. Registre a regra como geral ou envie um CSV.</p>
         ) : (
           <div className="flex flex-col gap-3 border-t border-border pt-4">
-            <h4 className="flex items-center gap-2 text-[13px] font-medium">
-              <Database size={14} strokeWidth={1.75} aria-hidden className="text-accent" />
-              Busca na base
-            </h4>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <h4 className="flex items-center gap-2 text-[13px] font-medium">
+                <Database size={14} strokeWidth={1.75} aria-hidden className="text-accent" />
+                Busca na base
+              </h4>
+              {generateButton}
+            </div>
             <QueryBuilder state={builder} datasets={datasets} compact onEdit={() => setResult(null)} />
             {builder.error && <FormError>{builder.error}</FormError>}
             {result?.error && <FormError>{result.error}</FormError>}
@@ -367,6 +464,13 @@ function ProposalReview({
             </div>
           </div>
         ))}
+
+      {category === "geral" && datasets.length > 0 && (
+        <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border pt-4">
+          <p className="text-[13px] text-foreground-muted">Acha que dá para verificar nos dados?</p>
+          {generateButton}
+        </div>
+      )}
 
       {error && <FormError>{error}</FormError>}
     </section>

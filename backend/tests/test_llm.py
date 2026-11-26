@@ -110,6 +110,18 @@ async def test_analyze_excerpt_parses_json_and_retries_rate_limit(gemini):
     assert body["generationConfig"]["thinkingConfig"] == {"thinkingLevel": "low"}
 
 
+def test_previous_rules_go_to_the_excerpt_and_query_prompts():
+    previous = ["- p. 2 · csv · obrigacao · validada: Garantia acima de 50 mil"]
+    prompt = _prompt(previous_rules=previous)
+    opening = llm._excerpt_contents(prompt)[0]["parts"][0]["text"]
+    assert "<regras_anteriores>\n- p. 2 · csv · obrigacao" in opening
+    query = llm._query_contents(prompt)[0]["parts"][0]["text"]
+    assert "Garantia acima de 50 mil" in query
+    empty = llm._excerpt_contents(_prompt())[0]["parts"][0]["text"]
+    assert "(nenhuma regra aprovada ainda)" in empty
+    assert "<regras_anteriores>" in llm.EXCERPT_SYSTEM and "<regras_anteriores>" in llm.QUERY_SYSTEM
+
+
 async def test_non_verifiable_excerpt_has_no_query(gemini):
     responses, _ = gemini
     answer = {

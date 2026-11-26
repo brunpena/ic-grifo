@@ -203,8 +203,21 @@ def fake_ai(monkeypatch):
     async def meanings(name, columns):
         return [{**c, "semantic": {"meaning": c["name"], "confidence": "high"}} for c in columns]
 
+    async def suggest(prompt):
+        prompts.append(prompt)
+        assert prompt.datasets and prompt.current is not None
+        return llm.QueryAnswer(
+            reply="Usei a coluna Valor.",
+            query={
+                "dataset": "contratos",
+                "logic": "and",
+                "conditions": [{"column": "Valor", "op": "gt", "value": "50000"}],
+            },
+        )
+
     monkeypatch.setattr(validation_llm, "interpret_columns", meanings)
     monkeypatch.setattr(llm, "analyze_excerpt", analyze)
+    monkeypatch.setattr(llm, "suggest_query", suggest)
     return prompts
 
 
@@ -285,6 +298,23 @@ async def test_highlighted_rule_becomes_an_approved_query(migrated_db, client, f
         json={"dataset": "contratos", "conditions": [{"column": "X", "op": "eq", "value": 1}]},
     )
     assert invalid.status_code == 422 and invalid.json()["error"]["code"] == "invalid_query"
+
+    # Botão "Gerar condições de busca": a IA parte da regra revisada e da conversa.
+    resp = await client.post(
+        f"{url}/query-suggestion",
+        json={
+            "page": 1,
+            "excerpt": excerpt,
+            "messages": [{"role": "user", "content": "Considere só contratos ativos."}],
+            "current": {"category": "csv", "type": "condicao", "summary": "Garantia"},
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    suggestion = resp.json()
+    assert suggestion["reply"] == "Usei a coluna Valor." and suggestion["query_error"] is None
+    assert suggestion["match_count"] == 2 and '"Valor" > 50000' in suggestion["sql_display"]
+    assert fake_ai[-1].history[0]["content"] == "Considere só contratos ativos."
+    assert (await client.get(f"{url}/rules")).json() == []
 
     # Aprovação: a regra entra com a busca preparada (sem executar).
     resp = await client.post(

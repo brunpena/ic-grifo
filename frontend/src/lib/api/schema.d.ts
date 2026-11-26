@@ -440,6 +440,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/documents/{document_id}/query-suggestion": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * A IA gera as condições de busca no CSV para a regra revisada (sem salvar)
+         * @description Usado no botão “Gerar condições de busca” da revisão, depois da conversa com a IA. Envia o trecho, a conversa e a regra como está na tela; a busca volta validada e contada, ou com `query_error` para corrigir no editor. Sem bases prontas: 409 (`no_datasets`).
+         */
+        post: operations["suggest_query_api_v1_documents__document_id__query_suggestion_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/documents/{document_id}/query-preview": {
         parameters: {
             query?: never;
@@ -1134,6 +1154,48 @@ export interface components {
             /** Match Count */
             match_count: number;
         };
+        /** QuerySuggestionIn */
+        QuerySuggestionIn: {
+            /** Page */
+            page: number;
+            /**
+             * Excerpt
+             * @description Texto grifado na página.
+             */
+            excerpt: string;
+            /**
+             * Messages
+             * @description Conversa com a IA sobre o trecho.
+             */
+            messages?: components["schemas"]["ExcerptMessage"][];
+            /** @description A regra como está na revisão (a referência para a busca). */
+            current?: components["schemas"]["RuleProposalIn"] | null;
+        };
+        /** QuerySuggestionOut */
+        QuerySuggestionOut: {
+            /**
+             * Reply
+             * @description Explicação da IA sobre a busca gerada.
+             */
+            reply: string;
+            /** @description Busca gerada, ou null se não deu. */
+            query: components["schemas"]["StructuredQuery-Output"] | null;
+            /**
+             * Sql Display
+             * @description SQL legível da busca, para revisão.
+             */
+            sql_display: string | null;
+            /**
+             * Match Count
+             * @description Registros que a busca encontra hoje.
+             */
+            match_count: number | null;
+            /**
+             * Query Error
+             * @description Problema da busca gerada, para corrigir.
+             */
+            query_error: string | null;
+        };
         /** RecordRow */
         RecordRow: {
             /**
@@ -1303,6 +1365,11 @@ export interface components {
             origin: "ia" | "manual";
             /** @description Busca revisada pela pessoa (obrigatória em csv). */
             query?: components["schemas"]["StructuredQuery-Input"] | null;
+            /**
+             * Messages
+             * @description Conversa com a IA sobre o trecho, guardada no histórico do documento.
+             */
+            messages?: components["schemas"]["ExcerptMessage"][];
         };
         /** RuleOut */
         RuleOut: {
@@ -1344,6 +1411,11 @@ export interface components {
              * @description Como a regra foi interpretada e aprovada.
              */
             interpretation: string | null;
+            /**
+             * Conversation
+             * @description Conversa com a IA que levou à aprovação (vazia em regras manuais).
+             */
+            conversation: components["schemas"]["ExcerptMessage"][];
             /**
              * Page
              * @description Página onde o trecho começa.
@@ -3113,6 +3185,68 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ExcerptAnalysisOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    suggest_query_api_v1_documents__document_id__query_suggestion_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                document_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["QuerySuggestionIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["QuerySuggestionOut"];
                 };
             };
             /** @description Not Found */

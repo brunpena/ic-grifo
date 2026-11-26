@@ -41,6 +41,11 @@ class HighlightBox(BaseModel):
     height: float
 
 
+class ExcerptMessage(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str = Field(min_length=1, max_length=4000)
+
+
 class RuleOut(BaseModel):
     validation: RuleValidationOut | None = None
     id: uuid.UUID
@@ -54,6 +59,9 @@ class RuleOut(BaseModel):
         description="csv: verificável nas bases (tem busca); geral: registrada sem busca."
     )
     interpretation: str | None = Field(description="Como a regra foi interpretada e aprovada.")
+    conversation: list[ExcerptMessage] = Field(
+        description="Conversa com a IA que levou à aprovação (vazia em regras manuais)."
+    )
     page: int | None = Field(description="Página onde o trecho começa.")
     boxes: list[HighlightBox]
     dataset_ids: list[uuid.UUID] = Field(description="Bases da análise usadas pela busca.")
@@ -77,6 +85,11 @@ class RuleCreateIn(BaseModel):
     )
     query: StructuredQuery | None = Field(
         default=None, description="Busca revisada pela pessoa (obrigatória em csv)."
+    )
+    messages: list[ExcerptMessage] = Field(
+        default_factory=list,
+        max_length=60,
+        description="Conversa com a IA sobre o trecho, guardada no histórico do documento.",
     )
 
     @field_validator("summary")
@@ -142,11 +155,6 @@ class UrlDocumentIn(BaseModel):
     url: str = Field(min_length=1, max_length=2000, description="Link http(s) do PDF ou da página.")
 
 
-class ExcerptMessage(BaseModel):
-    role: Literal["user", "assistant"]
-    content: str = Field(min_length=1, max_length=4000)
-
-
 class RuleProposalIn(BaseModel):
     """A proposta como está na tela (a pessoa pode tê-la editado antes de pedir ajustes)."""
 
@@ -190,6 +198,25 @@ class RuleProposal(BaseModel):
 class ExcerptAnalysisOut(BaseModel):
     reply: str = Field(description="Mensagem da IA para a pessoa.")
     proposal: RuleProposal
+
+
+class QuerySuggestionIn(BaseModel):
+    page: int = Field(ge=1)
+    excerpt: str = Field(min_length=2, max_length=5000, description="Texto grifado na página.")
+    messages: list[ExcerptMessage] = Field(
+        default_factory=list, max_length=30, description="Conversa com a IA sobre o trecho."
+    )
+    current: RuleProposalIn | None = Field(
+        default=None, description="A regra como está na revisão (a referência para a busca)."
+    )
+
+
+class QuerySuggestionOut(BaseModel):
+    reply: str = Field(description="Explicação da IA sobre a busca gerada.")
+    query: StructuredQuery | None = Field(description="Busca gerada, ou null se não deu.")
+    sql_display: str | None = Field(description="SQL legível da busca, para revisão.")
+    match_count: int | None = Field(description="Registros que a busca encontra hoje.")
+    query_error: str | None = Field(description="Problema da busca gerada, para corrigir.")
 
 
 class QueryPreviewOut(BaseModel):

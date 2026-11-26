@@ -778,6 +778,7 @@ export function AssistantView() {
       datasets={datasets}
       onHide={hideExcerptPanel}
       onDiscard={closeExcerpt}
+      onGoToRule={goToRule}
       onApproved={(rule) => {
         closeExcerpt();
         setSelectedId(rule.id);
@@ -794,7 +795,7 @@ export function AssistantView() {
       }}
     />
   ) : (
-    <ExcerptPanelEmpty onHide={hideExcerptPanel} />
+    <ExcerptPanelEmpty documentId={ready ? documentId : null} onHide={hideExcerptPanel} onGoToRule={goToRule} />
   );
 
   return (

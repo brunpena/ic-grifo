@@ -211,6 +211,8 @@ class Rule(Base):
     category: Mapped[str] = mapped_column(Text, default="geral", server_default="geral")
     # Como a regra foi interpretada (proposta pela IA e revisada na aprovação).
     interpretation: Mapped[str | None] = mapped_column(Text)
+    # Conversa com a IA que levou à aprovação: [{role: user|assistant, content}].
+    conversation: Mapped[list[dict]] = mapped_column(JSONB, default=list, server_default="[]")
     # Bases da análise que a IA relacionou à regra (a busca é gerada só para essas).
     dataset_ids: Mapped[list[uuid.UUID]] = mapped_column(
         ARRAY(UUID(as_uuid=True)), default=list, server_default="{}"

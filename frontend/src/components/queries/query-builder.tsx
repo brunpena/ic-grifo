@@ -122,7 +122,15 @@ export function useQueryBuilder(initial: StructuredQuery, datasets: Dataset[]) {
     return fromDraft(draft, columns);
   };
 
-  return { mode, switchMode, draft, setDraft, json, setJson, error, setError, dataset, columns, build };
+  /** Substitui o rascunho por outra busca (ex.: a gerada pela IA). */
+  const load = (query: StructuredQuery) => {
+    setError(null);
+    setMode(isFlat(query) ? "form" : "json");
+    setDraft(toDraft(query));
+    setJson(JSON.stringify(query, null, 2));
+  };
+
+  return { mode, switchMode, draft, setDraft, json, setJson, error, setError, dataset, columns, build, load };
 }
 
 type QueryBuilderProps = {

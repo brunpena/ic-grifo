@@ -423,6 +423,24 @@ async def analyze_excerpt(prompt: llm.ExcerptPrompt) -> llm.ExcerptAnswer:
     )
 
 
+async def suggest_query(prompt: llm.ExcerptPrompt) -> llm.QueryAnswer:
+    await asyncio.sleep(0.6)
+    target = _sisu_dataset([d.name for d in prompt.datasets], prompt.datasets)
+    rule = _excerpt_rule(prompt.excerpt)
+    if rule is None or rule.conditions is None or target is None:
+        return llm.QueryAnswer(
+            reply=(
+                "No modo de demonstração só gero buscas para trechos verificáveis da "
+                "Portaria nº 21/2012 com a base do SISU carregada. Monte a busca no editor."
+            ),
+            query=None,
+        )
+    return llm.QueryAnswer(
+        reply=f"Busca gerada na base {target}. {rule.reason}",
+        query={"dataset": target, "logic": rule.logic, "conditions": rule.conditions},
+    )
+
+
 async def plan_rules(
     rules: list[llm.RulePrompt], datasets: list[llm.DatasetPrompt], reference_date: str
 ) -> dict[int, ValidationPlan]:

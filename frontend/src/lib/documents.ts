@@ -224,6 +224,19 @@ export function useAnalyzeExcerpt(documentId: string) {
   });
 }
 
+/** A IA gera as condições de busca no CSV para a regra revisada. Nada é salvo no servidor. */
+export function useSuggestQuery(documentId: string) {
+  return useMutation({
+    mutationFn: (body: Schemas["QuerySuggestionIn"]) =>
+      unwrap(
+        api.POST("/api/v1/documents/{document_id}/query-suggestion", {
+          params: { path: { document_id: documentId } },
+          body,
+        }),
+      ),
+  });
+}
+
 /** Valida a busca editada na revisão e conta os registros, sem salvar. */
 export function usePreviewQuery(documentId: string) {
   return useMutation({

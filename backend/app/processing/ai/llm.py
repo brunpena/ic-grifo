@@ -9,7 +9,7 @@ import time
 from collections import deque
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from weakref import WeakKeyDictionary
 
 import httpx
@@ -382,8 +382,16 @@ QUERY_OPERATORS = (
 
 # Texto da página em volta do trecho, para a IA entender o contexto sem ler o documento todo.
 EXCERPT_CONTEXT_CHARS = 6000
+# Regras já aprovadas no documento, resumidas (histórico para a IA manter a coerência).
+PREVIOUS_RULES_CHARS = 8000
 
-EXCERPT_SYSTEM = """Você é o Grifo, assistente que ajuda uma pessoa a transformar \
+PREVIOUS_RULES_NOTE = """Em <regras_anteriores> estão as regras já aprovadas neste \
+documento. Use-as para manter a mesma leitura e os mesmos critérios (colunas, valores, \
+tipo). Se o trecho grifado repete, detalha ou contradiz uma delas, diga isso no reply. \
+Não analise as regras anteriores de novo nem as altere: o foco é o trecho grifado."""
+
+EXCERPT_SYSTEM = (
+    """Você é o Grifo, assistente que ajuda uma pessoa a transformar \
 trechos de documentos normativos (editais, portarias, contratos, regulamentos) em \
 regras verificáveis. A pessoa grifou um trecho do documento; você analisa SOMENTE esse \
 trecho, usando o texto da página apenas como contexto. Nada do que você propõe é salvo \
@@ -427,7 +435,11 @@ exatamente um dos valores listados.
 Use os significados, eventos e unidades já interpretados das colunas. Não trate \
 assinatura, publicação, realização ou vencimento como datas equivalentes. Não invente \
 colunas nem valores. Quando houver uma <proposta_atual>, parta dela: a pessoa pode tê-la \
-editado à mão. Mantenha o que ela não pediu para mudar."""
+editado à mão. Mantenha o que ela não pediu para mudar.
+
+"""
+    + PREVIOUS_RULES_NOTE
+)
 
 EXCERPT_SCHEMA = {
     "type": "OBJECT",
@@ -480,6 +492,13 @@ class ExcerptPrompt:
     history: list[dict]
     # Proposta atual (possivelmente editada pela pessoa), no formato de `ExcerptAnswer`.
     current: dict | None = None
+    # Regras já aprovadas no documento, uma por item, em texto.
+    previous_rules: list[str] = field(default_factory=list)
+
+
+def _previous_block(prompt: ExcerptPrompt) -> str:
+    rules = "\n".join(prompt.previous_rules) or "(nenhuma regra aprovada ainda)"
+    return f"<regras_anteriores>\n{rules}\n</regras_anteriores>\n\n"
 
 
 @dataclass
@@ -541,6 +560,7 @@ def _excerpt_contents(prompt: ExcerptPrompt) -> list[dict]:
     bases = describe_datasets(prompt.datasets) if prompt.datasets else "(nenhuma base pronta)"
     opening = (
         f"<bases>\n{bases}\n</bases>\n\n"
+        f"{_previous_block(prompt)}"
         f'<contexto pagina="{prompt.page}">\n{prompt.context}\n</contexto>\n\n'
         f"<trecho_grifado>\n{prompt.excerpt}\n</trecho_grifado>"
     )
@@ -562,25 +582,21 @@ def _excerpt_contents(prompt: ExcerptPrompt) -> list[dict]:
     return contents
 
 
-async def analyze_excerpt(prompt: ExcerptPrompt) -> ExcerptAnswer:
-    """Classifica o trecho grifado e propõe a regra (e a busca, se verificável)."""
-    if getattr(get_settings(), "llm_mock", False) and not _configured_keys():
-        from app.processing.ai import llm_mock
-
-        return await llm_mock.analyze_excerpt(prompt)
+async def _json_answer(system: str, contents: list[dict], schema: dict, step: str) -> dict:
+    """Pede uma resposta JSON no schema dado e devolve o objeto, ou LlmApiError."""
     settings = get_settings()
     config: dict = {
         "temperature": 0,
         "maxOutputTokens": 8000,
         "responseMimeType": "application/json",
-        "responseSchema": EXCERPT_SCHEMA,
+        "responseSchema": schema,
     }
     if settings.gemini_thinking_level:
         config["thinkingConfig"] = {"thinkingLevel": settings.gemini_thinking_level}
     data = await _generate(
         {
-            "systemInstruction": {"parts": [{"text": EXCERPT_SYSTEM}]},
-            "contents": _excerpt_contents(prompt),
+            "systemInstruction": {"parts": [{"text": system}]},
+            "contents": contents,
             "generationConfig": config,
         }
     )
@@ -588,15 +604,116 @@ async def analyze_excerpt(prompt: ExcerptPrompt) -> ExcerptAnswer:
     if finish in BLOCKED:
         raise LlmApiError("A IA não conseguiu analisar este trecho.")
     if finish != "STOP":
-        logger.warning("llm_finish", extra={"step": "excerpt", "reason": finish})
+        logger.warning("llm_finish", extra={"step": step, "reason": finish})
     try:
         item = json.loads(answer)
         if not isinstance(item, dict):
             raise TypeError
     except (json.JSONDecodeError, TypeError) as exc:
-        logger.warning("llm_invalid_json", extra={"step": "excerpt"})
+        logger.warning("llm_invalid_json", extra={"step": step})
         raise LlmApiError("A IA devolveu uma resposta inválida. Tente de novo.") from exc
+    return item
+
+
+async def analyze_excerpt(prompt: ExcerptPrompt) -> ExcerptAnswer:
+    """Classifica o trecho grifado e propõe a regra (e a busca, se verificável)."""
+    if getattr(get_settings(), "llm_mock", False) and not _configured_keys():
+        from app.processing.ai import llm_mock
+
+        return await llm_mock.analyze_excerpt(prompt)
+    item = await _json_answer(EXCERPT_SYSTEM, _excerpt_contents(prompt), EXCERPT_SCHEMA, "excerpt")
     return _excerpt_answer(item)
+
+
+# ---------------------------------------------------------------------------
+# Regra revisada → condições de busca no CSV (botão "Gerar condições de busca")
+# ---------------------------------------------------------------------------
+
+QUERY_SYSTEM = (
+    """Você é o Grifo. A pessoa grifou um trecho de um documento normativo, \
+conversou com você sobre ele e revisou a regra (resumo e interpretação). Agora ela pediu \
+as CONDIÇÕES DE BUSCA que encontram, nas bases CSV, os registros aos quais a regra se \
+aplica (o escopo da regra), não os que a violam. Exemplo: "contratos acima de R$ 50 mil \
+exigem garantia" → registros com Valor > 50000. Nada é salvo sem a aprovação dela.
+
+A regra revisada (<regra_revisada>) é a referência principal: a pessoa pode tê-la editado \
+e ela prevalece sobre a sua leitura do trecho. Use a conversa para entender os ajustes \
+que ela pediu. Se houver uma busca na regra revisada, parta dela e mantenha o que não \
+precisa mudar.
+
+Devolva:
+- reply: mensagem curta em português (até 4 frases) explicando quais colunas e valores \
+você usou e por quê. Se as bases não permitem montar a busca, diga o que falta.
+- dataset: nome exato de uma das bases, ou null se nenhuma serve.
+- logic: "and" (todas as condições) ou "or" (qualquer uma).
+- conditions: lista de {column, op, value, values}. column é o nome exato da coluna.
+
+Regras das condições (as buscas nunca são SQL livre; o backend compila em SQL \
+parametrizado):
+- Operadores: eq, ne, gt, gte, lt, lte, between (values = [mínimo, máximo]), in e \
+not_in (values = lista), contains, not_contains, starts_with, ends_with (texto), \
+is_null e not_null (sem valor).
+- gt/gte/lt/lte/between só em colunas de número, data ou data e hora. Colunas sim/não \
+aceitam só eq e ne.
+- value sempre como texto: números com ponto decimal e sem milhar ("50000.00"), datas \
+em AAAA-MM-DD, sim/não como "true" ou "false". Em colunas com lista de valores, use \
+exatamente um dos valores listados.
+- Uma regra que se aplica a todos os registros da base fica com conditions vazio.
+- Use os significados, eventos e unidades já interpretados das colunas. Não trate \
+assinatura, publicação, realização ou vencimento como datas equivalentes. Não invente \
+colunas nem valores.
+
+"""
+    + PREVIOUS_RULES_NOTE
+)
+
+QUERY_SCHEMA = {
+    "type": "OBJECT",
+    "properties": {
+        "reply": {"type": "STRING"},
+        "dataset": EXCERPT_SCHEMA["properties"]["dataset"],
+        "logic": EXCERPT_SCHEMA["properties"]["logic"],
+        "conditions": EXCERPT_SCHEMA["properties"]["conditions"],
+    },
+    "required": ["reply", "dataset", "logic", "conditions"],
+    "propertyOrdering": ["reply", "dataset", "logic", "conditions"],
+}
+
+
+@dataclass
+class QueryAnswer:
+    """Busca sugerida pela IA (formato de StructuredQuery, ainda sem validar) e a explicação."""
+
+    reply: str
+    query: dict | None
+
+
+def _query_contents(prompt: ExcerptPrompt) -> list[dict]:
+    bases = describe_datasets(prompt.datasets) if prompt.datasets else "(nenhuma base pronta)"
+    conversation = "\n".join(
+        f"{'Pessoa' if m['role'] == 'user' else 'Grifo'}: {m['content']}" for m in prompt.history
+    )
+    current = json.dumps(prompt.current or {}, ensure_ascii=False)
+    text = (
+        f"<bases>\n{bases}\n</bases>\n\n"
+        f"{_previous_block(prompt)}"
+        f'<contexto pagina="{prompt.page}">\n{prompt.context}\n</contexto>\n\n'
+        f"<trecho_grifado>\n{prompt.excerpt}\n</trecho_grifado>\n\n"
+        f"<conversa>\n{conversation or '(sem conversa)'}\n</conversa>\n\n"
+        f"<regra_revisada>\n{current}\n</regra_revisada>\n\n"
+        "Gere as condições de busca no CSV para esta regra."
+    )
+    return [{"role": "user", "parts": [{"text": text}]}]
+
+
+async def suggest_query(prompt: ExcerptPrompt) -> QueryAnswer:
+    """Gera as condições de busca da regra revisada (nada é salvo)."""
+    if getattr(get_settings(), "llm_mock", False) and not _configured_keys():
+        from app.processing.ai import llm_mock
+
+        return await llm_mock.suggest_query(prompt)
+    item = await _json_answer(QUERY_SYSTEM, _query_contents(prompt), QUERY_SCHEMA, "query")
+    return QueryAnswer(reply=str(item.get("reply") or "").strip(), query=query_from_answer(item))
 
 
 # ---------------------------------------------------------------------------

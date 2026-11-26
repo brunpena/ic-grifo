@@ -51,6 +51,8 @@ from app.schemas.documents import (
     MessageIn,
     MessageOut,
     QueryPreviewOut,
+    QuerySuggestionIn,
+    QuerySuggestionOut,
     RuleCreateIn,
     RuleOut,
     RuleProposal,
@@ -142,6 +144,7 @@ async def _rules_out(db: SessionDep, document_id: uuid.UUID, rules: list[Rule]) 
             origin=r.origin,
             category=r.category,
             interpretation=r.interpretation,
+            conversation=r.conversation or [],
             page=boxes[r.id][0]["page"] if boxes.get(r.id) else None,
             boxes=boxes.get(r.id, []),
             dataset_ids=r.dataset_ids or [],
@@ -477,6 +480,7 @@ async def create_rule(
         status="validada",
         category=body.category,
         interpretation=body.interpretation,
+        conversation=[m.model_dump() for m in body.messages],
         dataset_ids=[rule_query.dataset_id] if rule_query and rule_query.dataset_id else [],
     )
     db.add(rule)
@@ -666,6 +670,47 @@ async def _proposal_query(
     return compiled.normalized, sql, count, None
 
 
+async def _previous_rules(db: SessionDep, doc: Document) -> list[str]:
+    """Regras já aprovadas no documento, resumidas para a IA manter a coerência."""
+    rules = (
+        await db.scalars(select(Rule).where(Rule.document_id == doc.id).order_by(Rule.char_start))
+    ).all()
+    if not rules:
+        return []
+    starts = (
+        await db.execute(
+            select(Word.page, func.min(Word.char_start))
+            .where(Word.document_id == doc.id)
+            .group_by(Word.page)
+            .order_by(Word.page)
+        )
+    ).all()
+
+    def page_of(char: int) -> int:
+        current = 1
+        for page, start in starts:
+            if start <= char:
+                current = page
+        return current
+
+    lines = []
+    budget = llm.PREVIOUS_RULES_CHARS
+    for r in rules:
+        excerpt = " ".join(r.excerpt.split())
+        line = (
+            f"- p. {page_of(r.char_start)} · {r.category} · {r.type} · {r.status}: {r.summary}\n"
+            f"  Trecho: “{excerpt[:300]}{'…' if len(excerpt) > 300 else ''}”"
+        )
+        if r.interpretation:
+            line += f"\n  Interpretação: {' '.join(r.interpretation.split())[:400]}"
+        budget -= len(line)
+        if budget < 0:
+            lines.append(f"- (mais {len(rules) - len(lines)} regras não listadas)")
+            break
+        lines.append(line)
+    return lines
+
+
 @router.post(
     "/documents/{document_id}/excerpt-analysis",
     summary="A IA analisa o trecho grifado e propõe a regra (sem salvar)",
@@ -690,6 +735,7 @@ async def analyze_excerpt(
         )
     datasets = await rule_queries.analysis_datasets(db, doc.analysis_id)
     page_text = doc.full_text[page_start:page_end]
+    previous = await _previous_rules(db, doc)
     # A conexão não fica presa enquanto a IA responde.
     await db.commit()
     prompt = llm.ExcerptPrompt(
@@ -699,6 +745,7 @@ async def analyze_excerpt(
         datasets=rule_queries.dataset_prompts(datasets),
         history=[m.model_dump() for m in body.messages],
         current=body.current.model_dump(mode="json") if body.current else None,
+        previous_rules=previous,
     )
     try:
         answer = await llm.analyze_excerpt(prompt)
@@ -731,6 +778,64 @@ async def analyze_excerpt(
             match_count=count if verifiable else None,
             query_error=error if verifiable else None,
         ),
+    )
+
+
+@router.post(
+    "/documents/{document_id}/query-suggestion",
+    summary="A IA gera as condições de busca no CSV para a regra revisada (sem salvar)",
+    description=(
+        "Usado no botão “Gerar condições de busca” da revisão, depois da conversa com a IA. "
+        "Envia o trecho, a conversa e a regra como está na tela; a busca volta validada e "
+        "contada, ou com `query_error` para corrigir no editor. Sem bases prontas: 409 "
+        "(`no_datasets`)."
+    ),
+    responses=error_responses(404, 409, 422, 503),
+)
+async def suggest_query(
+    document_id: uuid.UUID, body: QuerySuggestionIn, user: UserDep, db: SessionDep
+) -> QuerySuggestionOut:
+    doc = await _ready_document(db, document_id, user)
+    start, end, (page_start, page_end) = await _locate_excerpt(db, doc, body.page, body.excerpt)
+    datasets = await rule_queries.analysis_datasets(db, doc.analysis_id)
+    if not datasets:
+        raise ConflictError(
+            "Não há bases prontas nesta análise. Envie um CSV para gerar a busca.",
+            code="no_datasets",
+        )
+    page_text = doc.full_text[page_start:page_end]
+    previous = await _previous_rules(db, doc)
+    await db.commit()
+    prompt = llm.ExcerptPrompt(
+        excerpt=doc.full_text[start:end],
+        page=body.page,
+        context=_excerpt_context(page_text, page_start, start, end),
+        datasets=rule_queries.dataset_prompts(datasets),
+        history=[m.model_dump() for m in body.messages],
+        current=body.current.model_dump(mode="json") if body.current else None,
+        previous_rules=previous,
+    )
+    try:
+        answer = await llm.suggest_query(prompt)
+    except llm.LlmUnavailableError as exc:
+        raise AppError(str(exc), code="llm_unavailable", status_code=503) from exc
+    except llm.LlmApiError as exc:
+        raise AppError(str(exc), code="llm_error", status_code=503) from exc
+
+    raw = None
+    error = None
+    if answer.query is not None:
+        try:
+            raw = StructuredQuery.model_validate(answer.query)
+        except ValidationError:
+            error = "A busca gerada pela IA está num formato inválido. Monte-a no editor."
+    query, sql, count, query_error = await _proposal_query(raw, datasets)
+    return QuerySuggestionOut(
+        reply=answer.reply or "A IA não conseguiu montar a busca com as bases disponíveis.",
+        query=query,
+        sql_display=sql,
+        match_count=count,
+        query_error=error or query_error,
     )
 
 

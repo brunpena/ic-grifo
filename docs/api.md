@@ -69,10 +69,10 @@ Uploads de CSV usam XMLHttpRequest para progresso; o chat usa fetch para ler SSE
 | `GET /api/v1/documents/{document_id}` | [get_document](<../backend/app/api/v1/documents.py>) | 200 | Sessão exigida | Status do documento |
 | `GET /api/v1/documents/{document_id}/file` | [get_document_file](<../backend/app/api/v1/documents.py>) | 200 | Sessão exigida | O PDF original |
 | `DELETE /api/v1/documents/{document_id}` | [delete_document](<../backend/app/api/v1/documents.py>) | 204 | Sessão exigida | Exclui o documento, as regras e a conversa |
-| `GET /api/v1/documents/{document_id}/rules` | [list_rules](<../backend/app/api/v1/documents.py>) | 200 | Sessão exigida | Regras do documento, na ordem do texto |
-| `POST /api/v1/documents/{document_id}/excerpt-analysis` | [analyze_excerpt](<../backend/app/api/v1/documents.py>) | 200 | Sessão exigida | A IA analisa o trecho grifado (com a conversa até aqui) e propõe a regra; não salva nada |
+| `GET /api/v1/documents/{document_id}/rules` | [list_rules](<../backend/app/api/v1/documents.py>) | 200 | Sessão exigida | Regras do documento, na ordem do texto, cada uma com a conversa com a IA que levou à aprovação (`conversation`) |
+| `POST /api/v1/documents/{document_id}/excerpt-analysis` | [analyze_excerpt](<../backend/app/api/v1/documents.py>) | 200 | Sessão exigida | A IA analisa o trecho grifado (com a conversa até aqui e as regras já aprovadas no documento como histórico) e propõe a regra; não salva nada |
 | `POST /api/v1/documents/{document_id}/query-preview` | [preview_query](<../backend/app/api/v1/documents.py>) | 200 | Sessão exigida | Valida a busca revisada e conta os registros; não salva nada |
-| `POST /api/v1/documents/{document_id}/rules` | [create_rule](<../backend/app/api/v1/documents.py>) | 201 | Sessão exigida | Aprova a regra revisada: categoria `csv` (com busca) ou `geral`; é a única forma de criar regras |
+| `POST /api/v1/documents/{document_id}/rules` | [create_rule](<../backend/app/api/v1/documents.py>) | 201 | Sessão exigida | Aprova a regra revisada: categoria `csv` (com busca) ou `geral`, guardando a conversa enviada em `messages`; é a única forma de criar regras |
 | `PATCH /api/v1/rules/{rule_id}` | [update_rule](<../backend/app/api/v1/documents.py>) | 200 | Sessão exigida | Atualiza situação, tipo, resumo, interpretação ou comentário |
 | `DELETE /api/v1/rules/{rule_id}` | [delete_rule](<../backend/app/api/v1/documents.py>) | 204 | Sessão exigida | Exclui a regra |
 | `PUT /api/v1/rules/{rule_id}/query` | [set_rule_query](<../backend/app/api/v1/documents.py>) | 200 | Sessão exigida | Define (ou corrige) a busca da regra; a regra passa para `csv` |
